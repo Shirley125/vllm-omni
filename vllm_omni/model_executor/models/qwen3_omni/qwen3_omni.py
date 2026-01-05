@@ -396,7 +396,6 @@ class Qwen3OmniMoeForConditionalGeneration(
             # Extract codec codes from input
             codes = []
             if input_ids is not None:
-
                 codes.append(input_ids.reshape(1, 16, -1))
 
             else:

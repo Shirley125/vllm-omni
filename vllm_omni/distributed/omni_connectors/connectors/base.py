@@ -71,12 +71,12 @@ class OmniConnectorBase(ABC):
 
         return OmniSerializer.deserialize(data)
     
-    def put_chunk(self, pooling_output, request) -> None:
+    def put_chunk(self, scheduler_output, output_data) -> None:
         """Store a chunk of scheduler output.
 
         Args:
-            pooling_output: Partial pooling output dictionary
-            request: Request object
+            scheduler_output: Partial scheduler output dictionary
+            output_data: Partial output data dictionary
         """
         pass
 
