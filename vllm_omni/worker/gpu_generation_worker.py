@@ -61,7 +61,7 @@ class GPUGenerationWorker(GPUWorker):
             # memory snapshot
             # This ensures NCCL buffers are allocated before we measure
             # available memory
-            init_worker_distributed_environment(
+            self.init_worker_distributed_environment(
                 self.vllm_config,
                 self.rank,
                 self.distributed_init_method,
@@ -102,3 +102,16 @@ class GPUGenerationWorker(GPUWorker):
         if self.rank == 0:
             # If usage stat is enabled, collect relevant info.
             report_usage_stats(self.vllm_config)
+
+    def init_worker_distributed_environment(self, vllm_config: "VllmConfig", rank: int, distributed_init_method: str, local_rank: int, backend: str):
+        init_worker_distributed_environment(
+            vllm_config,
+            rank,
+            distributed_init_method,
+            local_rank,
+            backend,
+        )
+        from vllm_omni.distributed.omni_connectors.omni_transfer_state import ensure_omni_transfer_initialized
+        #ensure_omni_transfer_initialized(vllm_config)
+        stage_id = 2
+        ensure_omni_transfer_initialized(stage_id, self.device)

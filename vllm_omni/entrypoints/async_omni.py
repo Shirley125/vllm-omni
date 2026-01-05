@@ -336,6 +336,15 @@ class AsyncOmni(OmniBase):
                 "sampling_params": sp0,
             }
             self.stage_list[0].submit(task)
+            prompt_token_ids = prompt["prompt_token_ids"]
+            prompt_1 = prompt.copy()
+            prompt_1["prompt_token_ids"] = [0] * len(prompt_token_ids)
+            task_1 = {
+                "request_id": request_id,
+                "engine_inputs": prompt_1,
+                "sampling_params": sampling_params_list[1],
+            }
+            self.stage_list[1].submit(task_1)
             _req_start_ts[request_id] = time.time()
             logger.debug(f"[{self._name}] Enqueued request {request_id} to stage-0")
 
@@ -423,7 +432,7 @@ class AsyncOmni(OmniBase):
                 stage.set_engine_outputs(engine_outputs)
                 # Forward to next stage if there is one
                 next_stage_id = stage_id + 1
-                if next_stage_id <= final_stage_id_for_e2e and finished:
+                if next_stage_id == final_stage_id_for_e2e and finished:
                     next_stage: OmniStage = self.stage_list[next_stage_id]
                     next_inputs = next_stage.process_engine_inputs(self.stage_list, prompt)
                     sp_next: SamplingParams = sampling_params_list[next_stage_id]

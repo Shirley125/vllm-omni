@@ -14,6 +14,8 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
+from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
+from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 
 class OmniARScheduler(VLLMScheduler):
     """
@@ -23,6 +25,17 @@ class OmniARScheduler(VLLMScheduler):
     non-autoregressive processing with additional fields and methods
     specific to vLLM-Omni.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.vllm_config.parallel_config.tensor_parallel_size > 1:
+            extra = {"shm_threshold": 65536, "stage_id": 0}
+            connector_specs = ConnectorSpec(name="SharedMemoryConnector", extra=extra)
+            self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
+        else:
+            extra = {"shm_threshold": 65536, "stage_id": 1}
+            connector_specs = ConnectorSpec(name="SharedMemoryConnector", extra=extra)
+            self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
 
     # Ensure scheduled_new_reqs carry omni-specific payloads
     # (e.g., additional_information)
@@ -55,6 +68,7 @@ class OmniARScheduler(VLLMScheduler):
                 new_list.append(omni_nr)
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
+            self.omni_connector.get_chunk(scheduler_output)
         except Exception:
             # If anything goes wrong, leave the original output unchanged
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
@@ -190,6 +204,7 @@ class OmniARScheduler(VLLMScheduler):
                         num_nans_in_logits=request.num_nans_in_logits,
                     )
                 )
+                self.omni_connector.put_chunk(pooling_output, request)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
