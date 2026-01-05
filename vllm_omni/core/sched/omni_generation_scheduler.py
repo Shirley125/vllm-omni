@@ -13,9 +13,17 @@ from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniNewRequestData
 from vllm_omni.outputs import OmniModelRunnerOutput
-
+from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
+from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 
 class OmniGenerationScheduler(VLLMScheduler):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        extra = {"shm_threshold": 65536, "stage_id": 2}
+        connector_specs = ConnectorSpec(name="SharedMemoryConnector", extra=extra)
+        self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
+
     def schedule(self) -> SchedulerOutput:
         """Diffusion fast path:
         - Feed all input tokens of the request at once
@@ -145,6 +153,7 @@ class OmniGenerationScheduler(VLLMScheduler):
         # Update internal state (advance num_computed_tokens, free encoder inputs,
         # etc.)
         self._update_after_schedule(scheduler_output)
+        #self.omni_connector.get_chunk(scheduler_output)
         return scheduler_output
 
     """
