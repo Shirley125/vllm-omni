@@ -39,27 +39,50 @@ class OmniGenerationScheduler(VLLMScheduler):
 
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
+        scheduled_running_reqs: list[Request] = []
         scheduled_spec_decode_tokens: dict[str, list[int]] = {}
         scheduled_encoder_inputs: dict[str, list[int]] = {}
 
         # Temporary queue: preserve waiting order, do not disturb non-diffusion requests
         skipped_waiting_requests = create_request_queue(self.policy)
+        req_index = 0
+        while req_index < len(self.running) and token_budget > 0:
+            request = self.running[req_index]
+            self.omni_connector.get_chunk(request)
+            num_computed_tokens = request.num_computed_tokens
+            required_tokens = max(len(request.prompt_token_ids) - num_computed_tokens, 1)
+            num_new_tokens = min(required_tokens, token_budget)
+            new_blocks = self.kv_cache_manager.allocate_slots(
+                request,
+                num_new_tokens,
+                num_lookahead_tokens=self.num_lookahead_tokens,
+            )
+            if new_blocks is None:
+                # Allocation failed (e.g., VRAM pressure); stop fast path and
+                # fall back to default scheduling
+                # Put the current request back to the head of the waiting queue
+                # Note: the original queue order is preserved
+                break
+            if self.log_stats:
+                request.record_event(EngineCoreEventType.SCHEDULED, scheduled_timestamp)
+            req_to_new_blocks[request.request_id] = new_blocks
+            num_scheduled_tokens[request.request_id] = num_new_tokens
+            token_budget -= num_new_tokens
+            scheduled_running_reqs.append(request)
+            req_index += 1
 
         # Fast path selection and scheduling (treat all as diffusion requests,
         # independent of pooling_params)
         while self.waiting and token_budget > 0 and len(self.running) < self.max_num_running_reqs:
             request = self.waiting.peek_request()
+            self.omni_connector.get_chunk(request)
             # Uniformly treat as diffusion. A feature flag can be added later
             # via config or request tag.
 
             # Allocate all input tokens for the request in one shot
             # (allocate 1 placeholder if zero)
-            required_tokens = max(getattr(request, "num_prompt_tokens", 0), 1)
-            if required_tokens > token_budget:
-                # Insufficient budget to process all inputs at once;
-                # stop fast path attempt
-                break
-            num_new_tokens = required_tokens
+            required_tokens = max(len(request.prompt_token_ids), 1)
+            num_new_tokens = min(required_tokens, token_budget)
             new_blocks = self.kv_cache_manager.allocate_slots(
                 request,
                 num_new_tokens,
@@ -116,7 +139,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             ]
         # No running/resumed reqs scheduled in our fast path
         cached_reqs_data = self._make_cached_request_data(
-            running_reqs=[],
+            running_reqs=scheduled_running_reqs,
             resumed_reqs=[],
             num_scheduled_tokens=num_scheduled_tokens,
             spec_decode_tokens=scheduled_spec_decode_tokens,
@@ -242,15 +265,13 @@ class OmniGenerationScheduler(VLLMScheduler):
                 pooler_output = pooler_outputs[req_index]
 
             # Diffusion request: completes in one step; mark finished and free resources
-            request.status = RequestStatus.FINISHED_STOPPED
-            # Optional: set a stop_reason for front-end clarity
-            # (does not affect protocol)
-            request.stop_reason = request.stop_reason  # or "generation_done"
-            kv_transfer_params = self._free_request(request)
-            if status_before_stop == RequestStatus.RUNNING:
+            if request.num_computed_tokens > request.num_prompt_tokens or request.status == RequestStatus.FINISHED_STOPPED:
+                request.status = RequestStatus.FINISHED_STOPPED
+                # Optional: set a stop_reason for front-end clarity
+                # (does not affect protocol)
+                request.stop_reason = request.stop_reason  # or "generation_done"
+                kv_transfer_params = self._free_request(request)
                 stopped_running_reqs.add(request)
-            else:
-                stopped_preempted_reqs.add(request)
 
             # Extract sample logprobs if needed.
             if request.sampling_params is not None and request.sampling_params.logprobs is not None and logprobs:

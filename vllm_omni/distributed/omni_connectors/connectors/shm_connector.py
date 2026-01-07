@@ -8,6 +8,10 @@ import safetensors
 import torch
 
 from collections import defaultdict
+
+from vllm.v1.request import RequestStatus
+
+from collections import defaultdict
 from vllm_omni.entrypoints.stage_utils import shm_read_bytes, shm_write_bytes
 
 from ..utils.logging import get_connector_logger
@@ -26,7 +30,8 @@ class SharedMemoryConnector(OmniConnectorBase):
         self.config = config
         self.stage_id = config.get("stage_id", -1)
         self.device = config.get("device", "cuda:0")
-        self.requests: dict[str, int] = defaultdict(int)
+        self.put_requests: dict[str, int] = defaultdict(int)
+        self.get_requests: dict[str, int] = defaultdict(int)
         self.finished_requests: set[str] = set()
         self.request_prompt_token_ids: dict[str, list[int]] = defaultdict(list)
         self._storage_path = config.get("store_path", "/tmp")
@@ -197,7 +202,7 @@ class SharedMemoryConnector(OmniConnectorBase):
         prompt_token_ids = request.prompt_token_ids
         self.request_prompt_token_ids[request_id] = prompt_token_ids
         token_ids = request.all_token_ids
-        chunk = self.requests[request_id]
+        chunk = self.put_requests[request_id]
         stage_key = f"{request_id}_{self.stage_id}_{chunk}"
         filename = self._generate_filename_debug(stage_key)
         if os.path.exists(filename):
@@ -214,7 +219,7 @@ class SharedMemoryConnector(OmniConnectorBase):
             "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
 
         }
-        self.requests[request_id] += 1
+        self.put_requests[request_id] += 1
         safetensors.torch.save_file(tensors, filename)
 
     def put_chunk_stage_1(self, pooling_output, request) -> None:
@@ -231,16 +236,17 @@ class SharedMemoryConnector(OmniConnectorBase):
             return
 
         request_id = request.request_id
-        chunk = self.requests[request_id]
+        chunk = self.put_requests[request_id]
         stage_key = f"{request_id}_{self.stage_id}_{chunk}"
         filename = self._generate_filename_debug(stage_key)
-        if not os.path.exists(filename):
+        if os.path.exists(filename):
             return None
+        code = torch.flatten(pooling_output["code_predictor_codes"]).detach().cpu()
         tensors = {
-            "code_predictor_codes": pooling_output["code_predictor_codes"].detach().cpu(),
+            "code_predictor_codes": code,
             "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
         }
-        self.requests[request_id] += 1
+        self.put_requests[request_id] += 1
         safetensors.torch.save_file(tensors, filename)
 
     def get_chunk_stage_0(self, scheduler_output) -> dict[str, Any] | None:
@@ -256,7 +262,7 @@ class SharedMemoryConnector(OmniConnectorBase):
         target_stage_id = self.stage_id - 1
         for new_req_data in scheduler_output.scheduled_new_reqs:
             request_id = new_req_data.req_id
-            chunk = self.requests[request_id]
+            chunk = self.get_requests[request_id]
             stage_key = f"{request_id}_{target_stage_id}_{chunk}"
             # TODO
             wait_time = 30
@@ -278,7 +284,7 @@ class SharedMemoryConnector(OmniConnectorBase):
                 "tts_eos_embed": (output_data.get("tts_eos_embed").detach()),
                 "tts_pad_embed": (output_data.get("tts_pad_embed").detach()),
             }
-            self.requests[request_id] += 1
+            self.get_requests[request_id] += 1
             self.request_prompt_token_ids[request_id] = tensors["thinker_input_ids"]
             new_req_data.additional_information = tensors
             logger.info(f"get chunk {stage_key} from shm connector, tensors:{tensors}")
@@ -287,7 +293,7 @@ class SharedMemoryConnector(OmniConnectorBase):
         for _, request_id in enumerate(cached_reqs.req_ids):
             if request_id in self.finished_requests:
                 continue
-            chunk = self.requests[request_id]
+            chunk = self.get_requests[request_id]
             stage_key = f"{request_id}_{target_stage_id}_{chunk}"
             # TODO
             wait_time = 30
@@ -310,11 +316,11 @@ class SharedMemoryConnector(OmniConnectorBase):
                 "tts_eos_embed": (output_data.get("tts_eos_embed").detach()),
                 "tts_pad_embed": (output_data.get("tts_pad_embed").detach()),
             }
-            self.requests[request_id] += 1
+            self.get_requests[request_id] += 1
             cached_reqs.additional_information = tensors
             logger.info(f"get chunk {stage_key} from shm connector, tensors:{tensors}")
 
-    def get_chunk_stage_1(self, scheduler_output) -> dict[str, Any] | None:
+    def get_chunk_stage_1(self, request) -> dict[str, Any] | None:
         """Retrieve a chunk of pooling output at stage 1.
 
         Args:
@@ -324,23 +330,28 @@ class SharedMemoryConnector(OmniConnectorBase):
             dict[str, Any] | None: Pooling output dictionary or None if not found
         """
 
+        request_id = request.request_id
+        if request_id in self.finished_requests:
+            return
         target_stage_id = self.stage_id - 1
-        for new_req_data in scheduler_output.scheduled_new_reqs:
-            request_id = new_req_data.req_id
-            chunk = self.requests[request_id]
-            stage_key = f"{request_id}_{target_stage_id}_{chunk}"
-            # TODO
-            wait_time = 30
-            for _ in range(wait_time):
-                if self._found_match_for_stage_chunk(stage_key):
-                    break
-                else:
-                    time.sleep(1)
-            filename = self._generate_filename_debug(stage_key)
-            output_data = safetensors.torch.load_file(filename)
-            if output_data.get("finished"):
-                self.finished_requests.add(request_id)
-            self.requests[request_id] += 1
-            new_req_data.prompt_token_ids = output_data["code_predictor_codes"].tolist()
-            logger.info(f"get chunk {stage_key} from shm connector, tensors:{output_data}")
+        chunk = self.get_requests[request_id]
+        stage_key = f"{request_id}_{target_stage_id}_{chunk}"
+        # TODO
+        wait_time = 30
+        for _ in range(wait_time):
+            if self._found_match_for_stage_chunk(stage_key):
+                break
+            else:
+                time.sleep(1)
+        filename = self._generate_filename_debug(stage_key)
+        output_data = safetensors.torch.load_file(filename)
+        if output_data.get("finished"):
+            self.finished_requests.add(request_id)
+            request.status = RequestStatus.FINISHED_STOPPED
+        self.get_requests[request_id] += 1
+        if chunk == 0:
+            request.prompt_token_ids = output_data["code_predictor_codes"].tolist()
+        else:
+            request.prompt_token_ids += output_data["code_predictor_codes"].tolist()
+        logger.info(f"get chunk {stage_key} from shm connector, tensors:{request.prompt_token_ids}")
 
