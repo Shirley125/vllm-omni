@@ -44,19 +44,18 @@ class OmniGenerationScheduler(VLLMScheduler):
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
         scheduled_running_reqs: list[Request] = []
+        scheduled_running_reqs: list[Request] = []
         scheduled_spec_decode_tokens: dict[str, list[int]] = {}
         scheduled_encoder_inputs: dict[str, list[int]] = {}
 
         # Temporary queue: preserve waiting order, do not disturb non-diffusion requests
         skipped_waiting_requests = create_request_queue(self.policy)
         req_index = 0
-
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
-            # self.omni_connector.get_chunk(request)
-            get_chunk_for_generation(self.omni_connector, request)
+            self.omni_connector.get_chunk(request)
             num_computed_tokens = request.num_computed_tokens
-            required_tokens = max(getattr(request, "num_prompt_tokens", 0) - num_computed_tokens, 1)
+            required_tokens = max(len(request.prompt_token_ids) - num_computed_tokens, 1)
             num_new_tokens = min(required_tokens, token_budget)
             new_blocks = self.kv_cache_manager.allocate_slots(
                 request,
@@ -88,6 +87,8 @@ class OmniGenerationScheduler(VLLMScheduler):
 
             # Allocate all input tokens for the request in one shot
             # (allocate 1 placeholder if zero)
+            required_tokens = max(len(request.prompt_token_ids), 1)
+            num_new_tokens = min(required_tokens, token_budget)
             required_tokens = max(getattr(request, "num_prompt_tokens", 0), 1)
             num_new_tokens = min(required_tokens, token_budget)
             new_blocks = self.kv_cache_manager.allocate_slots(
@@ -146,6 +147,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             ]
         # No running/resumed reqs scheduled in our fast path
         cached_reqs_data = self._make_cached_request_data(
+            running_reqs=scheduled_running_reqs,
             running_reqs=scheduled_running_reqs,
             resumed_reqs=[],
             num_scheduled_tokens=num_scheduled_tokens,

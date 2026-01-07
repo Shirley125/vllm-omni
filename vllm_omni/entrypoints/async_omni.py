@@ -323,9 +323,13 @@ class AsyncOmni(OmniBase):
 
             stage_queues = {stage_id: asyncio.Queue() for stage_id in range(num_stages)}
 
+
+            stage_queues = {stage_id: asyncio.Queue() for stage_id in range(num_stages)}
+
             # Seed stage-0 queue with all requests
             # logger.debug(f"[{self._name}] Seeding request into stage-0")
             req_state = ClientRequestState(request_id)
+            req_state.stage_queues = stage_queues
             req_state.stage_queues = stage_queues
             self.request_states[request_id] = req_state
             # Mark first input time for stage-0
@@ -390,11 +394,13 @@ class AsyncOmni(OmniBase):
                             f"[{self._name}] Failed to process metrics for stage {stage_id}, req {req_id}: {e}",
                         )
                     logger.info(
+                    logger.info(
                         f"[{self._name}] Stage-{stage_id} completed request {req_id}; forwarding or finalizing",
                     )
 
                     all_stages_finished[stage_id] = engine_outputs.finished
                     if getattr(stage, "final_output", False):
+                        logger.info(
                         logger.info(
                             f"[{self._name}] Request {req_id} finalized at stage-{stage_id}",
                         )
@@ -428,10 +434,18 @@ class AsyncOmni(OmniBase):
                             stage_id,
                             req_id,
                             _req_start_ts.get(req_id, _wall_start_ts),
+                try:
+                    rid_key = str(req_id)
+                    if stage_id == final_stage_id_for_e2e and rid_key not in metrics.e2e_done:
+                        metrics.on_finalize_request(
+                            stage_id,
+                            req_id,
+                            _req_start_ts.get(req_id, _wall_start_ts),
                         )
                 except Exception as e:
                     logger.exception(
-                        f"[{self._name}] Finalize request handling error for req {req_id} at stage {stage_id}: {e}",
+                        f"[{self._name}] Finalize request handling error for req "
+                        f"{req_id} at stage {stage_id}: {e}",
                     )
 
             logger.info(f"[{self._name}] All requests completed")
@@ -490,6 +504,13 @@ class AsyncOmni(OmniBase):
             except Exception as e:
                 logger.exception("AsyncOmni output_handler failed.")
                 for req_state in request_states.values():
+                    error_msg = {"request_id": req_state.request_id, "error": str(e)}
+                    # Send error to all stage queues
+                    if hasattr(req_state, 'stage_queues'):
+                        for queue in req_state.stage_queues.values():
+                            await queue.put(error_msg)
+                    else:
+                        await req_state.queue.put(error_msg)
                     error_msg = {"request_id": req_state.request_id, "error": str(e)}
                     # Send error to all stage queues
                     if hasattr(req_state, "stage_queues"):
