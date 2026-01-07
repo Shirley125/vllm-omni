@@ -321,9 +321,14 @@ class AsyncOmni(OmniBase):
                 self._enable_stats,
                 _wall_start_ts,
             )
+
+            
+            stage_queues = {stage_id: asyncio.Queue() for stage_id in range(num_stages)}
+
             # Seed stage-0 queue with all requests
             logger.debug(f"[{self._name}] Seeding request into stage-0")
             req_state = ClientRequestState(request_id)
+            req_state.stage_queues = stage_queues
             self.request_states[request_id] = req_state
 
             # Mark first input time for stage-0
@@ -346,14 +351,13 @@ class AsyncOmni(OmniBase):
             }
             self.stage_list[1].submit(task_1)
             _req_start_ts[request_id] = time.time()
-            logger.debug(f"[{self._name}] Enqueued request {request_id} to stage-0")
+            logger.info(f"[{self._name}] Enqueued request {request_id} to stage-0")
 
-            logger.debug(f"[{self._name}] Entering scheduling loop: stages={num_stages}")
+            logger.info(f"[{self._name}] Entering scheduling loop: stages={num_stages}")
             for stage_id, stage in enumerate(self.stage_list[: final_stage_id_for_e2e + 1]):
                 finished = False
                 while not finished:
-                    result = await req_state.queue.get()
-                    assert stage_id == req_state.stage_id
+                    result = await req_state.stage_queues[stage_id].get()
 
                     req_id = result.get("request_id")
                     if "error" in result:
@@ -379,7 +383,7 @@ class AsyncOmni(OmniBase):
                         logger.exception(
                             f"[{self._name}] Failed to process metrics for stage {stage_id}, req {req_id}: {e}",
                         )
-                    logger.debug(
+                    logger.info(
                         f"[{self._name}] Stage-{stage_id} completed request {req_id}; forwarding or finalizing",
                     )
                     stage.set_engine_outputs(engine_outputs)
@@ -389,7 +393,7 @@ class AsyncOmni(OmniBase):
                     finished = engine_outputs.finished
 
                     if getattr(stage, "final_output", False):
-                        logger.debug(
+                        logger.info(
                             f"[{self._name}] Request {req_id} finalized at stage-{stage_id}",
                         )
 
@@ -465,11 +469,11 @@ class AsyncOmni(OmniBase):
                         )
                         logger.error(error_msg)
                         raise RuntimeError(error_msg)
-                    logger.debug(f"[{self._name}] Forwarded request {req_id} to stage-{next_stage_id}")
+                    logger.info(f"[{self._name}] Forwarded request {req_id} to stage-{next_stage_id}")
                 else:
-                    logger.debug(f"[{self._name}] Request {req_id} fully completed")
+                    logger.info(f"[{self._name}] Request {req_id} fully completed")
 
-            logger.debug(f"[{self._name}] All requests completed")
+            logger.info(f"[{self._name}] All requests completed")
 
             # Summarize and print stats
             try:
@@ -513,8 +517,12 @@ class AsyncOmni(OmniBase):
                                 dropping output for req {req_id} at stage-{stage_id}"
                             )
                             continue
-                        await req_state.queue.put(result)
-                        req_state.stage_id = stage_id
+                        if hasattr(req_state, 'stage_queues') and stage_id in req_state.stage_queues:
+                            await req_state.stage_queues[stage_id].put(result)                            
+                        else:
+                            # Fallback to old behavior for compatibility
+                            await req_state.queue.put(result)                            
+                            req_state.stage_id = stage_id
                     if idle:
                         await asyncio.sleep(0.001)  # Avoid CPU overload when idle
                     else:
@@ -522,7 +530,13 @@ class AsyncOmni(OmniBase):
             except Exception as e:
                 logger.exception("AsyncOmni output_handler failed.")
                 for req_state in request_states.values():
-                    await req_state.queue.put({"request_id": req_id, "error": str(e)})
+                    error_msg = {"request_id": req_state.request_id, "error": str(e)}
+                    # Send error to all stage queues
+                    if hasattr(req_state, 'stage_queues'):                   
+                        for queue in req_state.stage_queues.values():                        
+                            await queue.put(error_msg)
+                    else:
+                        await req_state.queue.put(error_msg)
                 self.output_handler = None  # Make possible for restart
 
         self.output_handler = asyncio.create_task(output_handler())

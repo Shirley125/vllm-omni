@@ -204,7 +204,7 @@ class OmniARScheduler(VLLMScheduler):
                         num_nans_in_logits=request.num_nans_in_logits,
                     )
                 )
-                self.omni_connector.put_chunk(pooling_output, request)
+                self.omni_connector.put_chunk(pooler_output, request)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
