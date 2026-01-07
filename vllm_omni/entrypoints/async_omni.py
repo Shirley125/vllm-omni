@@ -353,12 +353,9 @@ class AsyncOmni(OmniBase):
             logger.info(f"[{self._name}] Enqueued request {request_id} to stage-0")
 
             logger.info(f"[{self._name}] Entering scheduling loop: stages={num_stages}")
-            finished = [False] * len(self.stage_list)
-            while not all(finished):
-                for stage_id, stage in enumerate(self.stage_list[: final_stage_id_for_e2e + 1]):
-                    if finished[stage_id]:
-                        continue
-
+            for stage_id, stage in enumerate(self.stage_list[: final_stage_id_for_e2e + 1]):
+                finished = False
+                while not finished:
                     result = await req_state.stage_queues[stage_id].get()
                     req_id = result.get("request_id")
                     if "error" in result:

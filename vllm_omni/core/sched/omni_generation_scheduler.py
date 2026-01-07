@@ -50,7 +50,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             request = self.running[req_index]
             self.omni_connector.get_chunk(request)
             num_computed_tokens = request.num_computed_tokens
-            required_tokens = max(len(request.prompt_token_ids) - num_computed_tokens, 1)
+            required_tokens = max(getattr(request, "num_prompt_tokens", 0) - num_computed_tokens, 1)
             num_new_tokens = min(required_tokens, token_budget)
             new_blocks = self.kv_cache_manager.allocate_slots(
                 request,
@@ -81,7 +81,7 @@ class OmniGenerationScheduler(VLLMScheduler):
 
             # Allocate all input tokens for the request in one shot
             # (allocate 1 placeholder if zero)
-            required_tokens = max(len(request.prompt_token_ids), 1)
+            required_tokens = max(getattr(request, "num_prompt_tokens", 0), 1)
             num_new_tokens = min(required_tokens, token_budget)
             new_blocks = self.kv_cache_manager.allocate_slots(
                 request,
@@ -176,7 +176,6 @@ class OmniGenerationScheduler(VLLMScheduler):
         # Update internal state (advance num_computed_tokens, free encoder inputs,
         # etc.)
         self._update_after_schedule(scheduler_output)
-        #self.omni_connector.get_chunk(scheduler_output)
         return scheduler_output
 
     """
@@ -264,6 +263,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             if pooler_outputs:
                 pooler_output = pooler_outputs[req_index]
 
+            request.num_computed_tokens += num_tokens_scheduled
             # Diffusion request: completes in one step; mark finished and free resources
             if request.num_computed_tokens > request.num_prompt_tokens or request.status == RequestStatus.FINISHED_STOPPED:
                 request.status = RequestStatus.FINISHED_STOPPED
