@@ -20,8 +20,10 @@ class OmniGenerationScheduler(VLLMScheduler):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        extra = {"shm_threshold": 65536, "stage_id": 2}
-        connector_specs = ConnectorSpec(name="SharedMemoryConnector", extra=extra)
+        model_config = self.vllm_config.model_config
+        connector_specs = ConnectorSpec(name=model_config.stage_connector_name,
+                                        extra=model_config.stage_connector_extra)
+        print(f"cwj generate connector_specs = {connector_specs}")
         self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
 
     def schedule(self) -> SchedulerOutput:

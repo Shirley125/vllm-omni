@@ -204,6 +204,7 @@ class OmniBase:
         # Load stage configurations from YAML
         if stage_configs_path is None:
             self.config_path = resolve_model_config_path(model)
+
             self.stage_configs = load_stage_configs_from_model(model)
             if not self.stage_configs:
                 default_stage_cfg = self._create_default_diffusion_stage_cfg(kwargs)
@@ -271,6 +272,7 @@ class OmniBase:
                 self.omni_transfer_config,
                 stage_id,
             )
+            logger.info(f"cwj stage_id = {stage_id}, stage_connectors_config = {stage_connectors_config}")
 
             stage.init_stage_worker(
                 model,
