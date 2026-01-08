@@ -31,7 +31,7 @@ from vllm.v1.worker.utils import is_residual_scattered_for_sp
 
 from vllm_omni.outputs import OmniModelRunnerOutput
 from vllm_omni.worker.gpu_model_runner import OmniGPUModelRunner
-from vllm_omni.distributed.omni_connectors.omni_transfer_state import get_omni_transfer, has_omni_transfer
+
 logger = init_logger(__name__)
 
 
@@ -62,6 +62,11 @@ class GPUARModelRunner(OmniGPUModelRunner):
         # each model stage has their own hidden size
         self.hidden_size = self.model_config.hf_text_config.hidden_size
         self.inputs_embeds = self._make_buffer(self.max_num_tokens, self.hidden_size, dtype=self.dtype, numpy=False)
+        # Track chunk numbers per request for inter-stage communication
+        self.request_chunk_counters: dict[str, int] = {}
+        self.request_prompt_token_ids: dict[str, list[int]] = {}
+        # Store model stage for determining payload structure
+        self.model_stage = getattr(self.model_config, "model_stage", None)
 
     def _make_buffer(self, *size, dtype, numpy=True):
         # Prevent ray from pinning the buffer due to large size
@@ -84,9 +89,7 @@ class GPUARModelRunner(OmniGPUModelRunner):
     ) -> OmniModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors | None:
         with record_function_or_nullcontext("Preprocess"):
             with self.synchronize_input_prep():
-                # if has_omni_transfer():
-                #     omni_connector = get_omni_transfer()
-                #     omni_connector.get_chunk(scheduler_output)
+                # self._recv_chunk(scheduler_output)
                 self._update_states(scheduler_output)
                 self._decode_and_store_request_payloads(scheduler_output)
 
@@ -188,9 +191,7 @@ class GPUARModelRunner(OmniGPUModelRunner):
                 sampler=self.sampler,
             )
 
-            # if has_omni_transfer():
-            #     omni_connector = get_omni_transfer()
-            #     omni_connector.put_chunk(scheduler_output, model_output)
+            # self._send_chunk(scheduler_output, model_output)
 
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
             if self.use_aux_hidden_state_outputs:

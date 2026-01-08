@@ -20,7 +20,6 @@ from vllm.v1.engine.exceptions import EngineDeadError
 # Internal imports (our code)
 from vllm_omni.config import OmniModelConfig
 from vllm_omni.diffusion.data import DiffusionParallelConfig
-from vllm_omni.distributed.omni_connectors.adapter import try_send_via_connector
 from vllm_omni.distributed.ray_utils.utils import try_close_ray
 from vllm_omni.engine.input_processor import OmniInputProcessor
 from vllm_omni.entrypoints.client_request_state import ClientRequestState
@@ -325,38 +324,43 @@ class AsyncOmni(OmniBase):
             stage_queues = {stage_id: asyncio.Queue() for stage_id in range(num_stages)}
 
             # Seed stage-0 queue with all requests
-            logger.debug(f"[{self._name}] Seeding request into stage-0")
+            # logger.debug(f"[{self._name}] Seeding request into stage-0")
             req_state = ClientRequestState(request_id)
             req_state.stage_queues = stage_queues
             self.request_states[request_id] = req_state
             # Mark first input time for stage-0
             metrics.stage_first_ts[0] = metrics.stage_first_ts[0] or time.time()
 
-            sp0: SamplingParams = sampling_params_list[0]  # type: ignore[index]
-            task = {
-                "request_id": request_id,
-                "engine_inputs": prompt,
-                "sampling_params": sp0,
-            }
-            self.stage_list[0].submit(task)
-            prompt_token_ids = prompt["prompt_token_ids"]
-            prompt_1 = prompt.copy()
-            prompt_1["prompt_token_ids"] = [0] * len(prompt_token_ids)
-            task_1 = {
-                "request_id": request_id,
-                "engine_inputs": prompt_1,
-                "sampling_params": sampling_params_list[1],
-            }
-            self.stage_list[1].submit(task_1)
-            self.stage_list[2].submit(task_1)
-            _req_start_ts[request_id] = time.time()
-            logger.info(f"[{self._name}] Enqueued request {request_id} to stage-0")
+            for i in range(num_stages):
+                sp: SamplingParams = sampling_params_list[i]
+                engine_inputs = prompt
+                if i != 0:
+                    prompt_token_ids = prompt["prompt_token_ids"]
+                    prompt_1 = prompt.copy()
+                    prompt_1["prompt_token_ids"] = [0] * len(prompt_token_ids)
+                    engine_inputs = prompt_1
+                task = {
+                    "request_id": request_id,
+                    "engine_inputs": engine_inputs,
+                    "sampling_params": sp,
+                }
+                self.stage_list[i].submit(task)
+                logger.info(f"[{self._name}] Enqueued request {request_id} to stage-{str(i)}")
 
-            logger.info(f"[{self._name}] Entering scheduling loop: stages={num_stages}")
-            for stage_id, stage in enumerate(self.stage_list[: final_stage_id_for_e2e + 1]):
-                finished = False
-                while not finished:
+            _req_start_ts[request_id] = time.time()
+
+            logger.info(
+                f"[{self._name}] Entering scheduling loop: stages={num_stages}, final_stage={final_stage_id_for_e2e}"
+            )
+            all_stages_finished = {stage_id: False for stage_id in range(final_stage_id_for_e2e)}
+
+            while not all(all_stages_finished.values()):
+                for stage_id, stage in enumerate(self.stage_list[: final_stage_id_for_e2e + 1]):
+                    if all_stages_finished[stage_id]:
+                        continue
                     result = await req_state.stage_queues[stage_id].get()
+                    logger.info(f"[{self._name}] Received result from stage-{stage_id}: {result}")
+
                     req_id = result.get("request_id")
                     if "error" in result:
                         logger.error(
@@ -373,13 +377,13 @@ class AsyncOmni(OmniBase):
                     engine_outputs = _load(result, obj_key="engine_outputs", shm_key="engine_outputs_shm")
                     if isinstance(engine_outputs, list):
                         engine_outputs = engine_outputs[0]
-                    finished[stage_id] = engine_outputs.finished
+                    all_stages_finished[stage_id] = engine_outputs.finished
 
                     # Mark last output time for this stage whenever we receive outputs
                     metrics.stage_last_ts[stage_id] = max(metrics.stage_last_ts[stage_id] or 0.0, time.time())
                     try:
                         _m = asdict(result.get("metrics"))
-                        if _m is not None and finished:
+                        if _m is not None and all_stages_finished[stage_id]:
                             metrics.on_stage_metrics(stage_id, req_id, _m)
                     except Exception as e:
                         logger.exception(
@@ -389,6 +393,7 @@ class AsyncOmni(OmniBase):
                         f"[{self._name}] Stage-{stage_id} completed request {req_id}; forwarding or finalizing",
                     )
 
+                    all_stages_finished[stage_id] = engine_outputs.finished
                     if getattr(stage, "final_output", False):
                         logger.info(
                             f"[{self._name}] Request {req_id} finalized at stage-{stage_id}",
@@ -426,8 +431,7 @@ class AsyncOmni(OmniBase):
                         )
                 except Exception as e:
                     logger.exception(
-                        f"[{self._name}] Finalize request handling error for req "
-                        f"{req_id} at stage {stage_id}: {e}",
+                        f"[{self._name}] Finalize request handling error for req {req_id} at stage {stage_id}: {e}",
                     )
 
             logger.info(f"[{self._name}] All requests completed")
@@ -473,7 +477,7 @@ class AsyncOmni(OmniBase):
                                 dropping output for req {req_id} at stage-{stage_id}"
                             )
                             continue
-                        if hasattr(req_state, 'stage_queues') and stage_id in req_state.stage_queues:
+                        if hasattr(req_state, "stage_queues") and stage_id in req_state.stage_queues:
                             await req_state.stage_queues[stage_id].put(result)
                         else:
                             # Fallback to old behavior for compatibility
@@ -488,7 +492,7 @@ class AsyncOmni(OmniBase):
                 for req_state in request_states.values():
                     error_msg = {"request_id": req_state.request_id, "error": str(e)}
                     # Send error to all stage queues
-                    if hasattr(req_state, 'stage_queues'):
+                    if hasattr(req_state, "stage_queues"):
                         for queue in req_state.stage_queues.values():
                             await queue.put(error_msg)
                     else:

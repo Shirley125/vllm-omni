@@ -36,6 +36,9 @@ class OmniEngineArgs(EngineArgs):
         engine_output_type: Optional output type specification for the engine.
             Used to route outputs to appropriate processors (e.g., "image",
             "audio", "latents"). If None, output type is inferred.
+        custom_process_input_func: Optional path to a custom function for processing
+            inputs from previous stages 
+            If None, default processing is used.
     """
 
     stage_id: int = 0
@@ -43,6 +46,7 @@ class OmniEngineArgs(EngineArgs):
     model_arch: str = "Qwen2_5OmniForConditionalGeneration"
     engine_output_type: str | None = None
     hf_config_name: str | None = None
+    custom_process_input_func: str | None = None
 
     def draw_hf_text_config(self, config_dict: dict) -> Qwen3OmniMoeTextConfig:
         # transformers' get_text_config method is used to get the text config from thinker_config.
@@ -95,6 +99,7 @@ class OmniEngineArgs(EngineArgs):
         config_dict["model_arch"] = self.model_arch
         config_dict["engine_output_type"] = self.engine_output_type
         config_dict["hf_config_name"] = self.hf_config_name
+        config_dict["custom_process_input_func"] = self.custom_process_input_func
         if self.hf_config_name is not None:
             config_dict["hf_text_config"] = self.draw_hf_text_config(config_dict)
         # Create and return the OmniModelConfig instance
@@ -118,6 +123,8 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
         engine_output_type: Optional output type specification for the engine.
             Used to route outputs to appropriate processors (e.g., "image",
             "audio", "latents"). If None, output type is inferred.
+        custom_process_input_func: Optional path to a custom function for processing
+            inputs from previous stages.If None, default processing is used.
     """
 
     stage_id: int = 0
@@ -125,6 +132,7 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
     model_arch: str = "Qwen2_5OmniForConditionalGeneration"
     engine_output_type: str | None = None
     hf_config_name: str | None = None
+    custom_process_input_func: str | None = None
 
     def draw_hf_text_config(self, config_dict: dict) -> Qwen3OmniMoeTextConfig:
         # transformers' get_text_config method is used to get the text config from thinker_config.
@@ -166,8 +174,8 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
         config_dict["model_stage"] = self.model_stage
         config_dict["model_arch"] = self.model_arch
         config_dict["engine_output_type"] = self.engine_output_type
-
         config_dict["hf_config_name"] = self.hf_config_name
+        config_dict["custom_process_input_func"] = self.custom_process_input_func
         if self.hf_config_name is not None:
             config_dict["hf_text_config"] = self.draw_hf_text_config(config_dict)
         # Create and return the OmniModelConfig instance

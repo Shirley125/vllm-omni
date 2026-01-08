@@ -72,6 +72,7 @@ class OmniModelConfig(ModelConfig):
     model_arch: str = "Qwen2_5OmniForConditionalGeneration"
     engine_output_type: str | None = None
     hf_config_name: str | None = None
+    custom_process_input_func: str | None = None
 
     @property
     def registry(self):

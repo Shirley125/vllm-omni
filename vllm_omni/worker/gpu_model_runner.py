@@ -766,6 +766,34 @@ class OmniGPUModelRunner(GPUModelRunner):
                 start_offset = int(self.query_start_loc.cpu[req_index])
                 self.inputs_embeds[start_offset : start_offset + overlay_len].copy_(src)
 
+    def _get_additional_information(self, scheduler_output: "SchedulerOutput", req_id: str) -> dict:
+        req_infos = None
+        for new_req in scheduler_output.scheduled_new_reqs:
+            if new_req.req_id == req_id:
+                payload_info = getattr(new_req, "additional_information", None)
+                if payload_info is not None:
+                    req_infos = payload_info
+                break
+
+        if req_infos is None and hasattr(scheduler_output.scheduled_cached_reqs, "additional_informations"):
+            cached_infos = getattr(scheduler_output.scheduled_cached_reqs, "additional_informations", {})
+            if isinstance(cached_infos, dict) and req_id in cached_infos:
+                req_infos = cached_infos[req_id]
+                if not isinstance(req_infos, dict):
+                    req_infos = None
+
+        if req_infos is None:
+            req_state = self.requests.get(req_id)
+            if req_state is not None:
+                req_infos = getattr(req_state, "additional_information_cpu", None)
+                if not isinstance(req_infos, dict):
+                    req_infos = None
+
+        if req_infos is None:
+            logger.warning(f"No additional_information found for req_id: {req_id}")
+
+        return req_infos
+
     def _preprocess(
         self,
         scheduler_output: "SchedulerOutput",
@@ -881,9 +909,10 @@ class OmniGPUModelRunner(GPUModelRunner):
             # Overlay custom prompt_embeds per request for the prompt portion;
             # collect additional_information (tensor/list) for prefill portion only
             for req_index, req_id in enumerate(self.input_batch.req_ids):
-                req_state = self.requests.get(req_id)
-                req_infos = getattr(req_state, "additional_information_cpu", None) if req_state is not None else None
-                logger.info(f"req_id: {req_id}, req_infos: {req_infos}")
+                # Try to get additional_information from multiple sources
+                req_infos = self._get_additional_information(scheduler_output, req_id)
+                req_infos_keys = list(req_infos.keys()) if isinstance(req_infos, dict) else None
+                logger.info(f"req_id: {req_id}, req_infos keys: {req_infos_keys}")
                 start_offset = int(self.query_start_loc.cpu[req_index])
                 sched_tokens = int(num_scheduled_tokens_np[req_index])
                 s, e = start_offset, start_offset + sched_tokens

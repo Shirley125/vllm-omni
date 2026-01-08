@@ -1,5 +1,6 @@
 import gc
 import os
+from typing import TYPE_CHECKING
 
 import torch
 from vllm.logger import init_logger
@@ -12,6 +13,9 @@ from vllm.v1.worker.gpu_worker import Worker as GPUWorker
 from vllm.v1.worker.gpu_worker import init_worker_distributed_environment
 
 from vllm_omni.worker.gpu_ar_model_runner import GPUARModelRunner
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
 
 logger = init_logger(__name__)
 
@@ -106,7 +110,9 @@ class GPUARWorker(GPUWorker):
             # If usage stat is enabled, collect relevant info.
             report_usage_stats(self.vllm_config)
 
-    def init_worker_distributed_environment(self, vllm_config: "VllmConfig", rank: int, distributed_init_method: str, local_rank: int, backend: str):
+    def init_worker_distributed_environment(
+        self, vllm_config: "VllmConfig", rank: int, distributed_init_method: str, local_rank: int, backend: str
+    ):
         init_worker_distributed_environment(
             vllm_config,
             rank,
@@ -114,9 +120,10 @@ class GPUARWorker(GPUWorker):
             local_rank,
             backend,
         )
-        #TODO
+        # TODO
         from vllm_omni.distributed.omni_connectors.omni_transfer_state import ensure_omni_transfer_initialized
-        #ensure_omni_transfer_initialized(vllm_config)
+
+        # ensure_omni_transfer_initialized(vllm_config)
         if self.parallel_config.tensor_parallel_size == 1:
             stage_id = 1
             ensure_omni_transfer_initialized(stage_id, self.device)

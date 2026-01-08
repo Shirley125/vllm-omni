@@ -6,9 +6,8 @@
 from typing import Any
 
 import torch
-from vllm.inputs import TextPrompt
-from vllm.platforms import current_platform
 
+from vllm_omni.engine import OmniEngineCoreRequest
 from vllm_omni.inputs.data import OmniTokensPrompt
 
 
@@ -49,91 +48,66 @@ def _compute_talker_prompt_ids_length(info, device: torch.device | str = "cuda")
 
 
 def thinker2talker(
-    stage_list: list[Any],
-    engine_input_source: list[int],
-    prompt: OmniTokensPrompt | TextPrompt | None = None,
-    requires_multimodal_data: bool = False,
-) -> list[OmniTokensPrompt]:
+    pooling_output: dict[str, Any],
+    request: OmniEngineCoreRequest,
+) -> list[dict[str, Any]]:
     """
     Process thinker outputs to create talker inputs.
-
-    Workflow:
-    1. Extract thinker's text generation outputs (token IDs + hidden states)
+    1. thinker's text generation outputs (token IDs + hidden states)
     2. Split hidden states into: prompt embeddings + generated embeddings
     3. Package for talker with additional information
-
-    Args:
-        stage_list: List of stage objects
-        engine_input_source: Source stage IDs (typically [0] for thinker)
-        prompt: Original prompt data
-        requires_multimodal_data: Whether multimodal data is required
-
-    Returns:
-        List of OmniTokensPrompt for talker stage
     """
-    if not engine_input_source:
-        raise ValueError("engine_input_source cannot be empty")
+    all_token_ids = request.all_token_ids  # prefill + decode
+    prompt_token_ids = request.prompt_token_ids
 
-    source_stage_id = engine_input_source[0]
-    if source_stage_id >= len(stage_list):
-        raise IndexError(f"Invalid stage_id: {source_stage_id}")
+    # Convert ConstantList to regular list for OmniSerializer serialization
+    if hasattr(all_token_ids, "_x"):
+        all_token_ids = list(all_token_ids._x)
+    elif not isinstance(all_token_ids, list):
+        all_token_ids = list(all_token_ids)
 
-    if stage_list[source_stage_id].engine_outputs is None:
-        raise RuntimeError(f"Stage {source_stage_id} has no outputs yet")
+    if hasattr(prompt_token_ids, "_x"):
+        prompt_token_ids = list(prompt_token_ids._x)
+    elif not isinstance(prompt_token_ids, list):
+        prompt_token_ids = list(prompt_token_ids)
 
-    thinker_outputs = stage_list[source_stage_id].engine_outputs
-    talker_inputs = []
+    thinker_output = pooling_output
 
-    device = torch.device(current_platform.device_type)
+    # print(f"thinker_outputs: {thinker_output}")
 
-    # Process each thinker output
-    for i, thinker_output in enumerate(thinker_outputs):
-        output = thinker_output.outputs[0]
-        thinker_embeddings = output.multimodal_output["0"].detach().to(device=device, dtype=torch.float)
+    talker_additional_info = {
+        "thinker_embeddings": thinker_output.get("0").detach().cpu(),
+        "thinker_hidden_states": thinker_output.get("24").detach().cpu(),
+        "thinker_sequences": all_token_ids,
+        "thinker_input_ids": prompt_token_ids,
+        # Provide thinker-side TTS token embeddings for talker projection
+        "tts_bos_embed": thinker_output.get("tts_bos_embed")[0].detach().cpu(),
+        "tts_eos_embed": thinker_output.get("tts_eos_embed")[0].detach().cpu(),
+        "tts_pad_embed": thinker_output.get("tts_pad_embed")[0].detach().cpu(),
+        "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
+    }
+    #     OmniTokensPrompt(
+    #     prompt_token_ids=[0] * _compute_talker_prompt_ids_length(info),
+    #     additional_information=info,
+    #     multi_modal_data=None,
+    #     mm_processor_kwargs=None,
+    # )
+    # )
+    # print(f"talker_inputs: {talker_inputs}")
 
-        thinker_hidden_states = output.multimodal_output["24"].detach().to(device=device, dtype=torch.float)
-        info = {
-            "thinker_embeddings": thinker_embeddings,
-            "thinker_hidden_states": thinker_hidden_states,
-            "thinker_sequences": thinker_output.prompt_token_ids
-            + output.token_ids,  # the thinker_sequences is the whole ids
-            "thinker_input_ids": thinker_output.prompt_token_ids,
-            # Provide thinker-side TTS token embeddings for talker projection
-            "tts_bos_embed": (
-                output.multimodal_output.get("tts_bos_embed").detach().to(device=device, dtype=torch.float)
-            ),
-            "tts_eos_embed": (
-                output.multimodal_output.get("tts_eos_embed").detach().to(device=device, dtype=torch.float)
-            ),
-            "tts_pad_embed": (
-                output.multimodal_output.get("tts_pad_embed").detach().to(device=device, dtype=torch.float)
-            ),
-        }
-        talker_inputs.append(
-            OmniTokensPrompt(
-                prompt_token_ids=[0] * _compute_talker_prompt_ids_length(info, device=device),
-                additional_information=info,
-                multi_modal_data=None,
-                mm_processor_kwargs=None,
-            )
-        )
-
-    return talker_inputs
+    return talker_additional_info
 
 
 def talker2code2wav(
-    stage_list: list[Any],
-    engine_input_source: list[int],
-    prompt: OmniTokensPrompt | TextPrompt | None = None,
-    requires_multimodal_data: bool = False,
+    pooling_output: dict[str, Any],
+    request: OmniEngineCoreRequest,
 ) -> list[OmniTokensPrompt]:
     """
     Process talker outputs to create code2wav inputs.
-
-    Workflow:
-    1. Extract talker's codec code outputs (8-layer RVQ codes)
-    2. Flatten codes for code2wav input
-    3. Package for code2wav stage
+    1. Check if talker has generated first codebook (prefill complete)
+    2. Extract talker's codec code outputs
+    3. Flatten codes for code2wav input
+    4. Package for code2wav stage
 
     Args:
         stage_list: List of stage objects
@@ -143,41 +117,32 @@ def talker2code2wav(
 
     Returns:
         List of OmniTokensPrompt for code2wav stage
+
+    Note:
+        Returns empty list if codebook is not yet generated (prefill not complete)
     """
-    if not engine_input_source:
-        raise ValueError("engine_input_source cannot be empty")
+    talker_output = pooling_output
+    if "code_predictor_codes" not in talker_output:
+        return []
 
-    source_stage_id = engine_input_source[0]
-    if source_stage_id >= len(stage_list):
-        raise IndexError(f"Invalid stage_id: {source_stage_id}")
+    code_predictor_codes = talker_output["code_predictor_codes"]  # (num_code_groups, num_codes)
 
-    if stage_list[source_stage_id].engine_outputs is None:
-        raise RuntimeError(f"Stage {source_stage_id} has no outputs yet")
+    if code_predictor_codes is None:
+        return []
+    if isinstance(code_predictor_codes, torch.Tensor):
+        if code_predictor_codes.shape[0] == 0:
+            return []
+    elif hasattr(code_predictor_codes, "__len__"):
+        if len(code_predictor_codes) == 0:
+            return []
 
-    talker_outputs = stage_list[source_stage_id].engine_outputs
-    code2wav_inputs = []
+    codec_codes = (
+        code_predictor_codes.to(torch.long).transpose(0, 1).cpu().to(torch.long).reshape(-1).tolist()
+    )  # 16, seq_len
 
-    # Process each talker output
-    for i, talker_output in enumerate(talker_outputs):
-        output = talker_output.outputs[0]
-        seq_len = len(output.token_ids)
-        # Extract codec codes from talker output
-        # Expected shape: [8, seq_len] (8-layer RVQ codes)
-        codec_codes = (
-            output.multimodal_output["code_predictor_codes"][-seq_len:]
-            .to(torch.long)
-            .transpose(0, 1)
-            .cpu()
-            .to(torch.long)
-            .reshape(-1)
-            .tolist()
-        )  # 16, seq_len
-        code2wav_inputs.append(
-            OmniTokensPrompt(
-                prompt_token_ids=codec_codes,
-                multi_modal_data=None,
-                mm_processor_kwargs=None,
-            )
-        )
-
-    return code2wav_inputs
+    # code = torch.flatten(pooling_output["code_predictor_codes"]).detach().cpu()
+    code2wav_additional_info = {
+        "code_predictor_codes": codec_codes,
+        "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
+    }
+    return code2wav_additional_info

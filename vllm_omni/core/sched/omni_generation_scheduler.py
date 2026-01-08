@@ -1,5 +1,6 @@
 import time
 from collections import defaultdict
+import importlib
 
 from vllm.distributed.kv_events import KVEventBatch
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks
@@ -12,17 +13,20 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniNewRequestData
-from vllm_omni.outputs import OmniModelRunnerOutput
-from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
+from vllm_omni.distributed.omni_connectors.adapter import get_chunk_for_generation
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
+from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
+from vllm_omni.model_executor.stage_input_processors.qwen3_omni import talker2code2wav, thinker2talker
+from vllm_omni.outputs import OmniModelRunnerOutput
+
 
 class OmniGenerationScheduler(VLLMScheduler):
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         extra = {"shm_threshold": 65536, "stage_id": 2}
         connector_specs = ConnectorSpec(name="SharedMemoryConnector", extra=extra)
         self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
+        self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
     def schedule(self) -> SchedulerOutput:
         """Diffusion fast path:
@@ -46,9 +50,11 @@ class OmniGenerationScheduler(VLLMScheduler):
         # Temporary queue: preserve waiting order, do not disturb non-diffusion requests
         skipped_waiting_requests = create_request_queue(self.policy)
         req_index = 0
+
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
-            self.omni_connector.get_chunk(request)
+            # self.omni_connector.get_chunk(request)
+            get_chunk_for_generation(self.omni_connector, request)
             num_computed_tokens = request.num_computed_tokens
             required_tokens = max(getattr(request, "num_prompt_tokens", 0) - num_computed_tokens, 1)
             num_new_tokens = min(required_tokens, token_budget)
@@ -75,7 +81,8 @@ class OmniGenerationScheduler(VLLMScheduler):
         # independent of pooling_params)
         while self.waiting and token_budget > 0 and len(self.running) < self.max_num_running_reqs:
             request = self.waiting.peek_request()
-            self.omni_connector.get_chunk(request)
+            # self.omni_connector.get_chunk(request)
+            get_chunk_for_generation(self.omni_connector, request)
             # Uniformly treat as diffusion. A feature flag can be added later
             # via config or request tag.
 
@@ -258,7 +265,6 @@ class OmniGenerationScheduler(VLLMScheduler):
             new_logprobs = None
             new_token_ids = generated_token_ids
             kv_transfer_params = None
-            status_before_stop = request.status
             pooler_output = None
             if pooler_outputs:
                 pooler_output = pooler_outputs[req_index]

@@ -24,6 +24,7 @@ stage_args:
       max_num_batched_tokens: 64
       hf_config_name: thinker_config
       tensor_parallel_size: 2
+      custom_process_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.thinker2talker
     final_output: true
     final_output_type: text
     is_comprehension: true
@@ -55,8 +56,9 @@ stage_args:
       max_num_batched_tokens: 64
       distributed_executor_backend: "mp"
       hf_config_name: talker_config
+      custom_process_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.talker2code2wav
     engine_input_source: [0]
-    custom_process_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.thinker2talker
+    # custom_process_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.thinker2talker
     # final_output: true
     # final_output_type: text
     default_sampling_params:
@@ -87,7 +89,7 @@ stage_args:
       max_num_batched_tokens: 16
       hf_config_name: thinker_config
     engine_input_source: [1]
-    custom_process_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.talker2code2wav
+    # custom_process_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.talker2code2wav
     final_output: true
     final_output_type: audio
     default_sampling_params:
