@@ -303,7 +303,7 @@ class OmniDiffusionConfig:
     skip_time_steps: int = 15
 
     # Compilation
-    enforce_eager: bool = False
+    enable_torch_compile: bool = False
 
     # Enable sleep mode
     enable_sleep_mode: bool = False

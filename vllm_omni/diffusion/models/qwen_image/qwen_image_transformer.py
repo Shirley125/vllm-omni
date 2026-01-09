@@ -677,11 +677,6 @@ class QwenImageTransformer2DModel(CachedTransformer):
             The dimensions to use for the rotary positional embeddings.
     """
 
-    # the small and frequently-repeated block(s) of a model
-    # -- typically a transformer layer
-    # used for torch compile optimizations
-    _repeated_blocks = ["QwenImageTransformerBlock"]
-
     def __init__(
         self,
         od_config: OmniDiffusionConfig,

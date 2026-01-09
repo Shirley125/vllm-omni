@@ -344,8 +344,6 @@ class RopeEmbedder:
 
 
 class ZImageTransformer2DModel(nn.Module):
-    _repeated_blocks = ["ZImageTransformerBlock"]
-
     def __init__(
         self,
         all_patch_size=(2,),

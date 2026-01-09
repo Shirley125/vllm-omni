@@ -373,6 +373,13 @@ class AsyncOmni(OmniBase):
                         raise RuntimeError(result)  # Request Finished due to error
 
                     engine_outputs = _load(result, obj_key="engine_outputs", shm_key="engine_outputs_shm")
+<<<<<<< HEAD
+=======
+                    if isinstance(engine_outputs, list):
+                        engine_outputs = engine_outputs[0]
+                    finished = engine_outputs.finished
+
+>>>>>>> cddcc40... [BugFix] Fix stage engine outputs mismatch bug in online batching (#691)
                     # Mark last output time for this stage whenever we receive outputs
                     metrics.stage_last_ts[stage_id] = max(metrics.stage_last_ts[stage_id] or 0.0, time.time())
                     try:
@@ -432,7 +439,9 @@ class AsyncOmni(OmniBase):
                                 final_output_type=stage.final_output_type,
                                 request_output=engine_outputs,
                             )
-
+                if not isinstance(engine_outputs, list):
+                    engine_outputs = [engine_outputs]
+                stage.set_engine_outputs(engine_outputs)
                 # Forward to next stage if there is one
                 next_stage_id = stage_id + 1
                 if next_stage_id == final_stage_id_for_e2e and finished:
