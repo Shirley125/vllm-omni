@@ -225,6 +225,7 @@ def get_through_connector(connector, target_stage_id, stage_id, req_id, connecto
         payload_data = None
         if result:
             payload_data, size = result
+            logger.info(f"[Stage-{stage_id}] Received payload {payload_data}")
             if payload_data:
                 # TODO: custom validate the payload_data ?
                 if stage_id == 2:
@@ -276,7 +277,8 @@ def get_chunk_for_generation(connector, request):
 
     if payload_data.get("finished"):
         connector.finished_requests.add(request_id)
-
+    
+    # TODO: remove special handling for prompt token ids ?
     if chunk_id == 0:
         request.prompt_token_ids = payload_data.get("code_predictor_codes", [])
     else:
@@ -300,6 +302,7 @@ def put_chunk(connector, pooling_output, request, custom_process_input_func=None
     connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
     payload_data = None
 
+    # TODO: add default process_input_func to handle the payload_data ?
     if custom_process_input_func:
         try:
             payload_data = custom_process_input_func(
@@ -319,4 +322,4 @@ def put_chunk(connector, pooling_output, request, custom_process_input_func=None
 
         if success:
             connector.put_requests[request_id] += 1
-            logger.info(f"[Stage-{stage_id}] Sent chunk {chunk_id} for request {connector_put_key}")
+            logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")

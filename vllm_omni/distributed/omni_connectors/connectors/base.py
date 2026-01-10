@@ -36,7 +36,6 @@ class OmniConnectorBase(ABC):
             from_stage: Source stage identifier
             to_stage: Destination stage identifier
             get_key: Unique request identifier
-            metadata: Optional transport-specific metadata from the put operation
 
         Returns:
             Tuple of (Python object, serialized byte size) if found, None otherwise

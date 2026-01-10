@@ -84,6 +84,9 @@ def thinker2talker(
         "tts_bos_embed": thinker_output.get("tts_bos_embed")[0].detach().cpu(),
         "tts_eos_embed": thinker_output.get("tts_eos_embed")[0].detach().cpu(),
         "tts_pad_embed": thinker_output.get("tts_pad_embed")[0].detach().cpu(),
+        # "tts_bos_embed": thinker_output.get("tts_bos_embed").detach().cpu(),
+        # "tts_eos_embed": thinker_output.get("tts_eos_embed").detach().cpu(),
+        # "tts_pad_embed": thinker_output.get("tts_pad_embed").detach().cpu(),
         "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
     }
 

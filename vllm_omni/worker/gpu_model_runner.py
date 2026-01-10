@@ -731,6 +731,7 @@ class OmniGPUModelRunner(GPUModelRunner):
                     s, e = start_offset, start_offset + sched_tokens
                     # only consider to store data into update dict.
                     hidden_states_slice = hidden_states[s:e]
+                    logger.info(f"process_additional_information_updates: hidden_states_slice: {hidden_states_slice}, shape {hidden_states_slice.shape}, \n req_infos: {req_infos}")
                     update_dict = self.model.postprocess(hidden_states_slice, **req_infos)
                     self._merge_additional_information_update(req_id, update_dict)
         except Exception as e:
@@ -912,7 +913,7 @@ class OmniGPUModelRunner(GPUModelRunner):
                 # Try to get additional_information from multiple sources
                 req_infos = self._get_additional_information(scheduler_output, req_id)
                 req_infos_keys = list(req_infos.keys()) if isinstance(req_infos, dict) else None
-                logger.info(f"req_id: {req_id}, req_infos keys: {req_infos_keys}")
+                logger.info(f"req_id: {req_id}, req_infos keys: {req_infos_keys}, req_infos: {req_infos}")
                 start_offset = int(self.query_start_loc.cpu[req_index])
                 sched_tokens = int(num_scheduled_tokens_np[req_index])
                 s, e = start_offset, start_offset + sched_tokens
@@ -949,7 +950,7 @@ class OmniGPUModelRunner(GPUModelRunner):
                             req_input_ids, req_embeds, last_talker_hidden, text_step
                         )
                         update_dict["code_predictor_codes"] = code_predictor_codes
-
+                        logger.info(f"talker_mtp: update_dict {update_dict}, code_predictor_codes shape: {code_predictor_codes.shape}")
                 # TODO(Peiqi): the merge stage could move out from the critical path
                 self._merge_additional_information_update(req_id, update_dict)
 
