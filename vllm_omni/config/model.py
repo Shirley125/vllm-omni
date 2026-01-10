@@ -52,6 +52,7 @@ class OmniModelConfig(ModelConfig):
 
     Attributes:
         stage_id: Identifier for the stage in a multi-stage pipeline (default: 0)
+        async_chunk: If set to True, perform async chunk
         model_stage: Stage type identifier, e.g., "thinker" or "talker"
             (default: "thinker")
         model_arch: Model architecture name

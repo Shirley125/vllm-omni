@@ -40,6 +40,7 @@ class OmniEngineArgs(EngineArgs):
             inputs from previous stages 
             If None, default processing is used.
         stage_connector_spec: Extra configuration for stage connector
+        async_chunk: If set to True, perform async chunk
     """
 
     stage_id: int = 0
