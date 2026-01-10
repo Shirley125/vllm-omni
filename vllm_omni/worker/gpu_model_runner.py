@@ -715,6 +715,7 @@ class OmniGPUModelRunner(GPUModelRunner):
         hidden_states: torch.Tensor,
         multimodal_outputs: object,
         num_scheduled_tokens_np: np.ndarray,
+        scheduler_output: SchedulerOutput,
     ) -> None:
         """Process model-provided per-request additional_information updates and merge into request state."""
         try:
@@ -722,15 +723,13 @@ class OmniGPUModelRunner(GPUModelRunner):
             # TODO(Peiqi): do we have a more elegant way to do this?
             if hasattr(self.model, "has_postprocess") and self.model.has_postprocess:
                 for req_index, req_id in enumerate(self.input_batch.req_ids):
-                    req_state = self.requests.get(req_id)
-                    req_infos = (
-                        getattr(req_state, "additional_information_cpu", None) if req_state is not None else None
-                    )
+                    req_infos = self._get_additional_information(scheduler_output, req_id)
                     start_offset = int(self.query_start_loc.cpu[req_index])
                     sched_tokens = int(num_scheduled_tokens_np[req_index])
                     s, e = start_offset, start_offset + sched_tokens
                     # only consider to store data into update dict.
                     hidden_states_slice = hidden_states[s:e]
+                    logger.info(f"process_additional_information_updates: hidden_states_slice: {hidden_states_slice}, shape {hidden_states_slice.shape}, \n req_infos: {req_infos}")
                     update_dict = self.model.postprocess(hidden_states_slice, **req_infos)
                     self._merge_additional_information_update(req_id, update_dict)
         except Exception as e:
@@ -782,10 +781,12 @@ class OmniGPUModelRunner(GPUModelRunner):
                 if not isinstance(req_infos, dict):
                     req_infos = None
 
-        if req_infos is None:
+        if req_infos is None or req_infos.get("last_talker_hidden", None) is None:
             req_state = self.requests.get(req_id)
             if req_state is not None:
-                req_infos = getattr(req_state, "additional_information_cpu", None)
+                additional_information_cpu = getattr(req_state, "additional_information_cpu", None)
+                req_infos["last_talker_hidden"] = additional_information_cpu.get("last_talker_hidden", None)
+                req_infos["num_processed_thinker_tokens"] = additional_information_cpu.get("num_processed_thinker_tokens", 0)
                 if not isinstance(req_infos, dict):
                     req_infos = None
 
@@ -912,7 +913,7 @@ class OmniGPUModelRunner(GPUModelRunner):
                 # Try to get additional_information from multiple sources
                 req_infos = self._get_additional_information(scheduler_output, req_id)
                 req_infos_keys = list(req_infos.keys()) if isinstance(req_infos, dict) else None
-                logger.info(f"req_id: {req_id}, req_infos keys: {req_infos_keys}")
+                logger.info(f"req_id: {req_id}, req_infos keys: {req_infos_keys}, req_infos: {req_infos}")
                 start_offset = int(self.query_start_loc.cpu[req_index])
                 sched_tokens = int(num_scheduled_tokens_np[req_index])
                 s, e = start_offset, start_offset + sched_tokens
@@ -949,7 +950,7 @@ class OmniGPUModelRunner(GPUModelRunner):
                             req_input_ids, req_embeds, last_talker_hidden, text_step
                         )
                         update_dict["code_predictor_codes"] = code_predictor_codes
-
+                        logger.info(f"talker_mtp: update_dict {update_dict}, code_predictor_codes shape: {code_predictor_codes.shape}")
                 # TODO(Peiqi): the merge stage could move out from the critical path
                 self._merge_additional_information_update(req_id, update_dict)
 

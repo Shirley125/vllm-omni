@@ -104,7 +104,8 @@ class GPUARModelRunner(OmniGPUModelRunner):
                 num_scheduled_tokens_np = np.array(tokens, dtype=np.int32)
                 max_num_scheduled_tokens = int(num_scheduled_tokens_np.max())
                 num_tokens_unpadded = scheduler_output.total_num_scheduled_tokens
-
+                
+                logger.info(f"execute_model tokens: {tokens}")
                 logits_indices, spec_decode_metadata = self._prepare_inputs(
                     scheduler_output,
                     num_scheduled_tokens_np,
@@ -193,10 +194,11 @@ class GPUARModelRunner(OmniGPUModelRunner):
                 # Common case.
                 hidden_states = model_output
                 aux_hidden_states = None
+                logger.info(f"execute_model 0 hidden_states: {hidden_states}")
 
             multimodal_outputs = model_output.multimodal_outputs
             hidden_states = model_output.text_hidden_states
-
+            logger.info(f"execute_model 1 hidden_states: {hidden_states}, shape {hidden_states.shape}")
             if multimodal_outputs is not None:
                 keys_or_type = (
                     list(multimodal_outputs.keys())
@@ -221,8 +223,30 @@ class GPUARModelRunner(OmniGPUModelRunner):
                     )
                     output.kv_connector_output = kv_connector_output
                     return output
-
+                
+                # TODO: need to check talker's prepare_inputs logic
+                # if chunk size = 64, talker's hidden states shape = (64, 1024), 
+                # but text_hidden_states shape = (24, 1024)   ???? 
+                num_hidden_tokens = hidden_states.shape[0]
+                if logits_indices.max().item() >= num_hidden_tokens:
+                    logger.warning(
+                        f"logits_indices ({logits_indices}) out of bounds for hidden_states shape {hidden_states.shape}. "
+                        f"Adjusting to relative indices."
+                    )
+                    if len(logits_indices) == 1 and num_scheduled_tokens_np.shape[0] == 1:
+                        # Single request: use last token
+                        logits_indices_relative = torch.tensor([num_hidden_tokens - 1], device=logits_indices.device, dtype=logits_indices.dtype)
+                    else:
+                        # Multiple requests: num_scheduled_tokens_cumsum - 1
+                        cumsum_tokens = torch.cumsum(torch.from_numpy(num_scheduled_tokens_np).to(logits_indices.device), dim=0)
+                        logits_indices_relative = cumsum_tokens - 1
+                        logits_indices_relative = logits_indices_relative.clamp(min=0, max=num_hidden_tokens - 1)
+                    logits_indices = logits_indices_relative
+                    logger.info(f"Adjusted logits_indices to relative: {logits_indices}")
+                
+                logger.info(f"execute_model: hidden_states shape {hidden_states.shape}, logits_indices: {logits_indices}")
                 sample_hidden_states = hidden_states[logits_indices]
+                logger.info(f"sample_hidden_states shape {sample_hidden_states.shape}")
                 logits = self.model.compute_logits(sample_hidden_states)
             else:
                 assert not self.is_pooling_model
@@ -238,6 +262,21 @@ class GPUARModelRunner(OmniGPUModelRunner):
                     )
                     logits = None
                 else:
+                    # Apply same fix for broadcast_pp_output path
+                    num_hidden_tokens = hidden_states.shape[0]
+                    if logits_indices.max().item() >= num_hidden_tokens:
+                        logger.warning(
+                            f"logits_indices ({logits_indices}) out of bounds for hidden_states shape {hidden_states.shape}. "
+                            f"Adjusting to relative indices."
+                        )
+                        if len(logits_indices) == 1 and num_scheduled_tokens_np.shape[0] == 1:
+                            logits_indices_rel = torch.tensor([num_hidden_tokens - 1], device=logits_indices.device, dtype=logits_indices.dtype)
+                        else:
+                            cumsum_tokens = torch.cumsum(torch.from_numpy(num_scheduled_tokens_np).to(logits_indices.device), dim=0)
+                            logits_indices_rel = cumsum_tokens - 1
+                            logits_indices_rel = logits_indices_rel.clamp(min=0, max=num_hidden_tokens - 1)
+                        logits_indices = logits_indices_rel
+                        logger.info(f"Adjusted logits_indices to relative: {logits_indices}")
                     sample_hidden_states = hidden_states[logits_indices]
                     logits = self.model.compute_logits(sample_hidden_states)
 
@@ -383,7 +422,7 @@ class GPUARModelRunner(OmniGPUModelRunner):
                 dtype=np.int32,
             )
 
-        self._process_additional_information_updates(hidden_states, multimodal_outputs, num_scheduled_tokens_np)
+        self._process_additional_information_updates(hidden_states, multimodal_outputs, num_scheduled_tokens_np, scheduler_output)
 
         pooler_output: list[dict[str, object]] = []
         for rid in req_ids_output_copy:

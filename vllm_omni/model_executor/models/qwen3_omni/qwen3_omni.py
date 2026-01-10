@@ -639,7 +639,7 @@ class Qwen3OmniMoeForConditionalGeneration(
             )
 
         update_dict["mtp_inputs"] = last_talker_hidden, text_step
-
+        logger.info(f"talker_preprocess: update_dict {update_dict}, last_talker_hidden shape: {last_talker_hidden.shape}, text_step shape: {text_step.shape}")
         return input_ids, input_embeds, update_dict
 
     def talker_mtp(
@@ -800,7 +800,7 @@ class Qwen3OmniMoeForConditionalGeneration(
                     update_dict["tts_pad_embed_projected"] = pad_proj.detach().to("cpu").contiguous()
             except Exception:
                 pass
-
+        logger.info(f"talker_preprocess_prefill: update_dict {update_dict}, req_input_ids shape: {req_input_ids.shape}, req_embeds shape: {req_embeds.shape}")
         return req_input_ids, req_embeds, update_dict
 
     def _thinker_to_talker_prefill(
@@ -878,7 +878,7 @@ class Qwen3OmniMoeForConditionalGeneration(
         for i in range(len(im_start_indexes) - 1):
             # Segment boundaries in full sequence coordinates
             im_start_index_full = im_start_indexes[i].item()
-            segment_end_index_full = im_start_indexes[i + 1].item()
+            segment_end_index_full = im_start_indexes[i + 1].item() + chunk_offset
 
             # Skip segments that don't overlap with current chunk
             if segment_end_index_full <= chunk_start or im_start_index_full >= chunk_end:
