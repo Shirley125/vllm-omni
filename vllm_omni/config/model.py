@@ -1,3 +1,4 @@
+from dataclasses import field
 import warnings
 from importlib.util import find_spec
 from typing import Any
@@ -58,6 +59,8 @@ class OmniModelConfig(ModelConfig):
         engine_output_type: Optional output type specification for the engine.
             Used to route outputs to appropriate processors (e.g., "image",
             "audio", "latents"). If None, output type is inferred.
+        stage_connector_name: Stage connector name
+        stage_connector_extra: Extra configuration for stage connector
 
     Example:
         >>> config = OmniModelConfig(
@@ -68,11 +71,14 @@ class OmniModelConfig(ModelConfig):
     """
 
     stage_id: int = 0
+    async_chunk: bool = False
     model_stage: str = "thinker"
     model_arch: str = "Qwen2_5OmniForConditionalGeneration"
     engine_output_type: str | None = None
     hf_config_name: str | None = None
     custom_process_input_func: str | None = None
+    stage_connector_name: str = "SharedMemoryConnector"
+    stage_connector_extra: dict[str, Any] = field(default_factory=dict)
 
     @property
     def registry(self):

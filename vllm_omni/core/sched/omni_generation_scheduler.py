@@ -23,9 +23,11 @@ from vllm_omni.outputs import OmniModelRunnerOutput
 class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        extra = {"shm_threshold": 65536, "stage_id": 2}
-        connector_specs = ConnectorSpec(name="SharedMemoryConnector", extra=extra)
-        self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
+        model_config = self.vllm_config.model_config
+        if model_config.async_chunk:
+            connector_specs = ConnectorSpec(name=model_config.stage_connector_name,
+                                            extra=model_config.stage_connector_extra)
+            self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
     def schedule(self) -> SchedulerOutput:
@@ -52,7 +54,8 @@ class OmniGenerationScheduler(VLLMScheduler):
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
-            self.omni_connector.get_chunk(request)
+            if self.omni_connector is not None:
+                self.omni_connector.get_chunk(request)
             num_computed_tokens = request.num_computed_tokens
             required_tokens = max(len(request.prompt_token_ids) - num_computed_tokens, 1)
             num_new_tokens = min(required_tokens, token_budget)
@@ -79,7 +82,8 @@ class OmniGenerationScheduler(VLLMScheduler):
         # independent of pooling_params)
         while self.waiting and token_budget > 0 and len(self.running) < self.max_num_running_reqs:
             request = self.waiting.peek_request()
-            get_chunk_for_generation(self.omni_connector, request)
+            if self.omni_connector is not None:
+                get_chunk_for_generation(self.omni_connector, request)
             # Uniformly treat as diffusion. A feature flag can be added later
             # via config or request tag.
 

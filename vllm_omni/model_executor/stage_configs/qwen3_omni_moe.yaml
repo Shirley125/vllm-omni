@@ -4,6 +4,7 @@
 # Stage 2: Code2Wav (8-layer RVQ codes → audio waveform)
 
 # The following config has been verified on 2x H100-80G GPUs.
+async_chunk: true
 stage_args:
   - stage_id: 0
     stage_type: llm  # Use llm stage type to launch OmniLLM
