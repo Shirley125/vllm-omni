@@ -194,7 +194,6 @@ def get_chunk(connector, scheduler_output):
         payload_data = get_through_connector(connector, target_stage_id, stage_id, req_id, connector_get_key)
         if payload_data:
             new_req_data.additional_information = payload_data
-            # self.additional_information[req_id] = payload_data
 
     # Handle cached/running requests
     cached_reqs = scheduler_output.scheduled_cached_reqs
@@ -234,11 +233,10 @@ def get_through_connector(connector, target_stage_id, stage_id, req_id, connecto
                             f"[Stage-{stage_id}] Received invalid token IDs for request {req_id}. Waiting..."
                         )
                         continue
-
-                # logger.info(f"recved payload_data: {payload_data}")
-                connector.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
+                else:
+                    connector.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
                 connector.get_requests[req_id] += 1
-                logger.info(f"[Stage-{stage_id}] Received one chunk for request {req_id}")
+                logger.info(f"[Stage-{stage_id}] Received one chunk for request {connector_get_key}")
                 break
         time.sleep(1)
     return payload_data
@@ -246,9 +244,9 @@ def get_through_connector(connector, target_stage_id, stage_id, req_id, connecto
 
 def validate_talker_output(payload_data):
     """Validate that we received proper token IDs"""
-    talker_output_ids = payload_data.get("talker_output_ids", [])
-    if talker_output_ids and len(talker_output_ids) > 0:
-        token_count = len(talker_output_ids)
+    code_predictor_codes = payload_data.get("code_predictor_codes", [])
+    if code_predictor_codes and len(code_predictor_codes) > 0:
+        token_count = len(code_predictor_codes)
         if token_count % 16 == 0 or token_count > 100:
             return True
     return False
@@ -278,14 +276,11 @@ def get_chunk_for_generation(connector, request):
 
     if payload_data.get("finished"):
         connector.finished_requests.add(request_id)
-    connector.get_requests[request_id] += 1
-    # request.prompt_token_ids = payload_data.get("code_predictor_codes", []).tolist()
-    logger.info(f"[Stage-{stage_id}] Received one chunk for request {connector_get_key}")
 
     if chunk_id == 0:
-        request.prompt_token_ids = payload_data.get("code_predictor_codes", []).tolist()
+        request.prompt_token_ids = payload_data.get("code_predictor_codes", [])
     else:
-        request.prompt_token_ids += payload_data.get("code_predictor_codes", []).tolist()
+        request.prompt_token_ids += payload_data.get("code_predictor_codes", [])
 
 
 def put_chunk(connector, pooling_output, request, custom_process_input_func=None):

@@ -40,7 +40,7 @@ class OmniARScheduler(VLLMScheduler):
             connector_specs = ConnectorSpec(name="SharedMemoryConnector", extra=extra)
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
-        
+
         if hasattr(self.vllm_config.model_config, "custom_process_input_func"):
             custom_process_input_func = self.vllm_config.model_config.custom_process_input_func
             if custom_process_input_func:
@@ -51,8 +51,6 @@ class OmniARScheduler(VLLMScheduler):
                 self.custom_process_input_func = None
         else:
             self.custom_process_input_func = None
-        
-        print(f"custom_process_input_func: {self.custom_process_input_func}, stage_id: {self.stage_id}")
 
     # Ensure scheduled_new_reqs carry omni-specific payloads
     # (e.g., additional_information)

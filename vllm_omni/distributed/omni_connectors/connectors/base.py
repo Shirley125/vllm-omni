@@ -66,23 +66,3 @@ class OmniConnectorBase(ABC):
         from ..utils.serialization import OmniSerializer
 
         return OmniSerializer.deserialize(data)
-
-    def put_chunk(self, scheduler_output, output_data) -> None:
-        """Store a chunk of scheduler output.
-
-        Args:
-            scheduler_output: Partial scheduler output dictionary
-            output_data: Partial output data dictionary
-        """
-        pass
-
-    def get_chunk(self, scheduler_output) -> dict[str, Any] | None:
-        """Retrieve a chunk of scheduler output.
-
-        Args:
-            scheduler_output: Partial scheduler output dictionary
-
-        Returns:
-            Partial output data dictionary if found, None otherwise
-        """
-        pass

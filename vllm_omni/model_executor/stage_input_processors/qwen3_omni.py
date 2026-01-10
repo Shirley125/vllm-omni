@@ -86,14 +86,6 @@ def thinker2talker(
         "tts_pad_embed": thinker_output.get("tts_pad_embed")[0].detach().cpu(),
         "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
     }
-    #     OmniTokensPrompt(
-    #     prompt_token_ids=[0] * _compute_talker_prompt_ids_length(info),
-    #     additional_information=info,
-    #     multi_modal_data=None,
-    #     mm_processor_kwargs=None,
-    # )
-    # )
-    # print(f"talker_inputs: {talker_inputs}")
 
     return talker_additional_info
 

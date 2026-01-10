@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from vllm_omni.distributed.omni_connectors.connectors.base import OmniConnectorBase
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
+from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 
 _OMNI_CONNECTOR_AGENT: OmniConnectorBase | None = None
 
@@ -23,10 +24,6 @@ def ensure_omni_transfer_initialized(stage_id: int, device) -> None:
     global _OMNI_CONNECTOR_AGENT
 
     if _OMNI_CONNECTOR_AGENT is None:
-        # _OMNI_CONNECTOR_AGENT = OmniConnectorFactory.create_connector(
-        #     spec=vllm_config.connector_spec)
-        from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
-
         extra = {"shm_threshold_bytes": 65536, "stage_id": stage_id, "device": device}
         connector_spec = ConnectorSpec(
             name="SharedMemoryConnector",

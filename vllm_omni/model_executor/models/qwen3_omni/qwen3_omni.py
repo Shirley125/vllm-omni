@@ -741,31 +741,14 @@ class Qwen3OmniMoeForConditionalGeneration(
         total_thinker_tokens = thinker_sequences.shape[0]
         current_chunk_size = input_ids.shape[0]
 
-        #### =====================================
-        # logger.info(f"Before slicing - thinker_sequence_embeds: {thinker_sequence_embeds.shape}")
-        # logger.info(f"Before slicing - thinker_hidden_states: {thinker_hidden_states.shape}")
-        # logger.info(f"Before slicing - ids_chatml: {ids_chatml.shape}")
-        # logger.info(f"Before slicing - thinker_sequences: {thinker_sequences.shape}")
-        # logger.info(f"Before slicing - current_chunk_size: {current_chunk_size}")
-        # logger.info(f"Before slicing - num_processed_thinker_tokens: {num_processed_thinker_tokens}")
-        # logger.info(f"Before slicing - total_thinker_tokens: {total_thinker_tokens}")
-        # logger.info(f"Before slicing - input_ids.shape: {input_ids.shape}")
-
         chunk_offset = num_processed_thinker_tokens
         chunk_size = min(current_chunk_size, total_thinker_tokens)
 
         thinker_embed_chunk = thinker_sequence_embeds[:chunk_size]
         thinker_hidden_chunk = thinker_hidden_states[:chunk_size]
         ids_chatml_chunk = ids_chatml[:chunk_size]
-        #### =====================================
 
         thinker_sequences_chunk = thinker_sequences[:chunk_size]
-
-        # logger.info(f"thinker_embed_chunk: {thinker_embed_chunk.shape}")
-        # logger.info(f"thinker_hidden_chunk: {thinker_hidden_chunk.shape}")
-        # logger.info(f"ids_chatml_chunk: {ids_chatml_chunk.shape}")
-        # logger.info(f"thinker_sequences_chunk: {thinker_sequences_chunk.shape}")
-        # logger.info(f"chunk_start: {chunk_offset}, chunk_end: {chunk_offset+chunk_size}")
 
         # Process only the current chunk
         speaker_id = self._get_text_spk_token_id(voice_type)

@@ -44,7 +44,6 @@ class OmniGenerationScheduler(VLLMScheduler):
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
         scheduled_running_reqs: list[Request] = []
-        scheduled_running_reqs: list[Request] = []
         scheduled_spec_decode_tokens: dict[str, list[int]] = {}
         scheduled_encoder_inputs: dict[str, list[int]] = {}
 
@@ -80,7 +79,6 @@ class OmniGenerationScheduler(VLLMScheduler):
         # independent of pooling_params)
         while self.waiting and token_budget > 0 and len(self.running) < self.max_num_running_reqs:
             request = self.waiting.peek_request()
-            # self.omni_connector.get_chunk(request)
             get_chunk_for_generation(self.omni_connector, request)
             # Uniformly treat as diffusion. A feature flag can be added later
             # via config or request tag.
@@ -88,8 +86,6 @@ class OmniGenerationScheduler(VLLMScheduler):
             # Allocate all input tokens for the request in one shot
             # (allocate 1 placeholder if zero)
             required_tokens = max(len(request.prompt_token_ids), 1)
-            num_new_tokens = min(required_tokens, token_budget)
-            required_tokens = max(getattr(request, "num_prompt_tokens", 0), 1)
             num_new_tokens = min(required_tokens, token_budget)
             new_blocks = self.kv_cache_manager.allocate_slots(
                 request,
@@ -147,7 +143,6 @@ class OmniGenerationScheduler(VLLMScheduler):
             ]
         # No running/resumed reqs scheduled in our fast path
         cached_reqs_data = self._make_cached_request_data(
-            running_reqs=scheduled_running_reqs,
             running_reqs=scheduled_running_reqs,
             resumed_reqs=[],
             num_scheduled_tokens=num_scheduled_tokens,
@@ -271,7 +266,6 @@ class OmniGenerationScheduler(VLLMScheduler):
             if pooler_outputs:
                 pooler_output = pooler_outputs[req_index]
 
-            request.num_computed_tokens += num_tokens_scheduled
             # Diffusion request: completes in one step; mark finished and free resources
             if request.num_computed_tokens > request.num_prompt_tokens or request.status == RequestStatus.FINISHED_STOPPED:
                 request.status = RequestStatus.FINISHED_STOPPED
