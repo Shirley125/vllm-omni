@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import Qwen3OmniMoeTextConfig
 from vllm.engine.arg_utils import EngineArgs
@@ -39,6 +39,8 @@ class OmniEngineArgs(EngineArgs):
         custom_process_input_func: Optional path to a custom function for processing
             inputs from previous stages 
             If None, default processing is used.
+        stage_connector_spec: Extra configuration for stage connector
+        async_chunk: If set to True, perform async chunk
     """
 
     stage_id: int = 0
@@ -47,6 +49,8 @@ class OmniEngineArgs(EngineArgs):
     engine_output_type: str | None = None
     hf_config_name: str | None = None
     custom_process_input_func: str | None = None
+    stage_connector_spec: dict[str, any] = field(default_factory=dict)
+    async_chunk: bool = False
 
     def draw_hf_text_config(self, config_dict: dict) -> Qwen3OmniMoeTextConfig:
         # transformers' get_text_config method is used to get the text config from thinker_config.
@@ -95,9 +99,14 @@ class OmniEngineArgs(EngineArgs):
 
         # Add the new omni-specific fields
         config_dict["stage_id"] = self.stage_id
+        config_dict["async_chunk"] = self.async_chunk
         config_dict["model_stage"] = self.model_stage
         config_dict["model_arch"] = self.model_arch
         config_dict["engine_output_type"] = self.engine_output_type
+        config_dict["stage_connector_name"] = self.stage_connector_spec.get("name", "SharedMemoryConnector")
+        config_dict["stage_connector_extra"] = self.stage_connector_spec.get("extra", {})
+        config_dict["stage_connector_extra"]["stage_id"] = self.stage_id
+
         config_dict["hf_config_name"] = self.hf_config_name
         config_dict["custom_process_input_func"] = self.custom_process_input_func
         if self.hf_config_name is not None:
@@ -125,6 +134,7 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
             "audio", "latents"). If None, output type is inferred.
         custom_process_input_func: Optional path to a custom function for processing
             inputs from previous stages.If None, default processing is used.
+        stage_connector_spec: Extra configuration for stage connector
     """
 
     stage_id: int = 0
@@ -133,6 +143,8 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
     engine_output_type: str | None = None
     hf_config_name: str | None = None
     custom_process_input_func: str | None = None
+    stage_connector_spec: dict[str, any] = field(default_factory=dict)
+    async_chunk: bool = False
 
     def draw_hf_text_config(self, config_dict: dict) -> Qwen3OmniMoeTextConfig:
         # transformers' get_text_config method is used to get the text config from thinker_config.
@@ -171,9 +183,14 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
 
         # Add the new omni-specific fields
         config_dict["stage_id"] = self.stage_id
+        config_dict["async_chunk"] = self.async_chunk
         config_dict["model_stage"] = self.model_stage
         config_dict["model_arch"] = self.model_arch
         config_dict["engine_output_type"] = self.engine_output_type
+        config_dict["stage_connector_name"] = self.stage_connector_spec.get("name", "SharedMemoryConnector")
+        config_dict["stage_connector_extra"] = self.stage_connector_spec.get("extra", {})
+        config_dict["stage_connector_extra"]["stage_id"] = self.stage_id
+
         config_dict["hf_config_name"] = self.hf_config_name
         config_dict["custom_process_input_func"] = self.custom_process_input_func
         if self.hf_config_name is not None:

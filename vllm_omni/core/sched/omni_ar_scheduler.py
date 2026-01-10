@@ -31,13 +31,11 @@ class OmniARScheduler(VLLMScheduler):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if self.vllm_config.parallel_config.tensor_parallel_size > 1:
-            extra = {"shm_threshold": 65536, "stage_id": 0}
-            connector_specs = ConnectorSpec(name="SharedMemoryConnector", extra=extra)
-            self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
-        else:
-            extra = {"shm_threshold": 65536, "stage_id": 1}
-            connector_specs = ConnectorSpec(name="SharedMemoryConnector", extra=extra)
+        model_config = self.vllm_config.model_config
+        self.omni_connector = None
+        if model_config.async_chunk:
+            connector_specs = ConnectorSpec(name=model_config.stage_connector_name,
+                                            extra=model_config.stage_connector_extra)
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
@@ -83,7 +81,8 @@ class OmniARScheduler(VLLMScheduler):
                 new_list.append(omni_nr)
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
-            get_chunk(self.omni_connector, scheduler_output)
+            if self.omni_connector is not None:
+                get_chunk(self.omni_connector, scheduler_output)
         except Exception:
             # If anything goes wrong, leave the original output unchanged
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
@@ -220,8 +219,8 @@ class OmniARScheduler(VLLMScheduler):
                     )
                 )
                 custom_process_input_func = self.custom_process_input_func
-            
-                put_chunk(self.omni_connector, pooler_output, request, custom_process_input_func)
+                if self.omni_connector is not None:
+                    put_chunk(self.omni_connector, pooler_output, request, custom_process_input_func)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
