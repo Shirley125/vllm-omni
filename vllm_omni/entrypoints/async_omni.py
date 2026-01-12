@@ -371,14 +371,103 @@ class AsyncOmni(OmniBase):
                 f"[{self._name}] Entering scheduling loop: stages={num_stages}, final_stage={final_stage_id_for_e2e}"
             )
             all_stages_finished = {stage_id: False for stage_id in range(final_stage_id_for_e2e + 1)}
+            if self.async_chunk:
+                while not all(all_stages_finished.values()):
+                    for stage_id, stage in enumerate(self.stage_list[: final_stage_id_for_e2e + 1]):
+                        if all_stages_finished[stage_id]:
+                            continue
+                        result = await req_state.stage_queues[stage_id].get()
+                        logger.info(f"[{self._name}] Received result from stage-{stage_id}: {result}")
 
-            while not all(all_stages_finished.values()):
-                for stage_id, stage in enumerate(self.stage_list[: final_stage_id_for_e2e + 1]):
-                    if all_stages_finished[stage_id]:
-                        continue
-                    result = await req_state.stage_queues[stage_id].get()
-                    logger.info(f"[{self._name}] Received result from stage-{stage_id}: {result}")
+                        req_id = result.get("request_id")
+                        if "error" in result:
+                            logger.error(
+                                f"[{self._name}] Stage {stage_id} error on request {req_id}: {result['error']}",
+                            )
+                            raise RuntimeError(result)  # Request Finished due to error
 
+                        engine_outputs = _load(result, obj_key="engine_outputs", shm_key="engine_outputs_shm")
+                        if isinstance(engine_outputs, list):
+                            engine_outputs = engine_outputs[0]
+                        all_stages_finished[stage_id] = engine_outputs.finished
+
+                        # Mark last output time for this stage whenever we receive outputs
+                        metrics.stage_last_ts[stage_id] = max(metrics.stage_last_ts[stage_id] or 0.0, time.time())
+                        try:
+                            _m = asdict(result.get("metrics"))
+                            if _m is not None and all_stages_finished[stage_id]:
+                                metrics.on_stage_metrics(stage_id, req_id, _m)
+                        except Exception as e:
+                            logger.exception(
+                                f"[{self._name}] Failed to process metrics for stage {stage_id}, req {req_id}: {e}",
+                            )
+                        logger.info(
+                            f"[{self._name}] Stage-{stage_id} completed request {req_id}; forwarding or finalizing",
+                        )
+
+                        if getattr(stage, "final_output", False):
+                            logger.info(
+                                f"[{self._name}] Request {req_id} finalized at stage-{stage_id}",
+                            )
+
+                            # End-to-end timing and time-per-token for final output
+                            # (only once per request at the designated final stage)
+
+                            # Handle diffusion outputs that already contain images
+                            if stage.final_output_type == "image":
+                                images = []
+                                if isinstance(engine_outputs, OmniRequestOutput) and engine_outputs.images:
+                                    images = engine_outputs.images
+                                elif hasattr(engine_outputs, "images") and engine_outputs.images:
+                                    images = engine_outputs.images
+                                yield OmniRequestOutput(
+                                    stage_id=stage_id,
+                                    final_output_type=stage.final_output_type,
+                                    request_output=engine_outputs,
+                                    images=images,
+                                )
+                            else:
+                                yield OmniRequestOutput(
+                                    stage_id=stage_id,
+                                    final_output_type=stage.final_output_type,
+                                    request_output=engine_outputs,
+                                )
+                    try:
+                        rid_key = str(req_id)
+                        if stage_id == final_stage_id_for_e2e and rid_key not in metrics.e2e_done:
+                            metrics.on_finalize_request(
+                                stage_id,
+                                req_id,
+                                _req_start_ts.get(req_id, _wall_start_ts),
+                            )
+                    except Exception as e:
+                        logger.exception(
+                            f"[{self._name}] Finalize request handling error for req "
+                            f"{req_id} at stage {stage_id}: {e}",
+                        )
+
+                logger.info(f"[{self._name}] All requests completed")
+                # Summarize and print stats
+                try:
+                    summary = metrics.build_and_log_summary(final_stage_id_for_e2e)
+                    logger.info("[Summary] %s", pformat(summary, sort_dicts=False))
+                except Exception as e:
+                    logger.exception(f"[{self._name}] Failed to build/log summary: {e}")
+                finally:
+                    self.request_states.pop(request_id, None)
+        else:
+            for stage_id, stage in enumerate(self.stage_list[: final_stage_id_for_e2e + 1]):
+                finished = False
+                while not finished:
+                    result = await req_state.queue.get()
+                    assert stage_id == req_state.stage_id
+
+                    req_id = result.get("request_id")
+                    if "error" in result:
+                        logger.error(
+                            f"[{self._name}] Stage {stage_id} error on request {req_id}: {result['error']}",
+                        )
+                        raise RuntimeError(result)  # Request Finished due to error
                     req_id = result.get("request_id")
                     if "error" in result:
                         logger.error(
@@ -389,29 +478,42 @@ class AsyncOmni(OmniBase):
                     engine_outputs = _load(result, obj_key="engine_outputs", shm_key="engine_outputs_shm")
                     if isinstance(engine_outputs, list):
                         engine_outputs = engine_outputs[0]
-                    all_stages_finished[stage_id] = engine_outputs.finished
+                    finished = engine_outputs.finished
 
                     # Mark last output time for this stage whenever we receive outputs
                     metrics.stage_last_ts[stage_id] = max(metrics.stage_last_ts[stage_id] or 0.0, time.time())
                     try:
                         _m = asdict(result.get("metrics"))
-                        if _m is not None and all_stages_finished[stage_id]:
+                        if _m is not None and finished:
                             metrics.on_stage_metrics(stage_id, req_id, _m)
                     except Exception as e:
                         logger.exception(
                             f"[{self._name}] Failed to process metrics for stage {stage_id}, req {req_id}: {e}",
                         )
-                    logger.info(
+                    logger.debug(
                         f"[{self._name}] Stage-{stage_id} completed request {req_id}; forwarding or finalizing",
                     )
 
                     if getattr(stage, "final_output", False):
-                        logger.info(
+                        logger.debug(
                             f"[{self._name}] Request {req_id} finalized at stage-{stage_id}",
                         )
 
                         # End-to-end timing and time-per-token for final output
                         # (only once per request at the designated final stage)
+                        try:
+                            rid_key = str(req_id)
+                            if stage_id == final_stage_id_for_e2e and rid_key not in metrics.e2e_done and finished:
+                                metrics.on_finalize_request(
+                                    stage_id,
+                                    req_id,
+                                    _req_start_ts.get(req_id, _wall_start_ts),
+                                )
+                        except Exception as e:
+                            logger.exception(
+                                f"[{self._name}] Finalize request handling error for req "
+                                f"{req_id} at stage {stage_id}: {e}",
+                            )
 
                         # Handle diffusion outputs that already contain images
                         if stage.final_output_type == "image":
@@ -432,21 +534,51 @@ class AsyncOmni(OmniBase):
                                 final_output_type=stage.final_output_type,
                                 request_output=engine_outputs,
                             )
-                try:
-                    rid_key = str(req_id)
-                    if stage_id == final_stage_id_for_e2e and rid_key not in metrics.e2e_done:
-                        metrics.on_finalize_request(
-                            stage_id,
-                            req_id,
-                            _req_start_ts.get(req_id, _wall_start_ts),
-                        )
-                except Exception as e:
-                    logger.exception(
-                        f"[{self._name}] Finalize request handling error for req "
-                        f"{req_id} at stage {stage_id}: {e}",
-                    )
+                if not isinstance(engine_outputs, list):
+                    engine_outputs = [engine_outputs]
+                stage.set_engine_outputs(engine_outputs)
+                # Forward to next stage if there is one
+                next_stage_id = stage_id + 1
+                if next_stage_id <= final_stage_id_for_e2e and finished:
+                    next_stage: OmniStage = self.stage_list[next_stage_id]
+                    next_inputs = next_stage.process_engine_inputs(self.stage_list, prompt)
+                    sp_next: SamplingParams = sampling_params_list[next_stage_id]
 
-            logger.info(f"[{self._name}] All requests completed")
+                    # Check if we have a connector for this edge
+                    connector_key = (str(stage_id), str(next_stage_id))
+                    connector = self.connectors.get(connector_key)
+
+                    sent_via_connector = False
+                    if connector:
+                        sent_via_connector = try_send_via_connector(
+                            connector=connector,
+                            stage_id=stage_id,
+                            next_stage_id=next_stage_id,
+                            req_id=req_id,
+                            next_inputs=next_inputs,
+                            sampling_params=sp_next,
+                            original_prompt=prompt,
+                            next_stage_queue_submit_fn=self.stage_list[next_stage_id].submit,
+                            metrics=metrics,
+                        )
+
+                    if not sent_via_connector:
+                        # Fallback logic removed as we now enforce connector usage.
+                        # If no connector is found or send fails, we log an error and raise,
+                        # because continuing would cause the request to be silently dropped
+                        # and the orchestrator to hang waiting for completion.
+                        error_msg = (
+                            f"[{self._name}] Failed to send request {req_id} to stage-{next_stage_id} via connector. "
+                            "Configure a connector for this edge or inspect connector logs for details."
+                        )
+                        logger.error(error_msg)
+                        raise RuntimeError(error_msg)
+                    logger.debug(f"[{self._name}] Forwarded request {req_id} to stage-{next_stage_id}")
+                else:
+                    logger.debug(f"[{self._name}] Request {req_id} fully completed")
+
+            logger.debug(f"[{self._name}] All requests completed")
+
             # Summarize and print stats
             try:
                 summary = metrics.build_and_log_summary(final_stage_id_for_e2e)

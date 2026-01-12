@@ -911,9 +911,14 @@ class OmniGPUModelRunner(GPUModelRunner):
             # collect additional_information (tensor/list) for prefill portion only
             for req_index, req_id in enumerate(self.input_batch.req_ids):
                 # Try to get additional_information from multiple sources
-                req_infos = self._get_additional_information(scheduler_output, req_id)
-                req_infos_keys = list(req_infos.keys()) if isinstance(req_infos, dict) else None
-                logger.info(f"req_id: {req_id}, req_infos keys: {req_infos_keys}, req_infos: {req_infos}")
+                if self.vllm_config.model_config.async_chunk:
+                    req_infos = self._get_additional_information(scheduler_output, req_id)
+                    req_infos_keys = list(req_infos.keys()) if isinstance(req_infos, dict) else None
+                    logger.info(f"req_id: {req_id}, req_infos keys: {req_infos_keys}")
+                else:
+                    req_state = self.requests.get(req_id)
+                    req_infos = getattr(req_state, "additional_information_cpu",
+                                        None) if req_state is not None else None
                 start_offset = int(self.query_start_loc.cpu[req_index])
                 sched_tokens = int(num_scheduled_tokens_np[req_index])
                 s, e = start_offset, start_offset + sched_tokens
