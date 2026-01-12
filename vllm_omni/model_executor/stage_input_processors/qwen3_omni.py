@@ -3,9 +3,11 @@
 # Copyright 2025 The Qwen team.
 """Stage input processor for Qwen3 Omni MoE: Thinker → Talker transition."""
 
-from typing import Any
+from typing import Any, Dict, List, Union
 
 import torch
+from vllm.inputs.data import TextPrompt
+from vllm.platforms import current_platform
 
 from vllm_omni.engine import OmniEngineCoreRequest
 from vllm_omni.inputs.data import OmniTokensPrompt
@@ -47,10 +49,10 @@ def _compute_talker_prompt_ids_length(info, device: torch.device | str = "cuda")
     return sum_user_len + assistant_len
 
 
-def thinker2talker(
+def _thinker2talker_pooling(
     pooling_output: dict[str, Any],
     request: OmniEngineCoreRequest,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """
     Process thinker outputs to create talker inputs.
     1. thinker's text generation outputs (token IDs + hidden states)
@@ -93,56 +95,7 @@ def thinker2talker(
     return talker_additional_info
 
 
-def talker2code2wav(
-    pooling_output: dict[str, Any],
-    request: OmniEngineCoreRequest,
-) -> list[OmniTokensPrompt]:
-    """
-    Process talker outputs to create code2wav inputs.
-    1. Check if talker has generated first codebook (prefill complete)
-    2. Extract talker's codec code outputs
-    3. Flatten codes for code2wav input
-    4. Package for code2wav stage
-
-    Args:
-        stage_list: List of stage objects
-        engine_input_source: Source stage IDs (typically [1] for talker)
-        prompt: Original prompt data
-        requires_multimodal_data: Whether multimodal data is required
-
-    Returns:
-        List of OmniTokensPrompt for code2wav stage
-
-    Note:
-        Returns empty list if codebook is not yet generated (prefill not complete)
-    """
-    talker_output = pooling_output
-    if "code_predictor_codes" not in talker_output:
-        return []
-
-    code_predictor_codes = talker_output["code_predictor_codes"]  # (num_code_groups, num_codes)
-
-    if code_predictor_codes is None:
-        return []
-    if isinstance(code_predictor_codes, torch.Tensor):
-        if code_predictor_codes.shape[0] == 0:
-            return []
-    elif hasattr(code_predictor_codes, "__len__"):
-        if len(code_predictor_codes) == 0:
-            return []
-
-    codec_codes = (
-        code_predictor_codes.to(torch.long).transpose(0, 1).cpu().to(torch.long).reshape(-1).tolist()
-    )  # 16, seq_len
-
-    # code = torch.flatten(pooling_output["code_predictor_codes"]).detach().cpu()
-    code2wav_additional_info = {
-        "code_predictor_codes": codec_codes,
-        "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
-    }
-    return code2wav_additional_info
-
-def thinker2talker(
+def _thinker2talker_stage(
     stage_list: list[Any],
     engine_input_source: list[int],
     prompt: OmniTokensPrompt | TextPrompt | None = None,
@@ -215,7 +168,76 @@ def thinker2talker(
     return talker_inputs
 
 
-def talker2code2wav(
+def thinker2talker(
+    arg1: Union[Dict[str, Any], List[Any]],
+    arg2: Union[OmniEngineCoreRequest, List[int]],
+    prompt: OmniTokensPrompt | TextPrompt | None = None,
+    requires_multimodal_data: bool = False,
+) -> Union[Dict[str, Any], List[OmniTokensPrompt]]:
+    """
+    Dispatcher for thinker2talker processing.
+    
+    Supports two signatures:
+    1. thinker2talker(pooling_output: dict, request: OmniEngineCoreRequest) -> dict
+    2. thinker2talker(stage_list: list, engine_input_source: list, prompt=..., ...) -> list[OmniTokensPrompt]
+    """
+    if isinstance(arg1, dict) and (hasattr(arg2, "all_token_ids") or isinstance(arg2, OmniEngineCoreRequest)):
+        return _thinker2talker_pooling(arg1, arg2)
+    elif isinstance(arg1, list) and isinstance(arg2, list):
+        return _thinker2talker_stage(arg1, arg2, prompt, requires_multimodal_data)
+    else:
+        raise ValueError(f"Invalid arguments for thinker2talker: {type(arg1)}, {type(arg2)}")
+
+
+def _flatten_codes(codes: torch.Tensor) -> List[int]:
+    """Helper to flatten codec codes."""
+    return (
+        codes.to(torch.long)
+        .transpose(0, 1)
+        .cpu()
+        .to(torch.long)
+        .reshape(-1)
+        .tolist()
+    )
+
+
+def _talker2code2wav_pooling(
+    pooling_output: dict[str, Any],
+    request: OmniEngineCoreRequest,
+) -> dict[str, Any]:
+    """
+    Process talker outputs to create code2wav inputs.
+    1. Check if talker has generated first codebook (prefill complete)
+    2. Extract talker's codec code outputs
+    3. Flatten codes for code2wav input
+    4. Package for code2wav stage
+    """
+    talker_output = pooling_output
+    if "code_predictor_codes" not in talker_output:
+        return {}
+
+    code_predictor_codes = talker_output["code_predictor_codes"]  # (num_code_groups, num_codes)
+
+    if code_predictor_codes is None:
+        return {}
+    if isinstance(code_predictor_codes, torch.Tensor):
+        if code_predictor_codes.shape[0] == 0:
+            return {}
+    elif hasattr(code_predictor_codes, "__len__"):
+        if len(code_predictor_codes) == 0:
+            return {}
+
+    codec_codes = _flatten_codes(code_predictor_codes)
+
+    # code = torch.flatten(pooling_output["code_predictor_codes"]).detach().cpu()
+    code2wav_additional_info = {
+        "code_predictor_codes": codec_codes,
+        "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
+    }
+    return code2wav_additional_info
+
+
+def _talker2code2wav_stage(
     stage_list: list[Any],
     engine_input_source: list[int],
     prompt: OmniTokensPrompt | TextPrompt | None = None,
@@ -257,15 +279,10 @@ def talker2code2wav(
         seq_len = len(output.token_ids)
         # Extract codec codes from talker output
         # Expected shape: [8, seq_len] (8-layer RVQ codes)
-        codec_codes = (
-            output.multimodal_output["code_predictor_codes"][-seq_len:]
-            .to(torch.long)
-            .transpose(0, 1)
-            .cpu()
-            .to(torch.long)
-            .reshape(-1)
-            .tolist()
-        )  # 16, seq_len
+        codes = output.multimodal_output["code_predictor_codes"][-seq_len:]
+        
+        codec_codes = _flatten_codes(codes)
+        
         code2wav_inputs.append(
             OmniTokensPrompt(
                 prompt_token_ids=codec_codes,
@@ -275,3 +292,24 @@ def talker2code2wav(
         )
 
     return code2wav_inputs
+
+
+def talker2code2wav(
+    arg1: Union[Dict[str, Any], List[Any]],
+    arg2: Union[OmniEngineCoreRequest, List[int]],
+    prompt: OmniTokensPrompt | TextPrompt | None = None,
+    requires_multimodal_data: bool = False,
+) -> Union[Dict[str, Any], List[OmniTokensPrompt]]:
+    """
+    Dispatcher for talker2code2wav processing.
+
+    Supports two signatures:
+    1. talker2code2wav(pooling_output: dict, request: OmniEngineCoreRequest) -> dict
+    2. talker2code2wav(stage_list: list, engine_input_source: list, ...) -> list[OmniTokensPrompt]
+    """
+    if isinstance(arg1, dict) and (hasattr(arg2, "all_token_ids") or isinstance(arg2, OmniEngineCoreRequest)):
+         return _talker2code2wav_pooling(arg1, arg2)
+    elif isinstance(arg1, list) and isinstance(arg2, list):
+         return _talker2code2wav_stage(arg1, arg2, prompt, requires_multimodal_data)
+    else:
+        raise ValueError(f"Invalid arguments for talker2code2wav: {type(arg1)}, {type(arg2)}")
