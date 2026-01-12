@@ -169,8 +169,8 @@ def _thinker2talker_stage(
 
 
 def thinker2talker(
-    arg1: Union[Dict[str, Any], List[Any]],
-    arg2: Union[OmniEngineCoreRequest, List[int]],
+    output_or_stages: Union[Dict[str, Any], List[Any]],
+    request_or_input_source: Union[OmniEngineCoreRequest, List[int]],
     prompt: OmniTokensPrompt | TextPrompt | None = None,
     requires_multimodal_data: bool = False,
 ) -> Union[Dict[str, Any], List[OmniTokensPrompt]]:
@@ -181,12 +181,12 @@ def thinker2talker(
     1. thinker2talker(pooling_output: dict, request: OmniEngineCoreRequest) -> dict
     2. thinker2talker(stage_list: list, engine_input_source: list, prompt=..., ...) -> list[OmniTokensPrompt]
     """
-    if isinstance(arg1, dict) and (hasattr(arg2, "all_token_ids") or isinstance(arg2, OmniEngineCoreRequest)):
-        return _thinker2talker_pooling(arg1, arg2)
-    elif isinstance(arg1, list) and isinstance(arg2, list):
-        return _thinker2talker_stage(arg1, arg2, prompt, requires_multimodal_data)
+    if isinstance(output_or_stages, dict) and (hasattr(request_or_input_source, "all_token_ids") or isinstance(request_or_input_source, OmniEngineCoreRequest)):
+        return _thinker2talker_pooling(output_or_stages, request_or_input_source)
+    elif isinstance(output_or_stages, list) and isinstance(request_or_input_source, list):
+        return _thinker2talker_stage(output_or_stages, request_or_input_source, prompt, requires_multimodal_data)
     else:
-        raise ValueError(f"Invalid arguments for thinker2talker: {type(arg1)}, {type(arg2)}")
+        raise ValueError(f"Invalid arguments for thinker2talker: {type(output_or_stages)}, {type(request_or_input_source)}")
 
 
 def _flatten_codes(codes: torch.Tensor) -> List[int]:
@@ -295,8 +295,8 @@ def _talker2code2wav_stage(
 
 
 def talker2code2wav(
-    arg1: Union[Dict[str, Any], List[Any]],
-    arg2: Union[OmniEngineCoreRequest, List[int]],
+    output_or_stages: Union[Dict[str, Any], List[Any]],
+    request_or_input_source: Union[OmniEngineCoreRequest, List[int]],
     prompt: OmniTokensPrompt | TextPrompt | None = None,
     requires_multimodal_data: bool = False,
 ) -> Union[Dict[str, Any], List[OmniTokensPrompt]]:
@@ -307,9 +307,9 @@ def talker2code2wav(
     1. talker2code2wav(pooling_output: dict, request: OmniEngineCoreRequest) -> dict
     2. talker2code2wav(stage_list: list, engine_input_source: list, ...) -> list[OmniTokensPrompt]
     """
-    if isinstance(arg1, dict) and (hasattr(arg2, "all_token_ids") or isinstance(arg2, OmniEngineCoreRequest)):
-         return _talker2code2wav_pooling(arg1, arg2)
-    elif isinstance(arg1, list) and isinstance(arg2, list):
-         return _talker2code2wav_stage(arg1, arg2, prompt, requires_multimodal_data)
+    if isinstance(output_or_stages, dict) and (hasattr(request_or_input_source, "all_token_ids") or isinstance(request_or_input_source, OmniEngineCoreRequest)):
+         return _talker2code2wav_pooling(output_or_stages, request_or_input_source)
+    elif isinstance(output_or_stages, list) and isinstance(request_or_input_source, list):
+         return _talker2code2wav_stage(output_or_stages, request_or_input_source, prompt, requires_multimodal_data)
     else:
-        raise ValueError(f"Invalid arguments for talker2code2wav: {type(arg1)}, {type(arg2)}")
+        raise ValueError(f"Invalid arguments for talker2code2wav: {type(output_or_stages)}, {type(request_or_input_source)}")
