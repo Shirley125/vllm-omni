@@ -49,6 +49,7 @@ class OmniEngineArgs(EngineArgs):
     engine_output_type: str | None = None
     hf_config_name: str | None = None
     custom_process_input_func: str | None = None
+    custom_process_input_func_async_chunk: str | None = None
     stage_connector_spec: dict[str, any] = field(default_factory=dict)
     async_chunk: bool = False
 
@@ -109,6 +110,7 @@ class OmniEngineArgs(EngineArgs):
 
         config_dict["hf_config_name"] = self.hf_config_name
         config_dict["custom_process_input_func"] = self.custom_process_input_func
+        config_dict["custom_process_input_func_async_chunk"] = self.custom_process_input_func_async_chunk
         if self.hf_config_name is not None:
             config_dict["hf_text_config"] = self.draw_hf_text_config(config_dict)
         # Create and return the OmniModelConfig instance
@@ -143,6 +145,7 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
     engine_output_type: str | None = None
     hf_config_name: str | None = None
     custom_process_input_func: str | None = None
+    custom_process_input_func_async_chunk: str | None = None
     stage_connector_spec: dict[str, any] = field(default_factory=dict)
     async_chunk: bool = False
 
@@ -193,6 +196,7 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
 
         config_dict["hf_config_name"] = self.hf_config_name
         config_dict["custom_process_input_func"] = self.custom_process_input_func
+        config_dict["custom_process_input_func_async_chunk"] = self.custom_process_input_func_async_chunk
         if self.hf_config_name is not None:
             config_dict["hf_text_config"] = self.draw_hf_text_config(config_dict)
         # Create and return the OmniModelConfig instance
