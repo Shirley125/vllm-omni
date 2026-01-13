@@ -422,7 +422,7 @@ class GPUARModelRunner(OmniGPUModelRunner):
                 dtype=np.int32,
             )
 
-        self._process_additional_information_updates(hidden_states, multimodal_outputs, num_scheduled_tokens_np, scheduler_output)
+        self._process_additional_information_updates(hidden_states, multimodal_outputs, num_scheduled_tokens_np)
 
         pooler_output: list[dict[str, object]] = []
         for rid in req_ids_output_copy:

@@ -417,9 +417,9 @@ class OmniStage:
 
         else:
             engine_input_source = self.engine_input_source
+            logger.debug(f"cwj omni stage custom_process_input_func = {custom_process_input_func}")
             return self.custom_process_input_func(
-                stage_list, engine_input_source, prompt, self.requires_multimodal_data
-            )
+                stage_list, engine_input_source)
 
 
 def _stage_worker(

@@ -24,6 +24,7 @@ class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         model_config = self.vllm_config.model_config
+        self.omni_connector = None
         if model_config.async_chunk:
             connector_specs = ConnectorSpec(name=model_config.stage_connector_name,
                                             extra=model_config.stage_connector_extra)

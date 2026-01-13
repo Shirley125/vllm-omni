@@ -37,18 +37,20 @@ class OmniARScheduler(VLLMScheduler):
             connector_specs = ConnectorSpec(name=model_config.stage_connector_name,
                                             extra=model_config.stage_connector_extra)
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
-        self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
-        if hasattr(self.vllm_config.model_config, "custom_process_input_func"):
-            custom_process_input_func = self.vllm_config.model_config.custom_process_input_func
-            if custom_process_input_func:
-                module_path, func_name = custom_process_input_func.rsplit(".", 1)
-                module = importlib.import_module(module_path)
-                self.custom_process_input_func = getattr(module, func_name)
+            if hasattr(self.vllm_config.model_config, "custom_process_input_func_async_chunk"):
+                custom_process_input_func = self.vllm_config.model_config.custom_process_input_func
+                if custom_process_input_func:
+                    module_path, func_name = custom_process_input_func.rsplit(".", 1)
+                    module = importlib.import_module(module_path)
+                    self.custom_process_input_func = getattr(module, func_name)
+                else:
+                    self.custom_process_input_func = None
             else:
                 self.custom_process_input_func = None
-        else:
-            self.custom_process_input_func = None
+
+
+    self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
     # Ensure scheduled_new_reqs carry omni-specific payloads
     # (e.g., additional_information)
@@ -218,8 +220,8 @@ class OmniARScheduler(VLLMScheduler):
                         num_nans_in_logits=request.num_nans_in_logits,
                     )
                 )
-                custom_process_input_func = self.custom_process_input_func
                 if self.omni_connector is not None:
+                    custom_process_input_func = self.custom_process_input_func
                     put_chunk(self.omni_connector, pooler_output, request, custom_process_input_func)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.

@@ -70,7 +70,7 @@ class SharedMemoryConnector(OmniConnectorBase):
             logger.error(f"SharedMemoryConnector put failed for req {put_key}: {e}")
             return False, 0, None
 
-    def get(self, from_stage: str, to_stage: str, get_key: str) -> tuple[Any, int] | None:
+    def get(self, from_stage: str, to_stage: str, get_key: str, metadata=None) -> tuple[Any, int] | None:
         from multiprocessing import shared_memory as shm_pkg
 
         # Wait for shared memory to be available (with retry logic)

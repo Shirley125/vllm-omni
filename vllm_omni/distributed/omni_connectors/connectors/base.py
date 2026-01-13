@@ -29,13 +29,14 @@ class OmniConnectorBase(ABC):
         pass
 
     @abstractmethod
-    def get(self, from_stage: str, to_stage: str, get_key: str) -> tuple[Any, int] | None:
+    def get(self, from_stage: str, to_stage: str, get_key: str, metadata=None) -> tuple[Any, int] | None:
         """Retrieve Python object and payload size (bytes).
 
         Args:
             from_stage: Source stage identifier
             to_stage: Destination stage identifier
             get_key: Unique request identifier
+            metadata: Optional transpor-specific metadata from the put operation
 
         Returns:
             Tuple of (Python object, serialized byte size) if found, None otherwise

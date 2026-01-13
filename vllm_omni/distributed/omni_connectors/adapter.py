@@ -199,8 +199,8 @@ def get_chunk(connector, scheduler_output):
 
     # Handle cached/running requests
     cached_reqs = scheduler_output.scheduled_cached_reqs
-    if not hasattr(cached_reqs, "additional_informations"):
-        cached_reqs.additional_informations = {}
+    if not hasattr(cached_reqs, "additional_information"):
+        cached_reqs.additional_information = {}
 
     for i, req_id in enumerate(cached_reqs.req_ids):
         if req_id in connector.finished_requests:
@@ -209,7 +209,7 @@ def get_chunk(connector, scheduler_output):
         connector_get_key = f"{req_id}_{target_stage_id}_{chunk_id}"
         payload_data = get_through_connector(connector, target_stage_id, stage_id, req_id, connector_get_key)
         if payload_data:
-            cached_reqs.additional_informations[req_id] = payload_data
+            cached_reqs.additional_information[req_id] = payload_data
             if payload_data.get("finished"):
                 connector.finished_requests.add(req_id)
 

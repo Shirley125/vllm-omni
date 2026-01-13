@@ -878,7 +878,7 @@ class Qwen3OmniMoeForConditionalGeneration(
         for i in range(len(im_start_indexes) - 1):
             # Segment boundaries in full sequence coordinates
             im_start_index_full = im_start_indexes[i].item()
-            segment_end_index_full = im_start_indexes[i + 1].item() + chunk_offset
+            segment_end_index_full = im_start_indexes[i + 1].item()
 
             # Skip segments that don't overlap with current chunk
             if segment_end_index_full <= chunk_start or im_start_index_full >= chunk_end:
