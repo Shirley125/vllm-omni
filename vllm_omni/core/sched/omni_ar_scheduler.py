@@ -50,7 +50,7 @@ class OmniARScheduler(VLLMScheduler):
                 self.custom_process_input_func = None
 
 
-    self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
+        self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
     # Ensure scheduled_new_reqs carry omni-specific payloads
     # (e.g., additional_information)
