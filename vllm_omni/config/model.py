@@ -78,6 +78,7 @@ class OmniModelConfig(ModelConfig):
     engine_output_type: str | None = None
     hf_config_name: str | None = None
     custom_process_input_func: str | None = None
+    custom_process_input_func_async_chunk: str | None = None
     stage_connector_name: str = "SharedMemoryConnector"
     stage_connector_extra: dict[str, Any] = field(default_factory=dict)
 
