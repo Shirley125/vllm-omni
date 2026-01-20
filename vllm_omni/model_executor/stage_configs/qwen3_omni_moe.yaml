@@ -4,26 +4,28 @@
 # Stage 2: Code2Wav (8-layer RVQ codes → audio waveform)
 
 # The following config has been verified on 2x H100-80G GPUs.
+async_chunk: true
 stage_args:
   - stage_id: 0
     stage_type: llm  # Use llm stage type to launch OmniLLM
     runtime:
       devices: "0,1"
-      max_batch_size: 1
+      max_batch_size: 64
     engine_args:
       model_stage: thinker
       model_arch: Qwen3OmniMoeForConditionalGeneration
       worker_cls: vllm_omni.worker.gpu_ar_worker.GPUARWorker
       scheduler_cls: vllm_omni.core.sched.omni_ar_scheduler.OmniARScheduler
       gpu_memory_utilization: 0.6
-      enforce_eager: false
+      enforce_eager: true
       trust_remote_code: true
       engine_output_type: latent  # Output hidden states for talker
       distributed_executor_backend: "mp"
       enable_prefix_caching: false
-      max_num_batched_tokens: 32768
+      max_num_batched_tokens: 600
       hf_config_name: thinker_config
       tensor_parallel_size: 2
+      custom_process_next_stage_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.thinker2talker_async_chunk
     final_output: true
     final_output_type: text
     is_comprehension: true
@@ -40,21 +42,22 @@ stage_args:
     stage_type: llm  # Use llm stage type to launch OmniLLM
     runtime:
       devices: "1"
-      max_batch_size: 1
+      max_batch_size: 64
     engine_args:
       model_stage: talker
       model_arch: Qwen3OmniMoeForConditionalGeneration
       worker_cls: vllm_omni.worker.gpu_ar_worker.GPUARWorker
       scheduler_cls: vllm_omni.core.sched.omni_ar_scheduler.OmniARScheduler
       gpu_memory_utilization: 0.3
-      enforce_eager: false
+      enforce_eager: true
       trust_remote_code: true
       engine_output_type: latent  # Output codec codes for code2wav
       # tensor_parallel_size: 2
       enable_prefix_caching: false
-      max_num_batched_tokens: 32768
+      max_num_batched_tokens: 600
       distributed_executor_backend: "mp"
       hf_config_name: talker_config
+      custom_process_next_stage_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.talker2code2wav_async_chunk
     engine_input_source: [0]
     custom_process_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.thinker2talker
     # final_output: true

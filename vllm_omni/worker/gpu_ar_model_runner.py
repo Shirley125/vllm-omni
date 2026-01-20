@@ -196,7 +196,6 @@ class GPUARModelRunner(OmniGPUModelRunner):
 
             multimodal_outputs = model_output.multimodal_outputs
             hidden_states = model_output.text_hidden_states
-
             if multimodal_outputs is not None:
                 keys_or_type = (
                     list(multimodal_outputs.keys())
@@ -387,7 +386,9 @@ class GPUARModelRunner(OmniGPUModelRunner):
                 dtype=np.int32,
             )
 
-        self._process_additional_information_updates(hidden_states, multimodal_outputs, num_scheduled_tokens_np)
+        self._process_additional_information_updates(
+            hidden_states, multimodal_outputs, num_scheduled_tokens_np, scheduler_output
+        )
 
         pooler_output: list[dict[str, object]] = []
         for rid in req_ids_output_copy:

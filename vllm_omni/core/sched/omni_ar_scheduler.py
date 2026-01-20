@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from collections import defaultdict
 from time import time
 
@@ -14,6 +15,10 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
+from vllm_omni.distributed.omni_connectors.adapter import get_chunk, put_chunk
+from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
+from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
+
 
 class OmniARScheduler(VLLMScheduler):
     """
@@ -23,6 +28,31 @@ class OmniARScheduler(VLLMScheduler):
     non-autoregressive processing with additional fields and methods
     specific to vLLM-Omni.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        model_config = self.vllm_config.model_config
+        self.omni_connector = None
+        if model_config.async_chunk:
+            connector_specs = ConnectorSpec(
+                name=model_config.stage_connector_name, extra=model_config.stage_connector_extra
+            )
+            self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
+
+            if hasattr(self.vllm_config.model_config, "custom_process_next_stage_input_func"):
+                custom_process_next_stage_input_func = (
+                    self.vllm_config.model_config.custom_process_next_stage_input_func
+                )
+                if custom_process_next_stage_input_func:
+                    module_path, func_name = custom_process_next_stage_input_func.rsplit(".", 1)
+                    module = importlib.import_module(module_path)
+                    self.custom_process_next_stage_input_func = getattr(module, func_name)
+                else:
+                    self.custom_process_next_stage_input_func = None
+            else:
+                self.custom_process_next_stage_input_func = None
+
+        self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
     # Ensure scheduled_new_reqs carry omni-specific payloads
     # (e.g., additional_information)
@@ -55,6 +85,8 @@ class OmniARScheduler(VLLMScheduler):
                 new_list.append(omni_nr)
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
+            if self.omni_connector is not None:
+                get_chunk(self.omni_connector, scheduler_output)
         except Exception:
             # If anything goes wrong, leave the original output unchanged
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
@@ -190,6 +222,9 @@ class OmniARScheduler(VLLMScheduler):
                         num_nans_in_logits=request.num_nans_in_logits,
                     )
                 )
+                if self.omni_connector is not None:
+                    custom_process_next_stage_input_func = self.custom_process_next_stage_input_func
+                    put_chunk(self.omni_connector, pooler_output, request, custom_process_next_stage_input_func)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
