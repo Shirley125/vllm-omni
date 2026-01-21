@@ -1,5 +1,6 @@
 import sys
 
+from aenum import extend_enum
 from vllm.inputs.data import TokensPrompt as _OriginalTokensPrompt
 from vllm.model_executor.layers.rotary_embedding import (
     MRotaryEmbedding as _OriginalMRotaryEmbedding,
@@ -10,6 +11,7 @@ from vllm.v1.engine import EngineCoreRequest as _OriginalEngineCoreRequest
 from vllm.v1.request import Request as _OriginalRequest
 
 import vllm_omni.logger  # noqa: F401
+from vllm.v1.request import RequestStatus
 from vllm_omni.engine import OmniEngineCoreOutput, OmniEngineCoreOutputs, OmniEngineCoreRequest
 from vllm_omni.inputs.data import OmniTokensPrompt
 from vllm_omni.model_executor.layers.mrope import MRotaryEmbedding
@@ -33,6 +35,11 @@ for module_name, module in sys.modules.items():
     if hasattr(module, "EngineCoreRequest") and module.EngineCoreRequest == _OriginalEngineCoreRequest:
         module.EngineCoreRequest = OmniEngineCoreRequest
 
+# Extend RequestStatus enum with omni-specific statuses
+# CRITICAL: Value must be <= PREEMPTED (5) to NOT be treated as finished!
+# We use a negative value to be safe and avoid conflicts with vLLM's existing statuses.
+if not hasattr(RequestStatus, "WAITING_FOR_CHUNK"):
+    extend_enum(RequestStatus, "WAITING_FOR_CHUNK", -1)
 
 # Patch for vllm-ascend prefetch functions bug fix
 # Issue: The original functions access forward_context attributes like
