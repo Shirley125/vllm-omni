@@ -84,9 +84,14 @@ class OmniARScheduler(VLLMScheduler):
 
             running_snapshot = list(self.running)
             for request in running_snapshot:
+                if request.request_id in self.finished_load_chunk_reqs:
+                    request.is_fetching_chunk = False
+
                 if request.status != RequestStatus.WAITING_FOR_CHUNK:
-                    self.chunk_manager.get_chunk(request)
-                    request.status = RequestStatus.WAITING_FOR_CHUNK
+                    if not getattr(request, "is_fetching_chunk", False):
+                        self.chunk_manager.get_chunk(request)
+                        request.is_fetching_chunk = True
+                    continue
                 else:
                     if request.request_id in self.finished_load_chunk_reqs:
                         print(f"cwj running req additional info = {request.additional_information}")
