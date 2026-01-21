@@ -309,7 +309,7 @@ class OmniChunkManager:
         chunk_id = self.connector.put_requests[request_id]
         connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
         payload_data = None
-        logger.info(f"cwj put chunk key = {connector_put_key}")
+        logger.info(f"cwj put chunk key = {connector_put_key}, stage_id={stage_id}")
         if custom_process_input_func:
             try:
                 payload_data = custom_process_input_func(
@@ -324,8 +324,8 @@ class OmniChunkManager:
                 logger.warning(f"[Stage-{stage_id}] No payload data to send for request {request_id}")
                 return
             if stage_id == 0 and chunk_id == 0:
-                if connector.request_payload.get(request_id) is None:
-                    connector.request_payload[request_id] = payload_data
+                if self.connector.request_payload.get(request_id) is None:
+                    self.connector.request_payload[request_id] = payload_data
                     return
                 else:
                     save_payload = self.connector.request_payload.get(request_id)
