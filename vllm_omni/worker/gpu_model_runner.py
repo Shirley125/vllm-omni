@@ -701,7 +701,7 @@ class OmniGPUModelRunner(GPUModelRunner):
         # requests to process.
         # However, in DP settings, there may be cases when some DP ranks do
         # not have any requests to process, so they're executing dummy batches.
-        # In such cases, we still have to trigger EPLB to make sure
+        # Inx such cases, we still have to trigger EPLB to make sure
         # ranks execute the rearrangement in synchronization.
         if not skip_eplb:
             self.eplb_step(is_dummy=True, is_profile=is_profile)
