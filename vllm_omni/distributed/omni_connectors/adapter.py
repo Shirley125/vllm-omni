@@ -186,10 +186,17 @@ class OmniChunkManager:
         # Requests that have successfully retrieved a chunk
         self._finished_load_reqs = set()
 
+        # Requests that are waiting to be saved
+        self._pending_save_reqs = deque()
+        self._pending_save_req_ids = set()
+
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self.recv_loop, daemon=True)
         self.thread.start()
+
+        self.save_thread = threading.Thread(target=self.save_loop, daemon=True)
+        self.save_thread.start()
 
     def recv_loop(self):
         while not self.stop_event.is_set():
@@ -198,6 +205,10 @@ class OmniChunkManager:
                 pending_reqs_ids = list(self._pending_load_reqs.keys())
 
             for req_id in pending_reqs_ids:
+                with self.lock:
+                    if req_id in self._pending_save_req_ids:
+                        continue
+
                 logger.info(f"cwj recv loop req = {req_id}")
 
                 stage_id = self.connector.stage_id
@@ -250,6 +261,73 @@ class OmniChunkManager:
 
             time.sleep(0.001)
 
+    def save_loop(self):
+        while not self.stop_event.is_set():
+            task = None
+            with self.lock:
+                if self._pending_save_reqs:
+                    task = self._pending_save_reqs.popleft()
+            
+            if task:
+                pooling_output, request, custom_process_input_func = task
+                request_id = request.request_id
+
+                try:
+                    stage_id = self.connector.stage_id
+                    next_stage_id = stage_id + 1
+                    prompt_token_ids = request.prompt_token_ids
+                    self.connector.request_prompt_token_ids[request_id] = prompt_token_ids
+                    chunk_id = self.connector.put_requests[request_id]
+                    connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
+                    payload_data = None
+                    logger.info(f"cwj put chunk key = {connector_put_key}, stage_id={stage_id}")
+                    
+                    should_put = True
+                    if custom_process_input_func:
+                        try:
+                            payload_data = custom_process_input_func(
+                                pooling_output=pooling_output,
+                                request=request,
+                            )
+                            logger.info(f"cwj put chunk key = {connector_put_key} payload_data = {payload_data}")
+                        except Exception as e:
+                            logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
+
+                        if not payload_data:
+                            logger.warning(f"[Stage-{stage_id}] No payload data to send for request {request_id}")
+                            should_put = False
+                        elif stage_id == 0 and chunk_id == 0:
+                            if self.connector.request_payload.get(request_id) is None:
+                                self.connector.request_payload[request_id] = payload_data
+                                should_put = False
+                            else:
+                                save_payload = self.connector.request_payload.get(request_id)
+                                payload_data["thinker_embeddings"] = torch.cat(
+                                    (save_payload.get("thinker_embeddings"), payload_data.get("thinker_embeddings")), dim=0
+                                )
+                                payload_data["thinker_hidden_states"] = torch.cat(
+                                    (save_payload.get("thinker_hidden_states"), payload_data.get("thinker_hidden_states")), dim=0
+                                )
+                                logger.info(f"[Stage-{stage_id}] Merged embeddings and hidden states for request {request_id}")
+
+                    if should_put:
+                        success, size, metadata = self.connector.put(
+                            from_stage=str(stage_id), to_stage=str(next_stage_id), put_key=connector_put_key, data=payload_data
+                        )
+
+                        if success:
+                            self.connector.put_requests[request_id] += 1
+                            logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")
+                
+                except Exception as e:
+                    logger.error(f"[Stage-{stage_id}] Error in save_loop for request {request_id}: {e}")
+
+                with self.lock:
+                    if request_id in self._pending_save_req_ids:
+                        self._pending_save_req_ids.remove(request_id)
+            else:
+                time.sleep(0.001)
+
     def get_finished(self):
         with self.lock:
             finished_load = set(self._finished_load_reqs)
@@ -280,53 +358,13 @@ class OmniChunkManager:
 
 
     def put_chunk(self, pooling_output, request, custom_process_input_func=None):
-        """Store a chunk of pooling output.
+        """Store a chunk of pooling output asynchronously.
 
         Args:
             pooling_output: Partial pooling output dictionary
             request: Request object
             custom_process_input_func: Optional processing function
         """
-        stage_id = self.connector.stage_id
-        next_stage_id = stage_id + 1
-        request_id = request.request_id
-        prompt_token_ids = request.prompt_token_ids
-        self.connector.request_prompt_token_ids[request_id] = prompt_token_ids
-        chunk_id = self.connector.put_requests[request_id]
-        connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
-        payload_data = None
-        logger.info(f"cwj put chunk key = {connector_put_key}, stage_id={stage_id}")
-        if custom_process_input_func:
-            try:
-                payload_data = custom_process_input_func(
-                    pooling_output=pooling_output,
-                    request=request,
-                )
-                logger.info(f"cwj put chunk key = {connector_put_key} payload_data = {payload_data}")
-            except Exception as e:
-                logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
-
-            if not payload_data:
-                logger.warning(f"[Stage-{stage_id}] No payload data to send for request {request_id}")
-                return
-            if stage_id == 0 and chunk_id == 0:
-                if self.connector.request_payload.get(request_id) is None:
-                    self.connector.request_payload[request_id] = payload_data
-                    return
-                else:
-                    save_payload = self.connector.request_payload.get(request_id)
-                    payload_data["thinker_embeddings"] = torch.cat(
-                        (save_payload.get("thinker_embeddings"), payload_data.get("thinker_embeddings")), dim=0
-                    )
-                    payload_data["thinker_hidden_states"] = torch.cat(
-                        (save_payload.get("thinker_hidden_states"), payload_data.get("thinker_hidden_states")), dim=0
-                    )
-                    logger.info(f"[Stage-{stage_id}] Merged embeddings and hidden states for request {request_id}")
-
-            success, size, metadata = self.connector.put(
-                from_stage=str(stage_id), to_stage=str(next_stage_id), put_key=connector_put_key, data=payload_data
-            )
-
-            if success:
-                self.connector.put_requests[request_id] += 1
-                logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")
+        with self.lock:
+            self._pending_save_reqs.append((pooling_output, request, custom_process_input_func))
+            self._pending_save_req_ids.add(request.request_id)
