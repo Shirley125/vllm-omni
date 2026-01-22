@@ -370,11 +370,12 @@ class OmniChunkManager:
                     )
                     logger.info(f"[Stage-{stage_id}] Merged embeddings and hidden states for request {request_id}")
 
+
             if stage_id == 1:
                 # TODO: Make parameters configurable and optimize algorithms
                 chunk_size = left_context_size = 25
-                connector.code_prompt_token_ids[request_id].append(payload_data.get("code_predictor_codes", []))
-                length = len(connector.code_prompt_token_ids[request_id])
+                self.connector.code_prompt_token_ids[request_id].append(payload_data.get("code_predictor_codes", []))
+                length = len(self.connector.code_prompt_token_ids[request_id])
                 chunk_length = length % chunk_size
                 if chunk_length != 0 and not payload_data.get("finished"):
                     return
@@ -382,7 +383,7 @@ class OmniChunkManager:
                 context_length = chunk_length if chunk_length != 0 else chunk_size
                 end_index = min(length, left_context_size + context_length)
                 payload_data["code_predictor_codes"] = (
-                    torch.tensor(connector.code_prompt_token_ids[request_id][-end_index:])
+                    torch.tensor(self.connector.code_prompt_token_ids[request_id][-end_index:])
                         .transpose(0, 1)
                         .reshape(-1)
                         .tolist()
