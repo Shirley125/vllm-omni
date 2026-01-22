@@ -175,6 +175,7 @@ class OmniARScheduler(VLLMScheduler):
             for request in running_snapshot:
                 if request.status != RequestStatus.WAITING_FOR_CHUNK:
                     if request.request_id in self.omni_connector.finished_requests:
+                        # todo: clear omni_connector.finished_requests
                         continue
                     self.chunk_manager.get_chunk(request)
                     request.status = RequestStatus.WAITING_FOR_CHUNK
