@@ -228,14 +228,14 @@ class OmniChunkManager:
                                 self.connector.finished_requests.add(req_id)
                         else:
                             if payload_data.get("finished"):
-                                connector.finished_requests.add(request_id)
-                                request.status = RequestStatus.FINISHED_STOPPED
+                                self.connector.finished_requests.add(req_id)
+                                req.status = RequestStatus.FINISHED_STOPPED
 
                             # TODO: remove special handling for prompt token ids ?
                             if chunk_id == 0:
-                                request.prompt_token_ids = payload_data.get("code_predictor_codes", [])
+                                req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
                             else:
-                                request.prompt_token_ids += payload_data.get("code_predictor_codes", [])
+                                req.prompt_token_ids += payload_data.get("code_predictor_codes", [])
 
                         # Mark as finished for consumption
                         with self.lock:
@@ -265,33 +265,19 @@ class OmniChunkManager:
             dict[str, Any] | None: Pooling output dictionary or None if not found
         """
         stage_id = self.connector.stage_id
+
+        target_stage_id = stage_id - 1
+        chunk_id = self.connector.get_requests[request.request_id]
+        connector_get_key = f"{request.request_id}_{target_stage_id}_{chunk_id}"
+        logger.info(f"cwj get chunk key = {connector_get_key}, stage_id = {stage_id}")
+
         if stage_id == 0:
             return
         if not hasattr(request, "additional_information"):
             request.additional_information = None
-        logger.info(f"cwj get_chunk req_id = {request.request_id}")
         with self.lock:
             self._pending_load_reqs[request.request_id] = request
-        logger.info(f"cwj _pending_load_reqs = {self._pending_load_reqs.keys()}")
 
-    '''
-    def get_chunk_for_generation(self, request):
-        """Retrieve a chunk of pooling output (synchronous-like usage logic).
-
-        Args:
-            request: Request object
-
-        Returns:
-            dict[str, Any] | None: Pooling output dictionary or None if not found
-        """
-        stage_id = self.connector.stage_id
-        target_stage_id = stage_id - 1
-        request_id = request.request_id
-
-        if request_id in self.connector.finished_requests:
-            return
-        self.add_request(req)
-    '''
 
     def put_chunk(self, pooling_output, request, custom_process_input_func=None):
         """Store a chunk of pooling output.
@@ -344,60 +330,3 @@ class OmniChunkManager:
             if success:
                 self.connector.put_requests[request_id] += 1
                 logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")
-
-
-def get_chunk_for_generation(connector, request):
-    """Retrieve a chunk of pooling output.
-
-    Args:
-        request: Request object
-
-    Returns:
-        dict[str, Any] | None: Pooling output dictionary or None if not found
-    """
-    stage_id = connector.stage_id
-    target_stage_id = stage_id - 1
-    request_id = request.request_id
-
-    if request_id in connector.finished_requests:
-        return
-
-    chunk_id = connector.get_requests[request_id]
-    connector_get_key = f"{request_id}_{target_stage_id}_{chunk_id}"
-    payload_data = get_through_connector(connector, target_stage_id, stage_id, request_id, connector_get_key)
-    if not payload_data:
-        return
-
-    if payload_data.get("finished"):
-        connector.finished_requests.add(request_id)
-        request.status = RequestStatus.FINISHED_STOPPED
-
-    # TODO: remove special handling for prompt token ids ?
-    if chunk_id == 0:
-        request.prompt_token_ids = payload_data.get("code_predictor_codes", [])
-    else:
-        request.prompt_token_ids += payload_data.get("code_predictor_codes", [])
-
-def get_through_connector(connector, target_stage_id, stage_id, req_id, connector_get_key):
-    # Wait for data from previous stage
-    import time
-
-    # TODO: add correct check mechanism for the payload_data
-    max_wait = 300
-    for _ in range(max_wait):
-        result = connector.get(
-            from_stage=str(target_stage_id),
-            to_stage=str(stage_id),
-            get_key=connector_get_key,
-        )
-        payload_data = None
-        if result:
-            payload_data, size = result
-            logger.info(f"[Stage-{stage_id}] Received payload {payload_data}")
-            if payload_data:
-                connector.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
-                connector.get_requests[req_id] += 1
-                logger.info(f"[Stage-{stage_id}] Received one chunk for request {connector_get_key}")
-                break
-        time.sleep(1)
-    return payload_data

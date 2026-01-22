@@ -33,6 +33,7 @@ class OmniARScheduler(VLLMScheduler):
         super().__init__(*args, **kwargs)
         model_config = self.vllm_config.model_config
         self.omni_connector = None
+        self.chunk_manager = None
         if model_config.async_chunk:
             connector_specs = ConnectorSpec(
                 name=model_config.stage_connector_name, extra=model_config.stage_connector_extra
@@ -65,42 +66,34 @@ class OmniARScheduler(VLLMScheduler):
             self.finished_load_chunk_reqs = self.chunk_manager.get_finished()
             waiting_snapshot = list(self.waiting)
             for request in waiting_snapshot:
-                print(f"cwj waiting req = {request.request_id},request.status ={request.status}")
                 if request.status != RequestStatus.WAITING_FOR_CHUNK:
-                    print(f"cwj waiting req = {request.request_id} not waiting for chunk")
                     self.chunk_manager.get_chunk(request)
                     request.status = RequestStatus.WAITING_FOR_CHUNK
                 else:
-                    print(f"cwj waiting req = {request.request_id} waiting for chunk, "
-                          f"self.finished_load_chunk_reqs = {self.finished_load_chunk_reqs}")
                     if request.request_id in self.finished_load_chunk_reqs:
-                        print(f"cwj waiting req additional info = {request.additional_information}")
                         request.status = RequestStatus.WAITING
                         continue
                 self.waiting.remove(request)
                 self.waiting_for_chunk_waiting_requests.append(request)
-                print(f"cwj waiting remove request = {request.request_id}, "
-                      f"self.waiting_for_chunk_waiting_requests = {self.waiting_for_chunk_waiting_requests}")
 
             running_snapshot = list(self.running)
             for request in running_snapshot:
                 if request.status != RequestStatus.WAITING_FOR_CHUNK:
+                    if request.request_id in self.omni_connector.finished_requests:
+                        continue
                     self.chunk_manager.get_chunk(request)
                     request.status = RequestStatus.WAITING_FOR_CHUNK
                 else:
                     if request.request_id in self.finished_load_chunk_reqs:
-                        print(f"cwj running req additional info = {request.additional_information}")
                         request.status = RequestStatus.RUNNING
                         continue
                 self.running.remove(request)
                 self.waiting_for_chunk_running_requests.append(request)
-                print(f"cwj running remove request = {request.request_id}, self.waiting_for_chunk_running_requests = {self.waiting_for_chunk_running_requests}")
 
         try:
             scheduler_output = super().schedule()
         finally:
             for request in self.waiting_for_chunk_waiting_requests:
-                print(f"cwj waiting add req = {request.request_id}")
                 self.waiting.add_request(request)
             self.waiting_for_chunk_waiting_requests = deque()
 
@@ -134,18 +127,16 @@ class OmniARScheduler(VLLMScheduler):
                     additional_information=(getattr(request, "additional_information", None) if request else None),
                 )
                 new_list.append(omni_nr)
-                print(f"cwj omni_nr.additional_information = {omni_nr.additional_information}")
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
 
             cached_reqs = scheduler_output.scheduled_cached_reqs
-            if not hasattr(cached_reqs, "additional_informations"):
-                cached_reqs.additional_informations = {}
+            if not hasattr(cached_reqs, "additional_information"):
+                cached_reqs.additional_information = {}
             for req_id in cached_reqs.req_ids:
                 request = self.requests.get(req_id) if req_id else None
                 additional_info = getattr(request, "additional_information", None) if request else None
-                cached_reqs.additional_informations[req_id] = additional_info
-                print(f"cwj cached_reqs.additional_information = {additional_info}")
+                cached_reqs.additional_information[req_id] = additional_info
         except Exception:
             # If anything goes wrong, leave the original output unchanged
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")

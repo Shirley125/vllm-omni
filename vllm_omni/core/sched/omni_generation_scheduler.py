@@ -12,7 +12,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniCachedRequestData, OmniNewRequestData
-from vllm_omni.distributed.omni_connectors.adapter import get_chunk_for_generation
+from vllm_omni.distributed.omni_connectors.adapter import OmniChunkManager
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 from vllm_omni.outputs import OmniModelRunnerOutput
@@ -23,11 +23,15 @@ class OmniGenerationScheduler(VLLMScheduler):
         super().__init__(*args, **kwargs)
         model_config = self.vllm_config.model_config
         self.omni_connector = None
+        self.chunk_manager = None
         if model_config.async_chunk:
             connector_specs = ConnectorSpec(
                 name=model_config.stage_connector_name, extra=model_config.stage_connector_extra
             )
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
+            self.chunk_manager = OmniChunkManager(self.omni_connector)
+            self.finished_load_chunk_reqs = set()
+
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
     def schedule(self) -> SchedulerOutput:
@@ -53,10 +57,25 @@ class OmniGenerationScheduler(VLLMScheduler):
         # Temporary queue: preserve waiting order, do not disturb non-diffusion requests
         skipped_waiting_requests = create_request_queue(self.policy)
         req_index = 0
+        if self.chunk_manager:
+            self.finished_load_chunk_reqs = self.chunk_manager.get_finished()
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
-            if self.omni_connector is not None:
-                get_chunk_for_generation(self.omni_connector, request)
+            if self.chunk_manager:
+                if request.status != RequestStatus.WAITING_FOR_CHUNK:
+                    if request.request_id in self.omni_connector.finished_requests:
+                        continue
+                    self.chunk_manager.get_chunk(request)
+                    request.status = RequestStatus.WAITING_FOR_CHUNK
+                    req_index += 1
+                    continue
+                else:
+                    if request.request_id in self.finished_load_chunk_reqs:
+                        print(f"cwj generation running req prompt_token_ids = {request.prompt_token_ids}")
+                        request.status = RequestStatus.RUNNING
+                    else:
+                        req_index += 1
+                        continue
             num_computed_tokens = request.num_computed_tokens
             required_tokens = max(len(request.prompt_token_ids) - num_computed_tokens, 1)
             num_new_tokens = min(required_tokens, token_budget)
@@ -84,8 +103,25 @@ class OmniGenerationScheduler(VLLMScheduler):
         # independent of pooling_params)
         while self.waiting and token_budget > 0 and len(self.running) < self.max_num_running_reqs:
             request = self.waiting.peek_request()
-            if self.omni_connector is not None:
-                get_chunk_for_generation(self.omni_connector, request)
+            if self.chunk_manager:
+                if request.status != RequestStatus.WAITING_FOR_CHUNK:
+                    print(f"cwj generation waiting req = {request.request_id} not waiting for chunk")
+                    self.chunk_manager.get_chunk(request)
+                    request.status = RequestStatus.WAITING_FOR_CHUNK
+                    request = self.waiting.pop_request()
+                    skipped_waiting_requests.prepend_request(request)
+                    continue
+                else:
+                    print(f"cwj generation waiting req = {request.request_id} waiting for chunk, "
+                          f"self.finished_load_chunk_reqs = {self.finished_load_chunk_reqs}")
+                    if request.request_id in self.finished_load_chunk_reqs:
+                        print(f"cwj generation waiting req prompt = {request.prompt_token_ids}")
+                        request.status = RequestStatus.WAITING
+                    else:
+                        request = self.waiting.pop_request()
+                        skipped_waiting_requests.prepend_request(request)
+                        continue
+
             # Uniformly treat as diffusion. A feature flag can be added later
             # via config or request tag.
 
