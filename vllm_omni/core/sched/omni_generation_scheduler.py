@@ -61,6 +61,7 @@ class OmniGenerationScheduler(VLLMScheduler):
         req_index = 0
         if self.chunk_manager:
             self.finished_load_chunk_reqs = self.chunk_manager.get_finished()
+            print(f"cwj self.finished_load_chunk_reqs = {self.finished_load_chunk_reqs}")
         running_snapshot = list(self.running)
         while req_index < len(running_snapshot) and token_budget > 0:
             request = self.running[req_index]
@@ -68,13 +69,13 @@ class OmniGenerationScheduler(VLLMScheduler):
                 if request.status != RequestStatus.WAITING_FOR_CHUNK:
                     if request.request_id in self.omni_connector.finished_requests:
                         self.omni_connector.finished_requests.remove(request.request_id)
+                    else:
+                        self.chunk_manager.get_chunk(request)
+                        request.status = RequestStatus.WAITING_FOR_CHUNK
+                        self.running.remove(request)
+                        self.waiting_for_chunk_running_requests.append(request)
+                        req_index += 1
                         continue
-                    self.chunk_manager.get_chunk(request)
-                    request.status = RequestStatus.WAITING_FOR_CHUNK
-                    self.running.remove(request)
-                    self.waiting_for_chunk_running_requests.append(request)
-                    req_index += 1
-                    continue
                 else:
                     if request.request_id in self.finished_load_chunk_reqs:
                         print(f"cwj generation running req prompt_token_ids = {request.prompt_token_ids}")
@@ -167,7 +168,19 @@ class OmniGenerationScheduler(VLLMScheduler):
 
         # If fast path scheduled none, fall back to the original scheduling
         if not num_scheduled_tokens:
-            return super().schedule()
+            res =  super().schedule()
+            self._update_after_schedule(scheduler_output)
+            # TODO: simplify: Add request waiting for chunk to the waiting and running queue
+            for request in self.waiting_for_chunk_waiting_requests:
+                self.waiting.add_request(request)
+            self.waiting_for_chunk_waiting_requests = deque()
+
+            if self.waiting_for_chunk_running_requests:
+                self.running.extend(self.waiting_for_chunk_running_requests)
+            self.waiting_for_chunk_running_requests = deque()
+
+            self.finished_load_chunk_reqs = set()
+            return res
 
         # Compute common prefix blocks (aligned with v1)
         num_common_prefix_blocks = [0] * len(self.kv_cache_config.kv_cache_groups)

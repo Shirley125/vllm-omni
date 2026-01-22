@@ -245,7 +245,7 @@ class OmniChunkManager:
                                 del self._pending_load_reqs[req_id]
                         logger.info(f"[Stage-{stage_id}] Received one chunk for request {connector_get_key}")
                 except Exception as e:
-                    logger.warning(f"[Stage-{stage_id}] Receiving chunk error {e}")
+                    logger.warning(f"[Stage-{stage_id}] Receiving chunk with error {e}")
                     pass
 
             time.sleep(0.001)
