@@ -186,10 +186,18 @@ class OmniChunkManager:
         # Requests that have successfully retrieved a chunk
         self._finished_load_reqs = set()
 
+        # Requests that are waiting to be saved
+        self._pending_save_reqs = {}
+        # Requests that have successfully saved a chunk
+        self._finished_save_reqs = set()
+
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self.recv_loop, daemon=True)
         self.thread.start()
+
+        self.save_thread = threading.Thread(target=self.save_loop, daemon=True)
+        self.save_thread.start()
 
     def recv_loop(self):
         while not self.stop_event.is_set():
@@ -250,6 +258,43 @@ class OmniChunkManager:
 
             time.sleep(0.001)
 
+    def save_loop(self):
+        while not self.stop_event.is_set():
+            task = None
+            with self.lock:
+                pending_save_reqs_ids = list(self._pending_save_reqs.keys())
+                for req_id in pending_save_reqs_ids:
+                    if self._pending_save_reqs[req_id]:
+                        task = self._pending_save_reqs[req_id].popleft()
+                        if not self._pending_save_reqs[req_id]:
+                            del self._pending_save_reqs[req_id]
+                        break
+
+            if task:
+                connector_put_key = task['put_key']
+                stage_id = task['stage_id']
+                next_stage_id = task['next_stage_id']
+                payload_data = task['data']
+                request_id = task['request_id']
+
+                try:
+                    logger.info(f"cwj put chunk key = {connector_put_key}, stage_id={stage_id}")
+
+                    success, size, metadata = self.connector.put(
+                        from_stage=str(stage_id), to_stage=str(next_stage_id), put_key=connector_put_key,
+                        data=payload_data
+                    )
+
+                    if success:
+                        logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")
+                        with self.lock:
+                            self._finished_save_reqs.add(request_id)
+
+                except Exception as e:
+                    logger.error(f"[Stage-{stage_id}] Error in save_loop for request {request_id}: {e}")
+            else:
+                time.sleep(0.001)
+
     def get_finished(self):
         with self.lock:
             finished_load = set(self._finished_load_reqs)
@@ -280,7 +325,7 @@ class OmniChunkManager:
 
 
     def put_chunk(self, pooling_output, request, custom_process_input_func=None):
-        """Store a chunk of pooling output.
+        """Store a chunk of pooling output asynchronously.
 
         Args:
             pooling_output: Partial pooling output dictionary
@@ -290,19 +335,21 @@ class OmniChunkManager:
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
         request_id = request.request_id[0:25]
-        prompt_token_ids = request.prompt_token_ids
+
+        # Snapshot prompt_token_ids
+        prompt_token_ids = list(request.prompt_token_ids)
         self.connector.request_prompt_token_ids[request_id] = prompt_token_ids
         chunk_id = self.connector.put_requests[request_id]
-        connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
+
+        # Process payload in main thread to avoid race conditions on request state
         payload_data = None
-        logger.info(f"cwj put chunk key = {connector_put_key}, stage_id={stage_id}")
         if custom_process_input_func:
             try:
                 payload_data = custom_process_input_func(
                     pooling_output=pooling_output,
                     request=request,
                 )
-                logger.info(f"cwj put chunk key = {connector_put_key} payload_data = {payload_data}")
+
             except Exception as e:
                 logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
 
@@ -341,14 +388,22 @@ class OmniChunkManager:
                         .tolist()
                 )
 
-            success, size, metadata = self.connector.put(
-                from_stage=str(stage_id), to_stage=str(next_stage_id), put_key=connector_put_key, data=payload_data
-            )
+        # Increment chunk_id here since we are committing to send
+        self.connector.put_requests[request_id] += 1
+        connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
 
-            if success:
-                self.connector.put_requests[request_id] += 1
-                logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")
+        task = {
+            'stage_id': stage_id,
+            'next_stage_id': next_stage_id,
+            'put_key': connector_put_key,
+            'data': payload_data,
+            'request_id': request_id
+        }
 
+        with self.lock:
+            if request_id not in self._pending_save_reqs:
+                self._pending_save_reqs[request_id] = deque()
+            self._pending_save_reqs[request_id].append(task)
 
 def compute_talker_prompt_ids_length(prompt_ids: list[int]) -> int:
     """Compute the length of the talker prompt ids.
