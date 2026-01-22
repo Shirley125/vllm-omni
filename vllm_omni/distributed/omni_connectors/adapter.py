@@ -221,8 +221,8 @@ class OmniChunkManager:
                                                                                                [])
                         # Update connector state
                         self.connector.get_requests[req_id] += 1
+                        req = self._pending_load_reqs[req_id]
                         if stage_id != 2:
-                            req = self._pending_load_reqs[req_id]
                             req.additional_information = payload_data
                             if payload_data.get("finished"):
                                 self.connector.finished_requests.add(req_id)
@@ -245,7 +245,7 @@ class OmniChunkManager:
                                 del self._pending_load_reqs[req_id]
                         logger.info(f"[Stage-{stage_id}] Received one chunk for request {connector_get_key}")
                 except Exception as e:
-                    # Ignore errors during polling
+                    logger.warning(f"[Stage-{stage_id}] Receiving chunk error {e}")
                     pass
 
             time.sleep(0.001)
