@@ -30,6 +30,8 @@ class OmniGenerationScheduler(VLLMScheduler):
             )
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
             self.chunk_manager = OmniChunkManager(self.omni_connector)
+            self.waiting_for_chunk_waiting_requests: deque[Request] = deque()
+            self.waiting_for_chunk_running_requests: deque[Request] = deque()
             self.finished_load_chunk_reqs = set()
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
@@ -59,14 +61,18 @@ class OmniGenerationScheduler(VLLMScheduler):
         req_index = 0
         if self.chunk_manager:
             self.finished_load_chunk_reqs = self.chunk_manager.get_finished()
-        while req_index < len(self.running) and token_budget > 0:
+        running_snapshot = list(self.running)
+        while req_index < len(running_snapshot) and token_budget > 0:
             request = self.running[req_index]
             if self.chunk_manager:
                 if request.status != RequestStatus.WAITING_FOR_CHUNK:
                     if request.request_id in self.omni_connector.finished_requests:
+                        self.omni_connector.finished_requests.remove(request.request_id)
                         continue
                     self.chunk_manager.get_chunk(request)
                     request.status = RequestStatus.WAITING_FOR_CHUNK
+                    self.running.remove(request)
+                    self.waiting_for_chunk_running_requests.append(request)
                     req_index += 1
                     continue
                 else:
@@ -74,6 +80,8 @@ class OmniGenerationScheduler(VLLMScheduler):
                         print(f"cwj generation running req prompt_token_ids = {request.prompt_token_ids}")
                         request.status = RequestStatus.RUNNING
                     else:
+                        self.running.remove(request)
+                        self.waiting_for_chunk_running_requests.append(request)
                         req_index += 1
                         continue
             num_computed_tokens = request.num_computed_tokens
@@ -108,8 +116,8 @@ class OmniGenerationScheduler(VLLMScheduler):
                     print(f"cwj generation waiting req = {request.request_id} not waiting for chunk")
                     self.chunk_manager.get_chunk(request)
                     request.status = RequestStatus.WAITING_FOR_CHUNK
-                    request = self.waiting.pop_request()
-                    skipped_waiting_requests.prepend_request(request)
+                    self.waiting.remove(request)
+                    self.waiting_for_chunk_waiting_requests.append(request)
                     continue
                 else:
                     print(f"cwj generation waiting req = {request.request_id} waiting for chunk, "
@@ -118,8 +126,8 @@ class OmniGenerationScheduler(VLLMScheduler):
                         print(f"cwj generation waiting req prompt = {request.prompt_token_ids}")
                         request.status = RequestStatus.WAITING
                     else:
-                        request = self.waiting.pop_request()
-                        skipped_waiting_requests.prepend_request(request)
+                        self.waiting.remove(request)
+                        self.waiting_for_chunk_waiting_requests.append(request)
                         continue
 
             # Uniformly treat as diffusion. A feature flag can be added later
@@ -233,6 +241,16 @@ class OmniGenerationScheduler(VLLMScheduler):
         # Update internal state (advance num_computed_tokens, free encoder inputs,
         # etc.)
         self._update_after_schedule(scheduler_output)
+        # Add request waiting for chunk to the waiting and running queue
+        for request in self.waiting_for_chunk_waiting_requests:
+            self.waiting.add_request(request)
+        self.waiting_for_chunk_waiting_requests = deque()
+
+        if self.waiting_for_chunk_running_requests:
+            self.running.extend(self.waiting_for_chunk_running_requests)
+        self.waiting_for_chunk_running_requests = deque()
+
+        self.finished_load_chunk_reqs = set()
         return scheduler_output
 
     """

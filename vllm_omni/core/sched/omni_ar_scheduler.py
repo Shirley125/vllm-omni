@@ -80,6 +80,7 @@ class OmniARScheduler(VLLMScheduler):
             for request in running_snapshot:
                 if request.status != RequestStatus.WAITING_FOR_CHUNK:
                     if request.request_id in self.omni_connector.finished_requests:
+                        self.omni_connector.finished_requests.remove(request.request_id)
                         continue
                     self.chunk_manager.get_chunk(request)
                     request.status = RequestStatus.WAITING_FOR_CHUNK
@@ -93,6 +94,7 @@ class OmniARScheduler(VLLMScheduler):
         try:
             scheduler_output = super().schedule()
         finally:
+            # Add request waiting for chunk to the waiting and running queue
             for request in self.waiting_for_chunk_waiting_requests:
                 self.waiting.add_request(request)
             self.waiting_for_chunk_waiting_requests = deque()
