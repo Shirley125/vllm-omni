@@ -206,8 +206,6 @@ class OmniChunkManager:
                 pending_reqs_ids = list(self._pending_load_reqs.keys())
 
             for req_id in pending_reqs_ids:
-                logger.info(f"cwj recv loop req = {req_id}")
-
                 stage_id = self.connector.stage_id
                 target_stage_id = stage_id - 1
                 chunk_id = self.connector.get_requests[req_id]
@@ -248,7 +246,6 @@ class OmniChunkManager:
                         # Mark as finished for consumption
                         with self.lock:
                             self._finished_load_reqs.add(req_id)
-                            logger.info(f"cwj self._finished_load_reqs = {self._finished_load_reqs}")
                             if req_id in self._pending_load_reqs:
                                 del self._pending_load_reqs[req_id]
                         logger.info(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
@@ -314,7 +311,6 @@ class OmniChunkManager:
         target_stage_id = stage_id - 1
         chunk_id = self.connector.get_requests[request_id]
         connector_get_key = f"{request_id}_{target_stage_id}_{chunk_id}"
-        logger.info(f"cwj get chunk key = {connector_get_key}, stage_id = {stage_id}")
 
         if stage_id == 0:
             return
