@@ -251,7 +251,7 @@ class OmniChunkManager:
                             logger.info(f"cwj self._finished_load_reqs = {self._finished_load_reqs}")
                             if req_id in self._pending_load_reqs:
                                 del self._pending_load_reqs[req_id]
-                        logger.info(f"[Stage-{stage_id}] Received one chunk for request {connector_get_key}")
+                        logger.info(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
                 except Exception as e:
                     logger.warning(f"[Stage-{stage_id}] Receiving chunk with error {e}")
                     pass
@@ -278,7 +278,7 @@ class OmniChunkManager:
                 request_id = task['request_id']
 
                 try:
-                    logger.info(f"cwj put chunk key = {connector_put_key}, stage_id={stage_id}")
+                    logger.info(f"cwj put chunk key = {connector_put_key}, stage_id={stage_id}, payload_data = {payload_data}")
 
                     success, size, metadata = self.connector.put(
                         from_stage=str(stage_id), to_stage=str(next_stage_id), put_key=connector_put_key,
@@ -291,7 +291,7 @@ class OmniChunkManager:
                             self._finished_save_reqs.add(request_id)
 
                 except Exception as e:
-                    logger.error(f"[Stage-{stage_id}] Error in save_loop for request {request_id}: {e}")
+                    logger.error(f"[Stage-{stage_id}] Error in save_loop for key {connector_put_key}: {e}")
             else:
                 time.sleep(0.001)
 

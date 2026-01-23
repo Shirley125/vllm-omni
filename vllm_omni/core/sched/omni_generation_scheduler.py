@@ -80,7 +80,6 @@ class OmniGenerationScheduler(VLLMScheduler):
                         continue
                 else:
                     if request.request_id in self.finished_load_chunk_reqs:
-                        print(f"cwj generation running req prompt_token_ids = {request.prompt_token_ids}")
                         request.status = RequestStatus.RUNNING
                     else:
                         self.running.remove(request)
