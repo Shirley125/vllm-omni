@@ -24,40 +24,98 @@ class OmniARScheduler(VLLMScheduler):
     specific to vLLM-Omni.
     """
 
+    def _process_chunk_queue(self) -> tuple[list[Request], list[Request]]:
+        if not hasattr(self, "finished_load_chunk_reqs"):
+            self.finished_load_chunk_reqs = set()
+
+        removed_running_reqs = []
+        removed_waiting_reqs = []
+
+        # Process running requests
+        # Create a list to avoid modifying the deque while iterating
+        for request in list(self.running):
+            if getattr(request, "status", None) == "waiting_for_chunk":
+                if request.request_id in self.finished_load_chunk_reqs:
+                    request.status = RequestStatus.RUNNING
+                    self.finished_load_chunk_reqs.remove(request.request_id)
+                else:
+                    removed_running_reqs.append(request)
+            elif getattr(request, "need_get_chunk", False):
+                request.status = "waiting_for_chunk"
+                removed_running_reqs.append(request)
+
+        if removed_running_reqs:
+            self.running = remove_all(self.running, removed_running_reqs)
+
+        # Process waiting requests
+        # Create a list to avoid modifying the queue while iterating
+        for request in list(self.waiting):
+            if getattr(request, "status", None) == "waiting_for_chunk":
+                if request.request_id in self.finished_load_chunk_reqs:
+                    request.status = RequestStatus.WAITING
+                    self.finished_load_chunk_reqs.remove(request.request_id)
+                else:
+                    removed_waiting_reqs.append(request)
+            elif getattr(request, "need_get_chunk", False):
+                request.status = "waiting_for_chunk"
+                removed_waiting_reqs.append(request)
+
+        if removed_waiting_reqs:
+            self.waiting.remove_requests(removed_waiting_reqs)
+
+        return removed_running_reqs, removed_waiting_reqs
+
     # Ensure scheduled_new_reqs carry omni-specific payloads
     # (e.g., additional_information)
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
-        scheduler_output = super().schedule()
+        removed_running, removed_waiting = self._process_chunk_queue()
+
+        # Adjust max_num_running_reqs to prevent overfilling
+        original_max_num_running_reqs = self.scheduler_config.max_num_running_reqs
+        self.scheduler_config.max_num_running_reqs -= len(removed_running)
+        self.scheduler_config.max_num_running_reqs = max(0, self.scheduler_config.max_num_running_reqs)
+
         try:
-            # Late import to avoid circulars in some launch modes
-            from .output import OmniNewRequestData
+            scheduler_output = super().schedule()
+            try:
+                # Late import to avoid circulars in some launch modes
+                from .output import OmniNewRequestData
 
-            # Rewrap base NewRequestData entries with OmniNewRequestData,
-            # enriching with request-level payloads
-            new_list = []
-            for nr in scheduler_output.scheduled_new_reqs:
-                req_id = getattr(nr, "req_id", None)
-                request = self.requests.get(req_id) if req_id else None
-                # Build omni entry preserving all base fields
-                omni_nr = OmniNewRequestData(
-                    req_id=nr.req_id,
-                    prompt_token_ids=nr.prompt_token_ids,
-                    mm_features=nr.mm_features,
-                    sampling_params=nr.sampling_params,
-                    pooling_params=nr.pooling_params,
-                    block_ids=nr.block_ids,
-                    num_computed_tokens=nr.num_computed_tokens,
-                    lora_request=nr.lora_request,
-                    # Enrich with omni payloads from the live request object
-                    prompt_embeds=(getattr(request, "prompt_embeds", None) if request else None),
-                    additional_information=(getattr(request, "additional_information", None) if request else None),
-                )
-                new_list.append(omni_nr)
+                # Rewrap base NewRequestData entries with OmniNewRequestData,
+                # enriching with request-level payloads
+                new_list = []
+                for nr in scheduler_output.scheduled_new_reqs:
+                    req_id = getattr(nr, "req_id", None)
+                    request = self.requests.get(req_id) if req_id else None
+                    # Build omni entry preserving all base fields
+                    omni_nr = OmniNewRequestData(
+                        req_id=nr.req_id,
+                        prompt_token_ids=nr.prompt_token_ids,
+                        mm_features=nr.mm_features,
+                        sampling_params=nr.sampling_params,
+                        pooling_params=nr.pooling_params,
+                        block_ids=nr.block_ids,
+                        num_computed_tokens=nr.num_computed_tokens,
+                        lora_request=nr.lora_request,
+                        # Enrich with omni payloads from the live request object
+                        prompt_embeds=(getattr(request, "prompt_embeds", None) if request else None),
+                        additional_information=(getattr(request, "additional_information", None) if request else None),
+                    )
+                    new_list.append(omni_nr)
 
-            scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
-        except Exception:
-            # If anything goes wrong, leave the original output unchanged
-            init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
+                scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
+            except Exception:
+                # If anything goes wrong, leave the original output unchanged
+                init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
+        finally:
+            # Restore max_num_running_reqs
+            self.scheduler_config.max_num_running_reqs = original_max_num_running_reqs
+            
+            # Add back removed requests
+            if removed_running:
+                self.running.extend(removed_running)
+            if removed_waiting:
+                self.waiting.prepend_requests(removed_waiting)
 
         return scheduler_output
 
