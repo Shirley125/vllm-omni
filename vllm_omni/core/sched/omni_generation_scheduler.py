@@ -16,7 +16,7 @@ from vllm_omni.outputs import OmniModelRunnerOutput
 
 
 class OmniGenerationScheduler(VLLMScheduler):
-    def _process_chunk_queue(self) -> tuple[list[Request], list[Request]]:
+    def schedule(self) -> SchedulerOutput:
         if not hasattr(self, "finished_load_chunk_reqs"):
             self.finished_load_chunk_reqs = set()
 
@@ -55,14 +55,9 @@ class OmniGenerationScheduler(VLLMScheduler):
         if removed_waiting_reqs:
             self.waiting.remove_requests(removed_waiting_reqs)
 
-        return removed_running_reqs, removed_waiting_reqs
-
-    def schedule(self) -> SchedulerOutput:
-        removed_running, removed_waiting = self._process_chunk_queue()
-
         # Adjust max_num_running_reqs to prevent overfilling
         original_max_num_running_reqs = self.scheduler_config.max_num_running_reqs
-        self.scheduler_config.max_num_running_reqs -= len(removed_running)
+        self.scheduler_config.max_num_running_reqs -= len(removed_running_reqs)
         self.scheduler_config.max_num_running_reqs = max(0, self.scheduler_config.max_num_running_reqs)
 
         try:
@@ -201,10 +196,10 @@ class OmniGenerationScheduler(VLLMScheduler):
             self.scheduler_config.max_num_running_reqs = original_max_num_running_reqs
             
             # Add back removed requests
-            if removed_running:
-                self.running.extend(removed_running)
-            if removed_waiting:
-                self.waiting.prepend_requests(removed_waiting)
+            if removed_running_reqs:
+                self.running.extend(removed_running_reqs)
+            if removed_waiting_reqs:
+                self.waiting.prepend_requests(removed_waiting_reqs)
 
     """
     Scheduler for the diffusion model.

@@ -24,7 +24,9 @@ class OmniARScheduler(VLLMScheduler):
     specific to vLLM-Omni.
     """
 
-    def _process_chunk_queue(self) -> tuple[list[Request], list[Request]]:
+    # Ensure scheduled_new_reqs carry omni-specific payloads
+    # (e.g., additional_information)
+    def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if not hasattr(self, "finished_load_chunk_reqs"):
             self.finished_load_chunk_reqs = set()
 
@@ -63,16 +65,9 @@ class OmniARScheduler(VLLMScheduler):
         if removed_waiting_reqs:
             self.waiting.remove_requests(removed_waiting_reqs)
 
-        return removed_running_reqs, removed_waiting_reqs
-
-    # Ensure scheduled_new_reqs carry omni-specific payloads
-    # (e.g., additional_information)
-    def schedule(self) -> SchedulerOutput:  # type: ignore[override]
-        removed_running, removed_waiting = self._process_chunk_queue()
-
         # Adjust max_num_running_reqs to prevent overfilling
         original_max_num_running_reqs = self.scheduler_config.max_num_running_reqs
-        self.scheduler_config.max_num_running_reqs -= len(removed_running)
+        self.scheduler_config.max_num_running_reqs -= len(removed_running_reqs)
         self.scheduler_config.max_num_running_reqs = max(0, self.scheduler_config.max_num_running_reqs)
 
         try:
@@ -112,10 +107,10 @@ class OmniARScheduler(VLLMScheduler):
             self.scheduler_config.max_num_running_reqs = original_max_num_running_reqs
             
             # Add back removed requests
-            if removed_running:
-                self.running.extend(removed_running)
-            if removed_waiting:
-                self.waiting.prepend_requests(removed_waiting)
+            if removed_running_reqs:
+                self.running.extend(removed_running_reqs)
+            if removed_waiting_reqs:
+                self.waiting.prepend_requests(removed_waiting_reqs)
 
         return scheduler_output
 
