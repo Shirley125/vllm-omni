@@ -1,5 +1,6 @@
 import time
 from collections import defaultdict, deque
+from typing import Any
 
 from vllm.distributed.kv_events import KVEventBatch
 from vllm.logger import init_logger
@@ -40,11 +41,11 @@ class OmniGenerationScheduler(VLLMScheduler):
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
     def _process_chunk_queue(
-            self,
-            queue: Any,
-            waiting_for_chunk_list: deque[Request],
-            target_status: RequestStatus,
-            check_finished_requests: bool = False,
+        self,
+        queue: Any,
+        waiting_for_chunk_list: deque[Request],
+        target_status: RequestStatus,
+        check_finished_requests: bool = False,
     ) -> None:
         snapshot = list(queue)
         for request in snapshot:
@@ -98,9 +99,7 @@ class OmniGenerationScheduler(VLLMScheduler):
         req_index = 0
         if self.chunk_manager:
             self.finished_load_chunk_reqs = self.chunk_manager.get_finished()
-            self._process_chunk_queue(
-                self.waiting, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING
-            )
+            self._process_chunk_queue(self.waiting, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING)
             self._process_chunk_queue(
                 self.running,
                 self.waiting_for_chunk_running_requests,

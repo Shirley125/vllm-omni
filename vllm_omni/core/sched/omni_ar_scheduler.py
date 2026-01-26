@@ -157,11 +157,11 @@ class OmniARScheduler(VLLMScheduler):
         return False
 
     def _process_chunk_queue(
-            self,
-            queue: Any,
-            waiting_for_chunk_list: deque[Request],
-            target_status: RequestStatus,
-            check_finished_requests: bool = False,
+        self,
+        queue: Any,
+        waiting_for_chunk_list: deque[Request],
+        target_status: RequestStatus,
+        check_finished_requests: bool = False,
     ) -> None:
         queue_snapshot = list(queue)
         for request in queue_snapshot:
@@ -181,9 +181,7 @@ class OmniARScheduler(VLLMScheduler):
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if self.chunk_manager and self.stage_id != 0:
             self.finished_load_chunk_reqs = self.chunk_manager.get_finished()
-            self._process_chunk_queue(
-                self.waiting, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING
-            )
+            self._process_chunk_queue(self.waiting, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING)
             self._process_chunk_queue(
                 self.running,
                 self.waiting_for_chunk_running_requests,
