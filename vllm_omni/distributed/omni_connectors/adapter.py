@@ -209,7 +209,7 @@ class OmniChunkManager:
                 stage_id = self.connector.stage_id
                 target_stage_id = stage_id - 1
                 chunk_id = self.connector.get_requests[req_id]
-                connector_get_key = f"{req_id}_{target_stage_id}_{chunk_id}"
+                connector_get_key = f"{req_id[0:25]}_{target_stage_id}_{chunk_id}"
 
                 try:
                     # Use timeout=0 for non-blocking poll
@@ -228,6 +228,7 @@ class OmniChunkManager:
                         # Update connector state
                         self.connector.get_requests[req_id] += 1
                         req = self._pending_load_reqs[req_id]
+                        # todo: just for qwen3_omni?
                         if stage_id != 2:
                             req.additional_information = payload_data
                             if payload_data.get("finished"):
@@ -307,7 +308,7 @@ class OmniChunkManager:
             dict[str, Any] | None: Pooling output dictionary or None if not found
         """
         stage_id = self.connector.stage_id
-        request_id = request.request_id[0:25]
+        request_id = request.request_id
         target_stage_id = stage_id - 1
         chunk_id = self.connector.get_requests[request_id]
         connector_get_key = f"{request_id}_{target_stage_id}_{chunk_id}"
@@ -330,7 +331,7 @@ class OmniChunkManager:
         """
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
-        request_id = request.request_id[0:25]
+        request_id = request.request_id
 
         # Snapshot prompt_token_ids
         prompt_token_ids = list(request.prompt_token_ids)
@@ -387,7 +388,7 @@ class OmniChunkManager:
 
         # Increment chunk_id here since we are committing to send
         self.connector.put_requests[request_id] += 1
-        connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
+        connector_put_key = f"{request_id[0:25]}_{stage_id}_{chunk_id}"
 
         task = {
             'stage_id': stage_id,
