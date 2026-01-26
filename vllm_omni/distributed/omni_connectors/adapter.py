@@ -5,12 +5,13 @@
 
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import Any
-from collections import deque
+
 import torch
 from vllm.v1.request import RequestStatus
-from vllm.v1.core.sched.output import CachedRequestData
+
 from vllm_omni.entrypoints.stage_utils import OmniStageTaskType
 
 from .utils.logging import get_connector_logger
@@ -218,13 +219,11 @@ class OmniChunkManager:
                         str(stage_id),
                         connector_get_key,
                     )
-                    logger.info(f"cwj connector get key = {connector_get_key}, res = {payload_data}")
 
                     if payload_data:
                         logger.debug(f"[Stage-{stage_id}] Received payload {payload_data}")
 
-                        self.connector.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids",
-                                                                                               [])
+                        self.connector.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
                         # Update connector state
                         self.connector.get_requests[req_id] += 1
                         req = self._pending_load_reqs[req_id]
@@ -269,18 +268,18 @@ class OmniChunkManager:
                         break
 
             if task:
-                connector_put_key = task['put_key']
-                stage_id = task['stage_id']
-                next_stage_id = task['next_stage_id']
-                payload_data = task['data']
-                request_id = task['request_id']
+                connector_put_key = task["put_key"]
+                stage_id = task["stage_id"]
+                next_stage_id = task["next_stage_id"]
+                payload_data = task["data"]
+                request_id = task["request_id"]
 
                 try:
-                    logger.info(f"cwj put chunk key = {connector_put_key}, stage_id={stage_id}, payload_data = {payload_data}")
-
                     success, size, metadata = self.connector.put(
-                        from_stage=str(stage_id), to_stage=str(next_stage_id), put_key=connector_put_key,
-                        data=payload_data
+                        from_stage=str(stage_id),
+                        to_stage=str(next_stage_id),
+                        put_key=connector_put_key,
+                        data=payload_data,
                     )
 
                     if success:
@@ -309,9 +308,6 @@ class OmniChunkManager:
         """
         stage_id = self.connector.stage_id
         request_id = request.request_id
-        target_stage_id = stage_id - 1
-        chunk_id = self.connector.get_requests[request_id]
-        connector_get_key = f"{request_id}_{target_stage_id}_{chunk_id}"
 
         if stage_id == 0:
             return
@@ -319,7 +315,6 @@ class OmniChunkManager:
             request.additional_information = None
         with self.lock:
             self._pending_load_reqs[request_id] = request
-
 
     def put_chunk(self, pooling_output, request, custom_process_input_func=None):
         """Store a chunk of pooling output asynchronously.
@@ -367,7 +362,6 @@ class OmniChunkManager:
                     )
                     logger.info(f"[Stage-{stage_id}] Merged embeddings and hidden states for request {request_id}")
 
-
             if stage_id == 1:
                 # TODO: Make parameters configurable and optimize algorithms
                 chunk_size = left_context_size = 25
@@ -381,9 +375,9 @@ class OmniChunkManager:
                 end_index = min(length, left_context_size + context_length)
                 payload_data["code_predictor_codes"] = (
                     torch.tensor(self.connector.code_prompt_token_ids[request_id][-end_index:])
-                        .transpose(0, 1)
-                        .reshape(-1)
-                        .tolist()
+                    .transpose(0, 1)
+                    .reshape(-1)
+                    .tolist()
                 )
 
         # Increment chunk_id here since we are committing to send
@@ -391,17 +385,18 @@ class OmniChunkManager:
         connector_put_key = f"{request_id[0:25]}_{stage_id}_{chunk_id}"
 
         task = {
-            'stage_id': stage_id,
-            'next_stage_id': next_stage_id,
-            'put_key': connector_put_key,
-            'data': payload_data,
-            'request_id': request_id
+            "stage_id": stage_id,
+            "next_stage_id": next_stage_id,
+            "put_key": connector_put_key,
+            "data": payload_data,
+            "request_id": request_id,
         }
 
         with self.lock:
             if request_id not in self._pending_save_reqs:
                 self._pending_save_reqs[request_id] = deque()
             self._pending_save_reqs[request_id].append(task)
+
 
 def compute_talker_prompt_ids_length(prompt_ids: list[int]) -> int:
     """Compute the length of the talker prompt ids.
