@@ -156,35 +156,40 @@ class OmniARScheduler(VLLMScheduler):
 
         return False
 
+    def _process_chunk_queue(
+        self,
+        queue: Any,
+        destination_list: deque[Request],
+        target_status: RequestStatus,
+        check_finished_requests: bool = False,
+    ) -> None:
+        snapshot = list(queue)
+        for request in snapshot:
+            if request.status != RequestStatus.WAITING_FOR_CHUNK:
+                if check_finished_requests and request.request_id in self.omni_connector.finished_requests:
+                    # todo: clear omni_connector.finished_requests
+                    continue
+                self.chunk_manager.get_chunk(request)
+                request.status = RequestStatus.WAITING_FOR_CHUNK
+            else:
+                if request.request_id in self.finished_load_chunk_reqs:
+                    request.status = target_status
+                    continue
+            queue.remove(request)
+            destination_list.append(request)
+
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if self.chunk_manager and self.stage_id != 0:
             self.finished_load_chunk_reqs = self.chunk_manager.get_finished()
-            waiting_snapshot = list(self.waiting)
-            for request in waiting_snapshot:
-                if request.status != RequestStatus.WAITING_FOR_CHUNK:
-                    self.chunk_manager.get_chunk(request)
-                    request.status = RequestStatus.WAITING_FOR_CHUNK
-                else:
-                    if request.request_id in self.finished_load_chunk_reqs:
-                        request.status = RequestStatus.WAITING
-                        continue
-                self.waiting.remove(request)
-                self.waiting_for_chunk_waiting_requests.append(request)
-
-            running_snapshot = list(self.running)
-            for request in running_snapshot:
-                if request.status != RequestStatus.WAITING_FOR_CHUNK:
-                    if request.request_id in self.omni_connector.finished_requests:
-                        # todo: clear omni_connector.finished_requests
-                        continue
-                    self.chunk_manager.get_chunk(request)
-                    request.status = RequestStatus.WAITING_FOR_CHUNK
-                else:
-                    if request.request_id in self.finished_load_chunk_reqs:
-                        request.status = RequestStatus.RUNNING
-                        continue
-                self.running.remove(request)
-                self.waiting_for_chunk_running_requests.append(request)
+            self._process_chunk_queue(
+                self.waiting, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING
+            )
+            self._process_chunk_queue(
+                self.running,
+                self.waiting_for_chunk_running_requests,
+                RequestStatus.RUNNING,
+                check_finished_requests=True,
+            )
 
         try:
             scheduler_output = super().schedule()
