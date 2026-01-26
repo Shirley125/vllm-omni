@@ -188,20 +188,24 @@ class OmniARScheduler(VLLMScheduler):
                 RequestStatus.RUNNING,
                 check_finished_requests=True,
             )
+            original_max_num_running_reqs = self.max_num_running_reqs
+            self.max_num_running_reqs -= len(self.waiting_for_chunk_running_requests)
+            self.max_num_running_reqs = max(0, self.max_num_running_reqs)
 
         try:
             scheduler_output = super().schedule()
         finally:
-            # Add request waiting for chunk to the waiting and running queue
-            for request in self.waiting_for_chunk_waiting_requests:
-                self.waiting.add_request(request)
-            self.waiting_for_chunk_waiting_requests = deque()
+            if self.chunk_manager:
+                # Add request waiting for chunk to the waiting and running queue
+                for request in self.waiting_for_chunk_waiting_requests:
+                    self.waiting.add_request(request)
+                self.waiting_for_chunk_waiting_requests = deque()
 
-            if self.waiting_for_chunk_running_requests:
-                self.running.extend(self.waiting_for_chunk_running_requests)
-            self.waiting_for_chunk_running_requests = deque()
+                if self.waiting_for_chunk_running_requests:
+                    self.running.extend(self.waiting_for_chunk_running_requests)
+                self.waiting_for_chunk_running_requests = deque()
 
-            self.finished_load_chunk_reqs = set()
+                self.finished_load_chunk_reqs = set()
         try:
             # Late import to avoid circulars in some launch modes
             from .output import OmniNewRequestData

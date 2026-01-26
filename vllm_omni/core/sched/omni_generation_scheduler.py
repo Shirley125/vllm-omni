@@ -51,7 +51,6 @@ class OmniGenerationScheduler(VLLMScheduler):
         for request in snapshot:
             if request.status != RequestStatus.WAITING_FOR_CHUNK:
                 if check_finished_requests and request.request_id in self.omni_connector.finished_requests:
-                    self.omni_connector.finished_requests.remove(request.request_id)
                     continue
                 self.chunk_manager.get_chunk(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
@@ -106,6 +105,11 @@ class OmniGenerationScheduler(VLLMScheduler):
                 RequestStatus.RUNNING,
                 check_finished_requests=True,
             )
+
+            original_max_num_running_reqs = self.max_num_running_reqs
+            self.max_num_running_reqs -= len(self.waiting_for_chunk_running_requests)
+            self.max_num_running_reqs = max(0, self.max_num_running_reqs)
+
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
             num_computed_tokens = request.num_computed_tokens
@@ -173,7 +177,8 @@ class OmniGenerationScheduler(VLLMScheduler):
         # If fast path scheduled none, fall back to the original scheduling
         if not num_scheduled_tokens:
             res = super().schedule()
-            self._restore_chunk_requests()
+            if self.chunk_manager:
+                self._restore_chunk_requests()
             return res
 
         # Compute common prefix blocks (aligned with v1)
@@ -274,8 +279,9 @@ class OmniGenerationScheduler(VLLMScheduler):
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
 
-            self._restore_chunk_requests()
-            self.finished_load_chunk_reqs = set()
+            if self.chunk_manager:
+                self._restore_chunk_requests()
+
         except Exception:
             # If anything goes wrong, leave the original output unchanged
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")

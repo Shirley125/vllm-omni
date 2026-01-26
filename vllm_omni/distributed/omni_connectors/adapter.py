@@ -284,7 +284,7 @@ class OmniChunkManager:
                         from_stage=str(stage_id),
                         to_stage=str(next_stage_id),
                         put_key=connector_put_key,
-                        data=payload_data
+                        data=payload_data,
                     )
 
                     if success:
@@ -313,8 +313,6 @@ class OmniChunkManager:
         """
         stage_id = self.connector.stage_id
         request_id = request.request_id
-        target_stage_id = stage_id - 1
-        chunk_id = self.connector.get_requests[request_id]
 
         if stage_id == 0:
             return
@@ -322,7 +320,6 @@ class OmniChunkManager:
             request.additional_information = None
         with self.lock:
             self._pending_load_reqs[request_id] = request
-
 
     def put_chunk(self, pooling_output, request, custom_process_input_func=None):
         """Store a chunk of pooling output asynchronously.
@@ -370,7 +367,6 @@ class OmniChunkManager:
                     )
                     logger.info(f"[Stage-{stage_id}] Merged embeddings and hidden states for request {request_id}")
 
-
             if stage_id == 1:
                 # TODO: Make parameters configurable and optimize algorithms
                 chunk_size = left_context_size = 25
@@ -398,7 +394,7 @@ class OmniChunkManager:
             "next_stage_id": next_stage_id,
             "put_key": connector_put_key,
             "data": payload_data,
-            "request_id": request_id
+            "request_id": request_id,
         }
 
         with self.lock:
