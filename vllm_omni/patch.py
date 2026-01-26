@@ -1,6 +1,6 @@
 import sys
 
-from aenum import extend_enum
+# from aenum import extend_enum
 from vllm.inputs.data import TokensPrompt as _OriginalTokensPrompt
 from vllm.model_executor.layers.rotary_embedding import (
     MRotaryEmbedding as _OriginalMRotaryEmbedding,
@@ -39,7 +39,8 @@ for module_name, module in sys.modules.items():
 # CRITICAL: Value must be <= PREEMPTED (5) to NOT be treated as finished!
 # We use a negative value to be safe and avoid conflicts with vLLM's existing statuses.
 if not hasattr(RequestStatus, "WAITING_FOR_CHUNK"):
-    extend_enum(RequestStatus, "WAITING_FOR_CHUNK", -1)
+    # dynamically add WAITING_FOR_CHUNK to RequestStatus to avoid aenum dependency
+    setattr(RequestStatus, "WAITING_FOR_CHUNK", -1)
 
 # Patch for vllm-ascend prefetch functions bug fix
 # Issue: The original functions access forward_context attributes like
