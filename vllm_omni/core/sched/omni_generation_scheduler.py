@@ -39,6 +39,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             self.finished_load_chunk_reqs = set()
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
+        self.requests_with_ready_chunks = set()
 
     def _process_chunk_queue(
         self,
@@ -50,6 +51,8 @@ class OmniGenerationScheduler(VLLMScheduler):
         snapshot = list(queue)
         for request in snapshot:
             if request.status != RequestStatus.WAITING_FOR_CHUNK:
+                if request.request_id in self.requests_with_ready_chunks:
+                    continue
                 if check_finished_requests and request.request_id in self.omni_connector.finished_requests:
                     continue
                 self.chunk_manager.get_chunk(request)
@@ -57,9 +60,21 @@ class OmniGenerationScheduler(VLLMScheduler):
             else:
                 if request.request_id in self.finished_load_chunk_reqs:
                     request.status = target_status
+                    self.requests_with_ready_chunks.add(request.request_id)
                     continue
             queue.remove(request)
             waiting_for_chunk_list.append(request)
+
+    def _clear_chunk_ready(self, scheduler_output: SchedulerOutput) -> None:
+        if scheduler_output.scheduled_new_reqs:
+            for req_data in scheduler_output.scheduled_new_reqs:
+                if req_data.req_id in self.requests_with_ready_chunks:
+                    self.requests_with_ready_chunks.remove(req_data.req_id)
+        
+        if scheduler_output.scheduled_cached_reqs:
+            for req_id in scheduler_output.scheduled_cached_reqs.req_ids:
+                if req_id in self.requests_with_ready_chunks:
+                    self.requests_with_ready_chunks.remove(req_id)
 
     def _restore_chunk_requests(self) -> None:
         # Add request waiting for chunk to the waiting and running queue
@@ -179,6 +194,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             res = super().schedule()
             if self.chunk_manager:
                 self._restore_chunk_requests()
+            self._clear_chunk_ready(res)
             return res
 
         # Compute common prefix blocks (aligned with v1)
@@ -286,6 +302,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             # If anything goes wrong, leave the original output unchanged
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
 
+        self._clear_chunk_ready(scheduler_output)
         return scheduler_output
 
     """

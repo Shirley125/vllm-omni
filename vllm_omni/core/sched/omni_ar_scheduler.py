@@ -88,6 +88,7 @@ class OmniARScheduler(VLLMScheduler):
                 self.custom_process_next_stage_input_func = getattr(module, func_name)
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
+        self.requests_with_ready_chunks = set()
 
     def _get_kv_transfer_criteria(self) -> dict | None:
         # Note: vllm_config is available in Scheduler after super().__init__
@@ -166,6 +167,8 @@ class OmniARScheduler(VLLMScheduler):
         queue_snapshot = list(queue)
         for request in queue_snapshot:
             if request.status != RequestStatus.WAITING_FOR_CHUNK:
+                if request.request_id in self.requests_with_ready_chunks:
+                    continue
                 if check_finished_requests and request.request_id in self.omni_connector.finished_requests:
                     # todo: clear omni_connector.finished_requests
                     continue
@@ -174,9 +177,21 @@ class OmniARScheduler(VLLMScheduler):
             else:
                 if request.request_id in self.finished_load_chunk_reqs:
                     request.status = target_status
+                    self.requests_with_ready_chunks.add(request.request_id)
                     continue
             queue.remove(request)
             waiting_for_chunk_list.append(request)
+
+    def _clear_chunk_ready(self, scheduler_output: SchedulerOutput) -> None:
+        if scheduler_output.scheduled_new_reqs:
+            for req_data in scheduler_output.scheduled_new_reqs:
+                if req_data.req_id in self.requests_with_ready_chunks:
+                    self.requests_with_ready_chunks.remove(req_data.req_id)
+        
+        if scheduler_output.scheduled_cached_reqs:
+            for req_id in scheduler_output.scheduled_cached_reqs.req_ids:
+                if req_id in self.requests_with_ready_chunks:
+                    self.requests_with_ready_chunks.remove(req_id)
 
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if self.chunk_manager and self.stage_id != 0:
@@ -248,6 +263,7 @@ class OmniARScheduler(VLLMScheduler):
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
             scheduler_output.finished_requests_needing_kv_transfer = {}
 
+        self._clear_chunk_ready(scheduler_output)
         return scheduler_output
 
     def update_from_output(
