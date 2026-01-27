@@ -145,9 +145,12 @@ def shm_write_bytes(payload: bytes, name: str | None = None) -> dict[str, Any]:
     """Write bytes into SharedMemory and return meta dict {name,size}.
 
     Caller should close the segment; the receiver should unlink.
+    Uses a 4-byte header to signal readiness.
     """
+    header_size = 4
+    total_size = len(payload) + header_size
     try:
-        shm = _shm.SharedMemory(create=True, size=len(payload), name=name)
+        shm = _shm.SharedMemory(create=True, size=total_size, name=name)
     except FileExistsError:
         if name:
             # If name is specified and exists, unlink it and try again
@@ -156,14 +159,17 @@ def shm_write_bytes(payload: bytes, name: str | None = None) -> dict[str, Any]:
                 existing.unlink()
             except Exception:
                 pass
-            shm = _shm.SharedMemory(create=True, size=len(payload), name=name)
+            shm = _shm.SharedMemory(create=True, size=total_size, name=name)
         else:
             raise
 
     mv = memoryview(shm.buf)
-    mv[: len(payload)] = payload
+    # Write payload first (after header)
+    mv[header_size:total_size] = payload
+    # Write readiness flag (1) at start
+    mv[0:header_size] = (1).to_bytes(header_size, "little")
     del mv
-    meta = {"name": shm.name, "size": len(payload)}
+    meta = {"name": shm.name, "size": total_size}
     try:
         shm.close()
     except Exception as e:
@@ -174,8 +180,28 @@ def shm_write_bytes(payload: bytes, name: str | None = None) -> dict[str, Any]:
 def shm_read_bytes(meta: dict[str, Any]) -> bytes:
     """Read bytes from SharedMemory by meta {name,size} and cleanup."""
     shm = _shm.SharedMemory(name=meta["name"])  # type: ignore[index]
+    if shm.size == 0:
+        shm.close()
+        raise ValueError("Shared memory segment is empty")
+
     mv = memoryview(shm.buf)
-    data = bytes(mv[: meta["size"]])
+    header_size = 4
+    
+    # Check readiness flag
+    flag = int.from_bytes(mv[0:header_size], "little")
+    if flag != 1:
+        del mv
+        shm.close()
+        raise BufferError("Shared memory segment not ready")
+
+    # Read payload
+    # Use meta["size"] as total size if provided, else shm.size
+    total_size = meta.get("size", shm.size)
+    if total_size == 0:
+        # Fallback if meta size is invalid
+        total_size = shm.size
+        
+    data = bytes(mv[header_size:total_size])
     del mv
     try:
         shm.close()

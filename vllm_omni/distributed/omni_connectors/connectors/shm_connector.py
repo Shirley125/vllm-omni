@@ -78,31 +78,54 @@ class SharedMemoryConnector(OmniConnectorBase):
         # Wait for shared memory to be available (with retry logic)
         max_retries = 30
         retry_delay = 0.1  # 100ms between retries
-        shm = None
 
         for attempt in range(max_retries):
+            shm = None
             try:
-                shm = shm_pkg.SharedMemory(name=get_key)
-                break  # Successfully opened, exit retry loop
-            except FileNotFoundError:
+                try:
+                    shm = shm_pkg.SharedMemory(name=get_key)
+                except FileNotFoundError:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.warning(f"Shared memory '{get_key}' not found after {max_retries} retries")
+                        return None, 0
+
+                # Check if we can proceed to read
+                current_size = shm.size
+                shm.close()
+                shm = None
+
+                # shm_read_bytes will raise BufferError if not ready or ValueError if empty
+                data_bytes = shm_read_bytes({"name": get_key, "size": current_size})
+                obj = self.deserialize_obj(data_bytes)
+                return obj, current_size
+
+            except (BufferError, ValueError) as e:
+                # SHM exists but is empty or not ready
+                if shm:
+                    try:
+                        shm.close()
+                    except:
+                        pass
+                
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
+                    continue
                 else:
-                    # Max retries reached, return None
-                    logger.warning(f"Shared memory '{get_key}' not found after {max_retries} retries")
+                    logger.warning(f"Shared memory '{get_key}' not ready/valid after {max_retries} retries: {e}")
                     return None, 0
+            except Exception as e:
+                logger.error(f"Error reading shared memory '{get_key}': {e}")
+                if shm:
+                    try:
+                        shm.close()
+                    except:
+                        pass
+                return None, 0
 
-        if shm is None:
-            return None, 0
-
-        try:
-            data_bytes = shm_read_bytes({"name": get_key, "size": shm.size})
-            obj = self.deserialize_obj(data_bytes)
-            return obj, shm.size
-        finally:
-            shm.close()
-
-        # TODO: update another read method
+        return None, 0
 
     def cleanup(self, request_id: str) -> None:
         # SHM segments are automatically unlinked during 'get' (shm_read_bytes).
