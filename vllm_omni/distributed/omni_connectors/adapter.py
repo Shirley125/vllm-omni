@@ -214,11 +214,29 @@ class OmniChunkManager:
 
                 try:
                     # Use timeout=0 for non-blocking poll
-                    payload_data, size = self.connector.get(
-                        str(target_stage_id),
-                        str(stage_id),
-                        connector_get_key,
-                    )
+                    payload_data = None
+                    size = 0
+                    
+                    # Retry logic to handle transient errors
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            payload_data, size = self.connector.get(
+                                str(target_stage_id),
+                                str(stage_id),
+                                connector_get_key,
+                            )
+                            # If we got a result (even if None), we stop retrying
+                            # Note: connector.get returning None usually means not found or timeout,
+                            # which we don't want to retry immediately in a tight loop here,
+                            # but rather let the outer loop handle it.
+                            # However, if it raises an exception, we catch and retry.
+                            break
+                        except Exception:
+                            if attempt == max_retries - 1:
+                                raise
+                            time.sleep(0.01)
+
                     logger.info(f"cwj connector get key = {connector_get_key}, res = {payload_data}")
 
                     if payload_data:
@@ -351,7 +369,7 @@ class OmniChunkManager:
                 logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
 
             if not payload_data:
-                logger.warning(f"[Stage-{stage_id}] No payload data to send for request {request_id}")
+                logger.debug(f"[Stage-{stage_id}] No payload data to send for request {request_id}")
                 return
             if stage_id == 0 and chunk_id == 0:
                 if self.connector.request_payload.get(request_id) is None:
