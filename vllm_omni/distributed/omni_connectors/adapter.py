@@ -5,7 +5,7 @@
 
 import threading
 import time
-from collections import deque
+from collections import defaultdict, deque
 from collections.abc import Callable
 from typing import Any
 
@@ -192,6 +192,14 @@ class OmniChunkManager:
         # Requests that have successfully saved a chunk
         self._finished_save_reqs = set()
 
+        # State moved from Connector
+        self.put_requests: dict[str, int] = defaultdict(int)
+        self.get_requests: dict[str, int] = defaultdict(int)
+        self.finished_requests: set[str] = set()
+        self.request_payload = {}
+        self.request_prompt_token_ids: dict[str, list[int]] = defaultdict(list)
+        self.code_prompt_token_ids: dict[str, list[list[int]]] = defaultdict(list)
+
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self.recv_loop, daemon=True)
@@ -209,7 +217,7 @@ class OmniChunkManager:
             for req_id in pending_reqs_ids:
                 stage_id = self.connector.stage_id
                 target_stage_id = stage_id - 1
-                chunk_id = self.connector.get_requests[req_id]
+                chunk_id = self.get_requests[req_id]
                 connector_get_key = f"{req_id[0:25]}_{target_stage_id}_{chunk_id}"
 
                 try:
@@ -223,18 +231,18 @@ class OmniChunkManager:
                     if payload_data:
                         logger.debug(f"[Stage-{stage_id}] Received payload {payload_data}")
 
-                        self.connector.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
+                        self.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
                         # Update connector state
-                        self.connector.get_requests[req_id] += 1
+                        self.get_requests[req_id] += 1
                         req = self._pending_load_reqs[req_id]
                         # todo: just for qwen3_omni?
                         if stage_id != 2:
                             req.additional_information = payload_data
                             if payload_data.get("finished"):
-                                self.connector.finished_requests.add(req_id)
+                                self.finished_requests.add(req_id)
                         else:
                             if payload_data.get("finished"):
-                                self.connector.finished_requests.add(req_id)
+                                self.finished_requests.add(req_id)
                                 req.status = RequestStatus.FINISHED_STOPPED
 
                             # TODO: remove special handling for prompt token ids ?
@@ -330,8 +338,8 @@ class OmniChunkManager:
 
         # Snapshot prompt_token_ids
         prompt_token_ids = list(request.prompt_token_ids)
-        self.connector.request_prompt_token_ids[request_id] = prompt_token_ids
-        chunk_id = self.connector.put_requests[request_id]
+        self.request_prompt_token_ids[request_id] = prompt_token_ids
+        chunk_id = self.put_requests[request_id]
 
         # Process payload in main thread to avoid race conditions on request state
         payload_data = None
@@ -349,11 +357,11 @@ class OmniChunkManager:
                 logger.warning(f"[Stage-{stage_id}] No payload data to send for request {request_id}")
                 return
             if stage_id == 0 and chunk_id == 0:
-                if self.connector.request_payload.get(request_id) is None:
-                    self.connector.request_payload[request_id] = payload_data
+                if self.request_payload.get(request_id) is None:
+                    self.request_payload[request_id] = payload_data
                     return
                 else:
-                    save_payload = self.connector.request_payload.get(request_id)
+                    save_payload = self.request_payload.get(request_id)
                     payload_data["thinker_embeddings"] = torch.cat(
                         (save_payload.get("thinker_embeddings"), payload_data.get("thinker_embeddings")), dim=0
                     )
@@ -365,8 +373,8 @@ class OmniChunkManager:
             if stage_id == 1:
                 # TODO: Make parameters configurable and optimize algorithms
                 chunk_size = left_context_size = 25
-                self.connector.code_prompt_token_ids[request_id].append(payload_data.get("code_predictor_codes", []))
-                length = len(self.connector.code_prompt_token_ids[request_id])
+                self.code_prompt_token_ids[request_id].append(payload_data.get("code_predictor_codes", []))
+                length = len(self.code_prompt_token_ids[request_id])
                 chunk_length = length % chunk_size
                 if chunk_length != 0 and not payload_data.get("finished"):
                     return
@@ -374,14 +382,14 @@ class OmniChunkManager:
                 context_length = chunk_length if chunk_length != 0 else chunk_size
                 end_index = min(length, left_context_size + context_length)
                 payload_data["code_predictor_codes"] = (
-                    torch.tensor(self.connector.code_prompt_token_ids[request_id][-end_index:])
+                    torch.tensor(self.code_prompt_token_ids[request_id][-end_index:])
                     .transpose(0, 1)
                     .reshape(-1)
                     .tolist()
                 )
 
         # Increment chunk_id here since we are committing to send
-        self.connector.put_requests[request_id] += 1
+        self.put_requests[request_id] += 1
         connector_put_key = f"{request_id[0:25]}_{stage_id}_{chunk_id}"
 
         task = {

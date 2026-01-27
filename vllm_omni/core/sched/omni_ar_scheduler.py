@@ -23,6 +23,7 @@ from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm_omni.distributed.omni_connectors.adapter import OmniChunkManager
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
+from .chunk_scheduler_utils import ChunkRequestProcessor
 
 logger = init_logger(__name__)
 
@@ -75,10 +76,7 @@ class OmniARScheduler(VLLMScheduler):
             )
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
             self.chunk_manager = OmniChunkManager(self.omni_connector)
-            self.waiting_for_chunk_waiting_requests: deque[Request] = deque()
-            self.waiting_for_chunk_running_requests: deque[Request] = deque()
-            self.finished_load_chunk_reqs = set()
-            self.requests_with_ready_chunks = set()
+            self.chunk_processor = ChunkRequestProcessor(self.chunk_manager)
 
             custom_process_next_stage_input_func = getattr(
                 self.vllm_config.model_config, "custom_process_next_stage_input_func", None
@@ -157,69 +155,19 @@ class OmniARScheduler(VLLMScheduler):
 
         return False
 
-    def _process_chunk_queue(
-        self,
-        queue: Any,
-        waiting_for_chunk_list: deque[Request],
-        target_status: RequestStatus,
-    ) -> None:
-        queue_snapshot = list(queue)
-        for request in queue_snapshot:
-            if request.status != RequestStatus.WAITING_FOR_CHUNK:
-                if request.request_id in self.requests_with_ready_chunks:
-                    continue
-                if request.request_id in self.omni_connector.finished_requests:
-                    self.omni_connector.finished_requests.remote(request.request_id)
-                    request.additional_information = None
-                    continue
-                self.chunk_manager.get_chunk(request)
-                request.status = RequestStatus.WAITING_FOR_CHUNK
-            else:
-                if request.request_id in self.finished_load_chunk_reqs:
-                    request.status = target_status
-                    self.requests_with_ready_chunks.add(request.request_id)
-                    continue
-            queue.remove(request)
-            waiting_for_chunk_list.append(request)
-
-    def _clear_chunk_ready(self, scheduler_output: SchedulerOutput) -> None:
-        if scheduler_output.scheduled_new_reqs:
-            for req_data in scheduler_output.scheduled_new_reqs:
-                if req_data.req_id in self.requests_with_ready_chunks:
-                    self.requests_with_ready_chunks.remove(req_data.req_id)
-
-        if scheduler_output.scheduled_cached_reqs:
-            for req_id in scheduler_output.scheduled_cached_reqs.req_ids:
-                if req_id in self.requests_with_ready_chunks:
-                    self.requests_with_ready_chunks.remove(req_id)
-
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if self.chunk_manager and self.stage_id != 0:
-            self.finished_load_chunk_reqs = self.chunk_manager.get_finished()
-            self._process_chunk_queue(self.waiting, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING)
-            self._process_chunk_queue(
-                self.running,
-                self.waiting_for_chunk_running_requests,
-                RequestStatus.RUNNING,
+            num_waiting_running = self.chunk_processor.process_pending_chunks(
+                self.waiting, self.running
             )
-            self.max_num_running_reqs = self.scheduler_config.max_num_seqs - \
-                len(self.waiting_for_chunk_running_requests)
+            self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
             self.max_num_running_reqs = max(0, self.max_num_running_reqs)
 
         try:
             scheduler_output = super().schedule()
         finally:
             if self.chunk_manager:
-                # Add request waiting for chunk to the waiting and running queue
-                for request in self.waiting_for_chunk_waiting_requests:
-                    self.waiting.add_request(request)
-                self.waiting_for_chunk_waiting_requests = deque()
-
-                if self.waiting_for_chunk_running_requests:
-                    self.running.extend(self.waiting_for_chunk_running_requests)
-                self.waiting_for_chunk_running_requests = deque()
-
-                self.finished_load_chunk_reqs = set()
+                self.chunk_processor.restore_queues(self.waiting, self.running)
         try:
             # Late import to avoid circulars in some launch modes
             from .output import OmniNewRequestData
@@ -262,7 +210,7 @@ class OmniARScheduler(VLLMScheduler):
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
             scheduler_output.finished_requests_needing_kv_transfer = {}
         if self.chunk_manager:
-            self._clear_chunk_ready(scheduler_output)
+            self.chunk_processor.filter_scheduler_output(scheduler_output)
         return scheduler_output
 
     def update_from_output(
