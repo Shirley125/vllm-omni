@@ -19,8 +19,6 @@ from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 from vllm_omni.outputs import OmniModelRunnerOutput
 
-from .chunk_scheduler_utils import ChunkRequestProcessor
-
 
 class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
@@ -36,7 +34,6 @@ class OmniGenerationScheduler(VLLMScheduler):
             )
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
             self.chunk_manager = OmniChunkManager(self.omni_connector)
-            self.chunk_processor = ChunkRequestProcessor(self.chunk_manager)
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
@@ -64,7 +61,7 @@ class OmniGenerationScheduler(VLLMScheduler):
         skipped_waiting_requests = create_request_queue(self.policy)
         req_index = 0
         if self.chunk_manager:
-            num_waiting_running = self.chunk_processor.process_pending_chunks(
+            num_waiting_running = self.chunk_manager.process_pending_chunks(
                 self.waiting, self.running
             )
             self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
@@ -138,8 +135,8 @@ class OmniGenerationScheduler(VLLMScheduler):
         if not num_scheduled_tokens:
             res = super().schedule()
             if self.chunk_manager:
-                self.chunk_processor.restore_queues(self.waiting, self.running)
-                self.chunk_processor.filter_scheduler_output(res)
+                self.chunk_manager.restore_queues(self.waiting, self.running)
+                self.chunk_manager.filter_scheduler_output(res)
             return res
 
         # Compute common prefix blocks (aligned with v1)
@@ -241,8 +238,8 @@ class OmniGenerationScheduler(VLLMScheduler):
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
 
             if self.chunk_manager:
-                self.chunk_processor.restore_queues(self.waiting, self.running)
-                self.chunk_processor.filter_scheduler_output(scheduler_output)
+                self.chunk_manager.restore_queues(self.waiting, self.running)
+                self.chunk_manager.filter_scheduler_output(scheduler_output)
 
         except Exception:
             # If anything goes wrong, leave the original output unchanged

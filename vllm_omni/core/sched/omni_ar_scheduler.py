@@ -23,7 +23,6 @@ from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm_omni.distributed.omni_connectors.adapter import OmniChunkManager
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
-from .chunk_scheduler_utils import ChunkRequestProcessor
 
 logger = init_logger(__name__)
 
@@ -76,7 +75,6 @@ class OmniARScheduler(VLLMScheduler):
             )
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
             self.chunk_manager = OmniChunkManager(self.omni_connector)
-            self.chunk_processor = ChunkRequestProcessor(self.chunk_manager)
 
             custom_process_next_stage_input_func = getattr(
                 self.vllm_config.model_config, "custom_process_next_stage_input_func", None
@@ -157,7 +155,7 @@ class OmniARScheduler(VLLMScheduler):
 
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if self.chunk_manager and self.stage_id != 0:
-            num_waiting_running = self.chunk_processor.process_pending_chunks(
+            num_waiting_running = self.chunk_manager.process_pending_chunks(
                 self.waiting, self.running
             )
             self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
@@ -167,7 +165,7 @@ class OmniARScheduler(VLLMScheduler):
             scheduler_output = super().schedule()
         finally:
             if self.chunk_manager:
-                self.chunk_processor.restore_queues(self.waiting, self.running)
+                self.chunk_manager.restore_queues(self.waiting, self.running)
         try:
             # Late import to avoid circulars in some launch modes
             from .output import OmniNewRequestData
@@ -210,7 +208,7 @@ class OmniARScheduler(VLLMScheduler):
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
             scheduler_output.finished_requests_needing_kv_transfer = {}
         if self.chunk_manager:
-            self.chunk_processor.filter_scheduler_output(scheduler_output)
+            self.chunk_manager.filter_scheduler_output(scheduler_output)
         return scheduler_output
 
     def update_from_output(
