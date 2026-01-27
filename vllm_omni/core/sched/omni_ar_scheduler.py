@@ -20,7 +20,7 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
-from vllm_omni.distributed.omni_connectors.adapter import OmniChunkManager
+from vllm_omni.distributed.omni_connectors.chunk_manager import OmniChunkManager
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 
@@ -384,7 +384,7 @@ class OmniARScheduler(VLLMScheduler):
                 )
                 if self.chunk_manager is not None:
                     custom_process_next_stage_input_func = self.custom_process_next_stage_input_func
-                    self.chunk_manager.put_chunk(pooler_output, request, custom_process_next_stage_input_func)
+                    self.chunk_manager.submit_chunk(pooler_output, request, custom_process_next_stage_input_func)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors

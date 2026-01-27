@@ -14,7 +14,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniCachedRequestData, OmniNewRequestData
-from vllm_omni.distributed.omni_connectors.adapter import OmniChunkManager
+from vllm_omni.distributed.omni_connectors.chunk_manager import OmniChunkManager
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 from vllm_omni.outputs import OmniModelRunnerOutput
