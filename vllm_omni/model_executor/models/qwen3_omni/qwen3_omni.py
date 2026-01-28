@@ -16,10 +16,13 @@
             update_dict["finished_flag"] = True
             return self.tts_eos_embed.to(device)
 
-        thinker_embed = thinker_embed.to(device)
-        current_embed = thinker_embed[0:1]
+        # Avoid moving the whole potentially large tensor to GPU
+        # Just take the first token for current step
+        current_embed = thinker_embed[0:1].to(device)
+        
+        # Keep the rest on CPU (or original device) for queue
         if thinker_embed.shape[0] > 1:
-            update_dict["thinker_embeddings"] = thinker_embed[1:].detach().to("cpu").contiguous()
+            update_dict["thinker_embeddings"] = thinker_embed[1:]
         else:
             update_dict["thinker_embeddings"] = None
 
