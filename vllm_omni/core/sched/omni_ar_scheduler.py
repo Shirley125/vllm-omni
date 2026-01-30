@@ -169,7 +169,6 @@ class OmniARScheduler(VLLMScheduler):
                 if request.request_id in self.requests_with_ready_chunks:
                     continue
                 if request.request_id in self.omni_connector.finished_requests:
-                    self.omni_connector.finished_requests.remote(request.request_id)
                     request.additional_information = None
                     continue
                 self.chunk_manager.get_chunk(request)
