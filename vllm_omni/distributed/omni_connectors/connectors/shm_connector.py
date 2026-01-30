@@ -216,7 +216,16 @@ class SharedMemoryConnector(OmniConnectorBase):
 
         }
         self.put_requests[request_id] += 1
-        safetensors.torch.save_file(tensors, filename)
+
+        # Atomic write to avoid partial reads
+        temp_filename = f"{filename}.tmp.{os.getpid()}"
+        try:
+            safetensors.torch.save_file(tensors, temp_filename)
+            os.rename(temp_filename, filename)
+        except Exception:
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+            raise
 
     def put_chunk_stage_1(self, pooling_output, request) -> None:
         """Store a chunk of pooling output at stage 1.
@@ -242,7 +251,16 @@ class SharedMemoryConnector(OmniConnectorBase):
             "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
         }
         self.put_requests[request_id] += 1
-        safetensors.torch.save_file(tensors, filename)
+
+        # Atomic write to avoid partial reads
+        temp_filename = f"{filename}.tmp.{os.getpid()}"
+        try:
+            safetensors.torch.save_file(tensors, temp_filename)
+            os.rename(temp_filename, filename)
+        except Exception:
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+            raise
 
     def get_chunk_stage_0(self, scheduler_output) -> dict[str, Any] | None:
         """Retrieve a chunk of pooling output at stage 1.
