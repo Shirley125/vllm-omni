@@ -187,36 +187,14 @@ class SharedMemoryConnector(OmniConnectorBase):
             return self.get_chunk_stage_0(scheduler_output)
         return self.get_chunk_stage_1(scheduler_output)
 
+
+class SharedMemoryConnector(OmniConnectorBase):
+    # ... __init__ ...
+
     def put_chunk_stage_0(self, pooling_output, request) -> None:
-        """Store a chunk of pooling output at stage 1.
-
-        Args:
-            pooling_output: Partial pooling output dictionary
-            request: Request object
-        """
-        request_id = request.request_id
-        prompt_token_ids = request.prompt_token_ids
-        self.request_prompt_token_ids[request_id] = prompt_token_ids
-        token_ids = request.all_token_ids
-        chunk = self.put_requests[request_id]
-        stage_key = f"{request_id}_{self.stage_id}_{chunk}"
+        # ... setup ...
         filename = self._generate_filename_debug(stage_key)
-        if os.path.exists(filename):
-            return
-
-        tensors = {
-            "thinker_embeddings": pooling_output["0"].detach().cpu(),
-            "thinker_hidden_states": pooling_output["24"].detach().cpu(),
-            "thinker_input_ids": torch.tensor(prompt_token_ids, dtype=torch.int32),
-            "thinker_sequences": torch.tensor(token_ids, dtype=torch.int32),
-            "tts_bos_embed": pooling_output["tts_bos_embed"][0].detach().cpu(),
-            "tts_eos_embed": pooling_output["tts_eos_embed"][0].detach().cpu(),
-            "tts_pad_embed": pooling_output["tts_pad_embed"][0].detach().cpu(),
-            "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
-
-        }
-        self.put_requests[request_id] += 1
-
+        
         # Atomic write to avoid partial reads
         temp_filename = f"{filename}.tmp.{os.getpid()}"
         try:
@@ -226,6 +204,19 @@ class SharedMemoryConnector(OmniConnectorBase):
             if os.path.exists(temp_filename):
                 os.remove(temp_filename)
             raise
+
+    def get_chunk_stage_0(self, scheduler_output) -> dict[str, Any] | None:
+        # ... setup ...
+        
+        # 读取时先检查锁
+        lock_file = f"{filename}.lock"
+        if os.path.exists(lock_file):
+             with open(lock_file, "r") as f_lock:
+                 fcntl.flock(f_lock, fcntl.LOCK_SH) # 获取共享锁（等待写完）
+                 fcntl.flock(f_lock, fcntl.LOCK_UN)
+        
+        output_data = safetensors.torch.load_file(filename)
+        # ...
 
     def put_chunk_stage_1(self, pooling_output, request) -> None:
         """Store a chunk of pooling output at stage 1.
