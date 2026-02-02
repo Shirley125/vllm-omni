@@ -194,10 +194,6 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
             with self.lock:
                 self._finished_save_reqs.add(request_id)
 
-        self.waiting_for_chunk_waiting_requests: deque[Any] = deque()
-        self.waiting_for_chunk_running_requests: deque[Any] = deque()
-        self.requests_with_ready_chunks = set()
-
     ########################################################################
     # Schedule Helper
     ########################################################################
@@ -213,11 +209,19 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
         """
         if self.connector.stage_id != 0:
             return 0
-        self._process_chunk_queue(waiting_queue, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING)
+        
+        finished_reqs = self.get_finished_requests()
+        self._process_chunk_queue(
+            waiting_queue, 
+            self.waiting_for_chunk_waiting_requests, 
+            RequestStatus.WAITING, 
+            finished_reqs
+        )
         self._process_chunk_queue(
             running_queue,
             self.waiting_for_chunk_running_requests,
             RequestStatus.RUNNING,
+            finished_reqs
         )
         return len(self.waiting_for_chunk_running_requests)
 
@@ -245,6 +249,7 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
             queue: Any,
             waiting_for_chunk_list: deque[Any],
             target_status: RequestStatus,
+            finished_reqs: set[str],
     ) -> None:
         queue_snapshot = list(queue)
         for request in queue_snapshot:
@@ -259,8 +264,7 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
                 self.load(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
             else:
-                finished_load_chunk_reqs = self.get_finished_requests()
-                if request.request_id in finished_load_chunk_reqs:
+                if request.request_id in finished_reqs:
                     request.status = target_status
                     self.requests_with_ready_chunks.add(request.request_id)
                     continue
