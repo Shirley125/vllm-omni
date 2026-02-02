@@ -161,7 +161,13 @@ class OmniARScheduler(VLLMScheduler):
             # Do not count waiting_for_chunk requests against max_num_running_reqs
             # to allow IO overlap (pipelining).
             # self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
-            pass
+
+            # If we have too many ready requests (e.g. due to IO completion overlap),
+            # preempt excess requests back to waiting queue to satisfy max_num_seqs.
+            while len(self.running) > self.scheduler_config.max_num_seqs:
+                request = self.running.pop()
+                request.status = RequestStatus.PREEMPTED
+                self.waiting.prepend_requests([request])
 
         try:
             scheduler_output = super().schedule()
