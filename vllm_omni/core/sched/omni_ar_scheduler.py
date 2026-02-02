@@ -384,7 +384,7 @@ class OmniARScheduler(VLLMScheduler):
                 )
                 if self.chunk_manager is not None:
                     custom_process_next_stage_input_func = self.custom_process_next_stage_input_func
-                    self.chunk_manager.submit_chunk(pooler_output, request, custom_process_next_stage_input_func)
+                    self.chunk_manager.save(pooler_output, request, custom_process_next_stage_input_func)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors

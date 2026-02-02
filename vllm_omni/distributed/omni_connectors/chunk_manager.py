@@ -89,6 +89,14 @@ class BasicOmniTransferManager:
         or use a generic implementation."""
         raise NotImplementedError
 
+    def load(self, *args, **kwargs):
+        """Register a request to load data. To be implemented by subclasses."""
+        raise NotImplementedError
+
+    def save(self, *args, **kwargs):
+        """Submit data to be saved/sent. To be implemented by subclasses."""
+        raise NotImplementedError
+
     def get_finished_load_requests(self):
         with self.lock:
             finished_load = set(self._finished_load_reqs)
@@ -176,7 +184,7 @@ class OmniChunkManager(BasicOmniTransferManager):
             with self.lock:
                 self._finished_save_reqs.add(request_id)
 
-    def request_chunk(self, request):
+    def load(self, request):
         """Request to retrieve a chunk of data for a specific request.
         
         Args:
@@ -192,7 +200,7 @@ class OmniChunkManager(BasicOmniTransferManager):
         with self.lock:
             self._pending_load_reqs[request_id] = request
 
-    def submit_chunk(self, pooling_output, request, custom_process_input_func=None):
+    def save(self, pooling_output, request, custom_process_input_func=None):
         """Submit a chunk of data to be stored/sent asynchronously.
 
         Args:
@@ -325,7 +333,7 @@ class OmniChunkManager(BasicOmniTransferManager):
                     self.finished_requests.remove(request.request_id)
                     request.additional_information = None
                     continue
-                self.request_chunk(request)
+                self.load(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
             else:
                 finished_load_chunk_reqs = self.get_finished_load_requests()
