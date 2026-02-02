@@ -13,7 +13,7 @@ from ..utils.logging import get_connector_logger
 logger = get_connector_logger(__name__)
 
 
-class OmniChunkTranferManager(BasicOmniTransferManager):
+class OmniChunkTransferManager(BasicOmniTransferManager):
     """Manages asynchronous retrieval and storage of data chunks via OmniConnector."""
 
     def __init__(self, connector):
