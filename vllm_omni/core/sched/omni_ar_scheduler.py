@@ -158,7 +158,10 @@ class OmniARScheduler(VLLMScheduler):
             num_waiting_running = self.chunk_manager.process_pending_chunks(
                 self.waiting, self.running
             )
-            self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
+            # Do not count waiting_for_chunk requests against max_num_running_reqs
+            # to allow IO overlap (pipelining).
+            # self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
+            pass
 
         try:
             scheduler_output = super().schedule()

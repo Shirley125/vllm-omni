@@ -65,7 +65,10 @@ class OmniGenerationScheduler(VLLMScheduler):
                 self.waiting, self.running
             )
 
-            self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
+            # Do not count waiting_for_chunk requests against max_num_running_reqs
+            # to allow IO overlap (pipelining).
+            # self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
+            pass
 
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
