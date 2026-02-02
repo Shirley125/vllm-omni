@@ -197,6 +197,68 @@ def update_from_output(self, ...) -> dict[int, EngineCoreOutputs]:
     # ...
 ```
 
+### Async Chunk Transfer Manager
+
+For multi-stage pipelines that stream partial outputs, the scheduler delegates
+chunk IO to a dedicated transfer manager. The manager encapsulates async recv/
+save loops and exposes scheduler-friendly helpers to keep queues consistent.
+
+```mermaid
+classDiagram
+    %% --- Schedulers ---
+    class OmniARScheduler {
+        +schedule()
+        +chunk_manager: OmniChunkTransferManager
+    }
+    class OmniGenerationScheduler {
+        +schedule()
+        +chunk_manager: OmniChunkTransferManager
+    }
+
+    %% --- Transfer Manager (Core Logic) ---
+    class BasicOmniTransferManager {
+        <<vllm_omni.distributed.omni_connectors.chunk_manager>>
+        +close()
+    }
+    class OmniChunkTransferManager {
+        <<vllm_omni.distributed.omni_connectors.chunk_manager>>
+        -connector: SharedMemoryConnector
+        -pending_load_reqs: dict
+        -finished_load_reqs: set
+        -pending_save_reqs: dict
+        -finished_save_reqs: set
+        -recv_thread: Thread
+        -save_thread: Thread
+
+        +process_pending_chunks(waiting, running) : int
+        +restore_queues(waiting, running)
+        +filter_scheduler_output(output)
+
+        +request_chunk(request)
+        +submit_chunk(output, request, func)
+        +get_finished_load_requests() : set
+
+        -recv_loop()
+        -save_loop()
+    }
+
+    %% --- Connectors (Transport Layer) ---
+    class SharedMemoryConnector {
+        <<vllm_omni.distributed.omni_connectors.connectors.shm_connector>>
+        +put(key, data)
+        +get(key)
+    }
+
+    %% --- Relationships ---
+    BasicOmniTransferManager <|-- OmniChunkTransferManager
+    OmniARScheduler --> OmniChunkTransferManager : 组合 & 委托
+    OmniGenerationScheduler --> OmniChunkTransferManager : 组合 & 委托
+    OmniChunkTransferManager --> SharedMemoryConnector : 使用基础传输
+```
+
+`BasicOmniTransferManager` provides a shared lifecycle hook (`close`) to make
+future transfer managers (e.g. KV transfer) conform to the same interface.
+
 ## 4. Worker and ModelRunner Design
 
 ### GPUARWorker
