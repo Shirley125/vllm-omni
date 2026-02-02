@@ -3,10 +3,6 @@
 
 import threading
 import time
-from collections import defaultdict, deque
-from typing import Any
-
-import torch
 
 from .utils.logging import get_connector_logger
 

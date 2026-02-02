@@ -5,8 +5,9 @@ from collections import defaultdict, deque
 from typing import Any
 
 import torch
-from vllm.v1.request import RequestStatus
+from vllm.v1.request import Request, RequestStatus
 
+from .base import BasicOmniTransferManager
 from .utils.logging import get_connector_logger
 
 logger = get_connector_logger(__name__)

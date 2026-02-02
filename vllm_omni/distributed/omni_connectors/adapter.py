@@ -3,18 +3,9 @@
 # temporary for compatibility with vllm_omni.entrypoints.omni_stage.py
 # and vllm_omni.entrypoints.omni_llm.py
 
-import threading
 import time
-from collections import deque
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
-
-import torch
-from vllm.v1.core.sched.output import SchedulerOutput, CachedRequestData
-from vllm.v1.request import Request, RequestStatus
-
-if TYPE_CHECKING:
-    from .connectors.base import OmniConnectorBase
+from typing import Any
 
 from vllm_omni.entrypoints.stage_utils import OmniStageTaskType
 
