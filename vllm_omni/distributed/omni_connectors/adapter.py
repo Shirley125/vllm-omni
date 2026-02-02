@@ -3,7 +3,6 @@
 # temporary for compatibility with vllm_omni.entrypoints.omni_stage.py
 # and vllm_omni.entrypoints.omni_llm.py
 
-import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -18,6 +17,7 @@ if TYPE_CHECKING:
 
 from vllm_omni.entrypoints.stage_utils import OmniStageTaskType
 
+from .base_chunk_manager import BaseOmniChunkManager
 from .utils.logging import get_connector_logger
 
 logger = get_connector_logger(__name__)
@@ -181,135 +181,119 @@ def try_recv_via_connector(
             return None, None
 
 
-class OmniChunkManager:
-    """Manages asynchronous retrieval of chunks via OmniConnector."""
+class OmniChunkManager(BaseOmniChunkManager):
+    """Manages asynchronous retrieval of chunks via OmniConnector.
+    
+    This implementation handles:
+    - Multi-stage chunk loading with retries
+    - Asynchronous chunk saving with queuing
+    - Request state tracking
+    - Integration with omni schedulers
+    """
 
     def __init__(self, connector):
-        self.connector = connector
-        # Requests that are waiting to be polled
-        self._pending_load_reqs = {}
-        # Requests that have successfully retrieved a chunk
-        self._finished_load_reqs = set()
+        super().__init__(connector)
 
-        # Requests that are waiting to be saved
-        self._pending_save_reqs = {}
-        # Requests that have successfully saved a chunk
-        self._finished_save_reqs = set()
+    def _process_load_request(self, req_id: str) -> None:
+        """Process a single load request by fetching from connector."""
+        stage_id = self.connector.stage_id
+        target_stage_id = stage_id - 1
+        chunk_id = self.connector.get_requests[req_id]
+        external_req_id = self.connector.request_ids_mapping.get(req_id, req_id)
+        connector_get_key = f"{external_req_id}_{target_stage_id}_{chunk_id}"
 
-        self.stop_event = threading.Event()
-        self.lock = threading.Lock()
-        self.thread = threading.Thread(target=self.recv_loop, daemon=True)
-        self.thread.start()
+        try:
+            # Use timeout=0 for non-blocking poll
+            result = self.connector.get(
+                str(target_stage_id),
+                str(stage_id),
+                connector_get_key,
+            )
+            
+            if not result:
+                return
+                
+            payload_data, size = result
 
-        self.save_thread = threading.Thread(target=self.save_loop, daemon=True)
-        self.save_thread.start()
+            if payload_data:
+                logger.debug(f"[Stage-{stage_id}] Received payload for {connector_get_key}")
 
-    def recv_loop(self):
-        while not self.stop_event.is_set():
-            # Iterate over a snapshot of pending requests
-            with self.lock:
-                pending_reqs_ids = list(self._pending_load_reqs.keys())
+                self.connector.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
+                # Update connector state
+                self.connector.get_requests[req_id] += 1
+                
+                with self.lock:
+                    req = self._pending_load_reqs.get(req_id)
+                    if not req:
+                        return
+                
+                # todo: just for qwen3_omni?
+                if stage_id != 2:
+                    req.additional_information = payload_data
+                    if payload_data.get("finished"):
+                        self.connector.finished_requests.add(req_id)
+                else:
+                    if payload_data.get("finished"):
+                        self.connector.finished_requests.add(req_id)
+                        req.status = RequestStatus.FINISHED_STOPPED
 
-            for req_id in pending_reqs_ids:
-                stage_id = self.connector.stage_id
-                target_stage_id = stage_id - 1
-                chunk_id = self.connector.get_requests[req_id]
-                external_req_id = self.connector.request_ids_mapping.get(req_id, req_id)
-                connector_get_key = f"{external_req_id}_{target_stage_id}_{chunk_id}"
+                    # TODO: remove special handling for prompt token ids ?
+                    if chunk_id == 0:
+                        req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
+                    else:
+                        req.prompt_token_ids += payload_data.get("code_predictor_codes", [])
 
-                try:
-                    # Use timeout=0 for non-blocking poll
-                    payload_data, size = self.connector.get(
-                        str(target_stage_id),
-                        str(stage_id),
-                        connector_get_key,
-                    )
+                # Mark as finished for consumption
+                self._mark_load_finished(req_id)
+                logger.info(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
+        except Exception as e:
+            logger.warning(f"[Stage-{stage_id}] Receiving chunk with error {e}")
 
-                    if payload_data:
-                        logger.debug(f"[Stage-{stage_id}] Received payload {payload_data}")
-
-                        self.connector.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
-                        # Update connector state
-                        self.connector.get_requests[req_id] += 1
-                        req = self._pending_load_reqs[req_id]
-                        # todo: just for qwen3_omni?
-                        if stage_id != 2:
-                            req.additional_information = payload_data
-                            if payload_data.get("finished"):
-                                self.connector.finished_requests.add(req_id)
-                        else:
-                            if payload_data.get("finished"):
-                                self.connector.finished_requests.add(req_id)
-                                req.status = RequestStatus.FINISHED_STOPPED
-
-                            # TODO: remove special handling for prompt token ids ?
-                            if chunk_id == 0:
-                                req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
-                            else:
-                                req.prompt_token_ids += payload_data.get("code_predictor_codes", [])
-
-                        # Mark as finished for consumption
-                        with self.lock:
-                            self._finished_load_reqs.add(req_id)
-                            if req_id in self._pending_load_reqs:
-                                del self._pending_load_reqs[req_id]
-                        logger.info(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
-                except Exception as e:
-                    logger.warning(f"[Stage-{stage_id}] Receiving chunk with error {e}")
-                    pass
-
-            time.sleep(0.001)
-
-    def save_loop(self):
-        while not self.stop_event.is_set():
-            task = None
-            with self.lock:
-                pending_save_reqs_ids = list(self._pending_save_reqs.keys())
-                for req_id in pending_save_reqs_ids:
-                    if self._pending_save_reqs[req_id]:
-                        task = self._pending_save_reqs[req_id].popleft()
-                        if not self._pending_save_reqs[req_id]:
-                            del self._pending_save_reqs[req_id]
-                        break
-
-            if task:
-                connector_put_key = task["put_key"]
-                stage_id = task["stage_id"]
-                next_stage_id = task["next_stage_id"]
-                payload_data = task["data"]
-                request_id = task["request_id"]
-
-                try:
-                    success, size, metadata = self.connector.put(
-                        from_stage=str(stage_id),
-                        to_stage=str(next_stage_id),
-                        put_key=connector_put_key,
-                        data=payload_data,
-                    )
-
-                    if success:
-                        logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")
-                        with self.lock:
-                            self._finished_save_reqs.add(request_id)
-
-                except Exception as e:
-                    logger.error(f"[Stage-{stage_id}] Error in save_loop for key {connector_put_key}: {e}")
-            else:
-                time.sleep(0.001)
-
-    def get_finished(self):
+    def _get_next_save_task(self) -> dict[str, Any] | None:
+        """Get the next save task from the pending queue."""
         with self.lock:
-            finished_load = set(self._finished_load_reqs)
-            self._finished_load_reqs = set()
-        return finished_load
+            pending_save_reqs_ids = list(self._pending_save_reqs.keys())
+            for req_id in pending_save_reqs_ids:
+                if self._pending_save_reqs[req_id]:
+                    task = self._pending_save_reqs[req_id].popleft()
+                    if not self._pending_save_reqs[req_id]:
+                        del self._pending_save_reqs[req_id]
+                    return task
+        return None
 
-    def get_chunk(self, request):
-        """Retrieve a chunk of pooling output.
+    def _process_save_task(self, task: dict[str, Any]) -> None:
+        """Process a single save task by sending to connector."""
+        connector_put_key = task["put_key"]
+        stage_id = task["stage_id"]
+        next_stage_id = task["next_stage_id"]
+        payload_data = task["data"]
+        request_id = task["request_id"]
+
+        try:
+            success, size, metadata = self.connector.put(
+                from_stage=str(stage_id),
+                to_stage=str(next_stage_id),
+                put_key=connector_put_key,
+                data=payload_data,
+            )
+
+            if success:
+                logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")
+                self._mark_save_finished(request_id)
+
+        except Exception as e:
+            logger.error(f"[Stage-{stage_id}] Error processing save task for key {connector_put_key}: {e}")
+
+    # Legacy compatibility - delegates to base class
+    def get_finished(self):
+        """Get finished load requests (legacy interface)."""
+        return self.get_finished_load_requests()
+
+    def request_chunk(self, request: Any) -> None:
+        """Request a chunk to be loaded asynchronously.
+        
         Args:
-            scheduler_output: Partial scheduler output dictionary
-
-        Returns:
-            dict[str, Any] | None: Pooling output dictionary or None if not found
+            request: The request object needing a chunk
         """
         stage_id = self.connector.stage_id
         request_id = request.request_id
@@ -322,14 +306,24 @@ class OmniChunkManager:
         with self.lock:
             self._pending_load_reqs[request_id] = request
 
-    def put_chunk(self, pooling_output, request, custom_process_input_func=None):
+    # Legacy compatibility - renamed from get_chunk
+    def get_chunk(self, request):
+        """Retrieve a chunk of pooling output (legacy interface).
+        
+        Delegates to request_chunk().
+        """
+        self.request_chunk(request)
+
+    def submit_chunk(self, output: Any, request: Any, custom_process_func=None) -> None:
         """Store a chunk of pooling output asynchronously.
 
         Args:
-            pooling_output: Partial pooling output dictionary
+            output: Partial pooling output dictionary
             request: Request object
-            custom_process_input_func: Optional processing function
+            custom_process_func: Optional processing function
         """
+        pooling_output = output
+        custom_process_input_func = custom_process_func
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
         request_id = request.external_req_id
@@ -403,6 +397,14 @@ class OmniChunkManager:
             if request_id not in self._pending_save_reqs:
                 self._pending_save_reqs[request_id] = deque()
             self._pending_save_reqs[request_id].append(task)
+
+    # Legacy compatibility - renamed to submit_chunk
+    def put_chunk(self, pooling_output, request, custom_process_input_func=None):
+        """Store a chunk of pooling output asynchronously (legacy interface).
+        
+        Delegates to submit_chunk().
+        """
+        self.submit_chunk(pooling_output, request, custom_process_input_func)
 
 
 def compute_talker_prompt_ids_length(prompt_ids: list[int]) -> int:
