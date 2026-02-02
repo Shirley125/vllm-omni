@@ -211,7 +211,7 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
         Process pending chunks for waiting and running queues.
         Returns the number of running requests waiting for chunks.
         """
-        if self.stage_id != 0:
+        if self.connector.stage_id != 0:
             return 0
         self._process_chunk_queue(waiting_queue, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING)
         self._process_chunk_queue(
