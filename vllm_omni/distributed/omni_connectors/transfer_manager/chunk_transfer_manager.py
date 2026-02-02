@@ -39,7 +39,7 @@ class OmniChunkTranferManager(BasicOmniTransferManager):
         """
         stage_id = self.connector.stage_id
         request_id = request.request_id
-        self.connector.request_ids_mapping[request_id] = request.external_req_id
+        self.request_ids_mapping[request_id] = request.external_req_id
 
         if stage_id == 0:
             return
@@ -134,7 +134,7 @@ class OmniChunkTranferManager(BasicOmniTransferManager):
         stage_id = self.connector.stage_id
         target_stage_id = stage_id - 1
         chunk_id = self.get_requests[req_id]
-        external_req_id = self.connector.request_ids_mapping.get(req_id, req_id)
+        external_req_id = self.request_ids_mapping.get(req_id, req_id)
         connector_get_key = f"{external_req_id}_{target_stage_id}_{chunk_id}"
 
         # Use timeout=0 for non-blocking poll
