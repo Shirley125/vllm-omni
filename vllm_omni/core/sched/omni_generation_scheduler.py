@@ -14,7 +14,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniCachedRequestData, OmniNewRequestData
-from vllm_omni.distributed.omni_connectors.transfer_maneger.chunk_transfer_manager import OmniChunkTransferManager
+from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import OmniChunkTransferManager
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 from vllm_omni.outputs import OmniModelRunnerOutput
@@ -143,7 +143,7 @@ class OmniGenerationScheduler(VLLMScheduler):
         num_common_prefix_blocks = [0] * len(self.kv_cache_config.kv_cache_groups)
         if self.running:
             any_request = self.running[0]
-            num_common_prefix_blocks = self.kv_cache_manager.get_num_common_prefix_blocks(any_request.request_id)
+            num_common_prefix_blocks = self.kv_cache_manager.get_num_common_prefix_blocks(any_request. id)
 
         # Assemble SchedulerOutput (align with v0.14.0)
         if self.use_v2_model_runner:
