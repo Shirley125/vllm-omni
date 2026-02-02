@@ -176,9 +176,102 @@ class OmniChunkManager(BasicOmniTransferManager):
             with self.lock:
                 self._finished_save_reqs.add(request_id)
 
-        self.waiting_for_chunk_waiting_requests: deque[Any] = deque()
-        self.waiting_for_chunk_running_requests: deque[Any] = deque()
-        self.requests_with_ready_chunks = set()
+    def request_chunk(self, request):
+        """Request to retrieve a chunk of data for a specific request.
+        
+        Args:
+            request: The request object needing data.
+        """
+        stage_id = self.connector.stage_id
+        request_id = request.request_id
+
+        if stage_id == 0:
+            return
+        if not hasattr(request, "additional_information"):
+            request.additional_information = None
+        with self.lock:
+            self._pending_load_reqs[request_id] = request
+
+    def submit_chunk(self, pooling_output, request, custom_process_input_func=None):
+        """Submit a chunk of data to be stored/sent asynchronously.
+
+        Args:
+            pooling_output: Partial pooling output dictionary
+            request: Request object
+            custom_process_input_func: Optional processing function
+        """
+        stage_id = self.connector.stage_id
+        next_stage_id = stage_id + 1
+        request_id = request.request_id
+
+        # Snapshot prompt_token_ids
+        prompt_token_ids = list(request.prompt_token_ids)
+        self.request_prompt_token_ids[request_id] = prompt_token_ids
+        chunk_id = self.put_requests[request_id]
+
+        # Process payload in main thread to avoid race conditions on request state
+        payload_data = None
+        if custom_process_input_func:
+            try:
+                payload_data = custom_process_input_func(
+                    pooling_output=pooling_output,
+                    request=request,
+                )
+
+            except Exception as e:
+                logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
+
+            if not payload_data:
+                logger.warning(f"[Stage-{stage_id}] No payload data to send for request {request_id}")
+                return
+            if stage_id == 0 and chunk_id == 0:
+                if self.request_payload.get(request_id) is None:
+                    self.request_payload[request_id] = payload_data
+                    return
+                else:
+                    save_payload = self.request_payload.get(request_id)
+                    payload_data["thinker_embeddings"] = torch.cat(
+                        (save_payload.get("thinker_embeddings"), payload_data.get("thinker_embeddings")), dim=0
+                    )
+                    payload_data["thinker_hidden_states"] = torch.cat(
+                        (save_payload.get("thinker_hidden_states"), payload_data.get("thinker_hidden_states")), dim=0
+                    )
+                    logger.info(f"[Stage-{stage_id}] Merged embeddings and hidden states for request {request_id}")
+
+            if stage_id == 1:
+                # TODO: Make parameters configurable and optimize algorithms
+                chunk_size = left_context_size = 25
+                self.code_prompt_token_ids[request_id].append(payload_data.get("code_predictor_codes", []))
+                length = len(self.code_prompt_token_ids[request_id])
+                chunk_length = length % chunk_size
+                if chunk_length != 0 and not payload_data.get("finished"):
+                    return
+
+                context_length = chunk_length if chunk_length != 0 else chunk_size
+                end_index = min(length, left_context_size + context_length)
+                payload_data["code_predictor_codes"] = (
+                    torch.tensor(self.code_prompt_token_ids[request_id][-end_index:])
+                    .transpose(0, 1)
+                    .reshape(-1)
+                    .tolist()
+                )
+
+        # Increment chunk_id here since we are committing to send
+        self.put_requests[request_id] += 1
+        connector_put_key = f"{request_id[0:25]}_{stage_id}_{chunk_id}"
+
+        task = {
+            "stage_id": stage_id,
+            "next_stage_id": next_stage_id,
+            "put_key": connector_put_key,
+            "data": payload_data,
+            "request_id": request_id,
+        }
+
+        with self.lock:
+            if request_id not in self._pending_save_reqs:
+                self._pending_save_reqs[request_id] = deque()
+            self._pending_save_reqs[request_id].append(task)
 
     def process_pending_chunks(
         self,
