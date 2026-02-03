@@ -59,7 +59,8 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
         """
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
-        request_id = request.request_id
+        # Use external_req_id to align with original logic and ensure stability
+        request_id = request.external_req_id
 
         # Snapshot prompt_token_ids
         prompt_token_ids = list(request.prompt_token_ids)
@@ -98,8 +99,7 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
 
             if stage_id == 1:
                 # TODO: Make parameters configurable and optimize algorithms
-                chunk_size = 25
-                # left_context_size = 25
+                chunk_size = left_context_size = 25
                 self.code_prompt_token_ids[request_id].append(payload_data.get("code_predictor_codes", []))
                 length = len(self.code_prompt_token_ids[request_id])
                 chunk_length = length % chunk_size
@@ -107,9 +107,9 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
                     return
 
                 context_length = chunk_length if chunk_length != 0 else chunk_size
-                # end_index = min(length, left_context_size + context_length)
+                end_index = min(length, left_context_size + context_length)
                 # Correct logic to avoid duplication: only send the new context_length items
-                end_index = context_length
+                # end_index = context_length
                 payload_data["code_predictor_codes"] = (
                     torch.tensor(self.code_prompt_token_ids[request_id][-end_index:])
                         .transpose(0, 1)
