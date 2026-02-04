@@ -6,21 +6,21 @@ from dataclasses import asdict, dataclass
 from time import time
 from typing import Any
 
+import numpy as np
 from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.distributed.kv_events import KVEventBatch
 from vllm.distributed.kv_transfer.kv_connector.v1.metrics import KVConnectorStats
 from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler as VLLMScheduler
-from vllm.v1.core.sched.utils import remove_all
+from vllm.v1.core.sched.utils import check_stop, remove_all
 from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.metrics.perf import PerfStats
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
-from vllm_omni.core.sched.output import OmniSchedulerOutput
-from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import OmniChunkTransferManager
+from vllm_omni.distributed.omni_connectors.adapter import get_chunk, put_chunk
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 
@@ -66,7 +66,6 @@ class OmniARScheduler(VLLMScheduler):
         self.transfer_triggered_requests: set[str] = set()
         model_config = self.vllm_config.model_config
         self.omni_connector = None
-        self.chunk_manager = None
         if model_config.async_chunk:
             connector_config = model_config.stage_connector_config
             connector_specs = ConnectorSpec(
@@ -74,7 +73,6 @@ class OmniARScheduler(VLLMScheduler):
                 extra=connector_config.get("extra", {}),
             )
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
-            self.chunk_manager = OmniChunkTransferManager(self.omni_connector)
 
             custom_process_next_stage_input_func = getattr(
                 self.vllm_config.model_config, "custom_process_next_stage_input_func", None
@@ -154,18 +152,7 @@ class OmniARScheduler(VLLMScheduler):
         return False
 
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
-        if self.chunk_manager:
-            num_waiting_running = self.chunk_manager.process_pending_chunks(
-                self.waiting, self.running
-            )
-            self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
-
-        try:
-            scheduler_output = super().schedule()
-        finally:
-            if self.chunk_manager:
-                # Add request waiting for chunk to the waiting and running queue
-                self.chunk_manager.restore_queues(self.waiting, self.running)
+        scheduler_output = super().schedule()
         try:
             # Late import to avoid circulars in some launch modes
             from .output import OmniNewRequestData
@@ -194,29 +181,17 @@ class OmniARScheduler(VLLMScheduler):
                 new_list.append(omni_nr)
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
-            cached_reqs = scheduler_output.scheduled_cached_reqs
-            if not hasattr(cached_reqs, "additional_information"):
-                cached_reqs.additional_information = {}
-            for req_id in cached_reqs.req_ids:
-                request = self.requests.get(req_id) if req_id else None
-                additional_info = getattr(request, "additional_information", None) if request else None
-                cached_reqs.additional_information[req_id] = additional_info
-            if self.chunk_manager:
-                self.chunk_manager.filter_scheduler_output(scheduler_output)
+            if self.omni_connector is not None:
+                get_chunk(self.omni_connector, scheduler_output)
+
             # Add information about requests needing KV cache transfer
-            finished_reqs = self.get_finished_requests_needing_kv_transfer()
+            scheduler_output.finished_requests_needing_kv_transfer = self.get_finished_requests_needing_kv_transfer()
         except Exception:
             # If anything goes wrong, leave the original output unchanged
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
-            finished_reqs = {}
+            scheduler_output.finished_requests_needing_kv_transfer = {}
 
-        # Wrap in omni scheduler output to carry transfer metadata.
-        base_fields = SchedulerOutput.__dataclass_fields__.keys()
-        base_data = {name: getattr(scheduler_output, name) for name in base_fields}
-        return OmniSchedulerOutput(
-            **base_data,
-            finished_requests_needing_kv_transfer=finished_reqs,
-        )
+        return scheduler_output
 
     def update_from_output(
         self,
@@ -303,32 +278,47 @@ class OmniARScheduler(VLLMScheduler):
             pooler_output = pooler_outputs[req_index] if pooler_outputs else None
             kv_transfer_params = None
             status_before_stop = request.status
-            finish_reason = None
-            routed_experts = None
 
             # Check for stop and update request status.
             if new_token_ids:
                 new_token_ids, stopped = self._update_request_with_output(request, new_token_ids)
-            elif request.pooling_params and pooler_output is not None:
-                # Pooling stops as soon as there is output.
-                request.status = RequestStatus.FINISHED_STOPPED
-                stopped = True
 
-            # If criteria returns True, it means we must STOP the request.
-            # If criteria returns False, it might have triggered a background
-            # transfer (e.g. prefill finished / special token) but continues decoding.
+            # If criteria returns True, it means we must STOP the request (e.g. legacy behavior, not used now)
+            # If criteria returns False, it might have triggered a background transfer
+            # (e.g. prefill finished / special token) but continues decoding
             if not stopped and self._process_kv_transfer_trigger(request, new_token_ids):
                 stopped = True
 
+            # Stop checking for pooler models.
+            pooler_output = None
+            if pooler_outputs:
+                pooler_output = pooler_outputs[req_index]
+                if request.output_token_ids:
+                    stopped = check_stop(request, self.max_model_len)
+            routed_experts = None
             if stopped:
-                routed_experts = self._get_routed_experts(request)
+                # [Omni] Handle routed experts if enabled
+                if self.vllm_config.model_config.enable_return_routed_experts:
+                    kv_blocks = self.kv_cache_manager.get_blocks(request.request_id)
+                    block_ids = kv_blocks.get_block_ids()[0]
+                    num_tokens = request.num_tokens - 1
 
-                # Capture finish_reason BEFORE _handle_stopped_request, which may
-                # reset the status to WAITING for streaming requests that continue.
-                finish_reason = request.get_finished_reason()
-                finished = self._handle_stopped_request(request)
-                if finished:
-                    kv_transfer_params = self._free_request(request)
+                    # compute slot mapping
+                    block_ids_array = np.array(block_ids, dtype=np.int32)
+                    num_blocks = len(block_ids)
+                    block_size = self.block_size
+
+                    # generate block offsets
+                    block_offsets = np.arange(0, block_size)
+
+                    # compute slot mapping: slot = block_id * block_size + offset
+                    slot_mapping = (
+                        block_offsets.reshape((1, block_size)) + block_ids_array.reshape((num_blocks, 1)) * block_size
+                    ).flatten()[:num_tokens]
+
+                    routed_experts = self.routed_experts_reader.get_routed_experts(indices=slot_mapping)
+
+                kv_transfer_params = self._free_request(request)
                 if status_before_stop == RequestStatus.RUNNING:
                     stopped_running_reqs.add(request)
                 else:
@@ -355,13 +345,13 @@ class OmniARScheduler(VLLMScheduler):
 
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)
-            if new_token_ids or pooler_output is not None or kv_transfer_params or stopped:
+            if new_token_ids or pooler_output is not None or kv_transfer_params:
                 # Add EngineCoreOutput for this Request.
                 outputs[request.client_index].append(
                     EngineCoreOutput(
                         request_id=req_id,
                         new_token_ids=new_token_ids,
-                        finish_reason=finish_reason,
+                        finish_reason=request.get_finished_reason(),
                         new_logprobs=new_logprobs,
                         new_prompt_logprobs_tensors=prompt_logprobs_tensors,
                         pooling_output=pooler_output,
@@ -374,9 +364,9 @@ class OmniARScheduler(VLLMScheduler):
                         num_nans_in_logits=request.num_nans_in_logits,
                     )
                 )
-                if self.chunk_manager is not None:
+                if self.omni_connector is not None:
                     custom_process_next_stage_input_func = self.custom_process_next_stage_input_func
-                    self.chunk_manager.save(pooler_output, request, custom_process_next_stage_input_func)
+                    put_chunk(self.omni_connector, pooler_output, request, custom_process_next_stage_input_func)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
