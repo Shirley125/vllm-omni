@@ -184,6 +184,7 @@ def thinker2talker(
 def talker2code2wav_async_chunk(
     pooling_output: dict[str, Any],
     request: OmniEngineCoreRequest,
+    transfer_manager: Any = None,
 ):
     """
     Pooling version.
@@ -210,7 +211,42 @@ def talker2code2wav_async_chunk(
         if not code_tensor.any():
             return []
 
-    codec_codes = code_predictor_codes.to(torch.long).transpose(0, 1).cpu().to(torch.long).reshape(-1).tolist()
+    # If transfer_manager is provided, use it to manage context and deduplication
+    if transfer_manager:
+        request_id = request.external_req_id
+        
+        # Add new codes to history
+        transfer_manager.code_prompt_token_ids[request_id].append(code_predictor_codes)
+        
+        # Configuration
+        chunk_size = 25
+        left_context_size = 25
+        
+        length = len(transfer_manager.code_prompt_token_ids[request_id])
+        chunk_length = length % chunk_size
+        
+        # Only send if we have a full chunk or the request is finished
+        is_finished = request.is_finished()
+        if chunk_length != 0 and not is_finished:
+            return []
+
+        context_length = chunk_length if chunk_length != 0 else chunk_size
+        end_index = min(length, left_context_size + context_length)
+        
+        # Extract the window of tokens to send
+        tokens_to_send = transfer_manager.code_prompt_token_ids[request_id][-end_index:]
+        codec_codes = (
+            torch.tensor(tokens_to_send)
+            .transpose(0, 1)
+            .cpu()
+            .to(torch.long)
+            .reshape(-1)
+            .tolist()
+        )
+    else:
+        # Fallback to simple logic (might cause duplication if not handled externally)
+        codec_codes = code_predictor_codes.to(torch.long).transpose(0, 1).cpu().to(torch.long).reshape(-1).tolist()
+        
     if sum(codec_codes) == 0:
         return []
 

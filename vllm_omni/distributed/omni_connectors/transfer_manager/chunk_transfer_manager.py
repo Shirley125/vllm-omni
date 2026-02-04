@@ -106,24 +106,12 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
                     logger.info(f"[Stage-{stage_id}] Merged embeddings and hidden states for request {request_id}")
 
             if stage_id == 1:
-                # TODO: Make parameters configurable and optimize algorithms
-                chunk_size = left_context_size = 25
-                self.code_prompt_token_ids[request_id].append(payload_data.get("code_predictor_codes", []))
-                length = len(self.code_prompt_token_ids[request_id])
-                chunk_length = length % chunk_size
-                if chunk_length != 0 and not payload_data.get("finished"):
+                # Logic moved to talker2code2wav_async_chunk to keep transfer manager generic
+                # If the payload is empty (e.g. filtered by chunk logic in custom function), skip sending
+                if not payload_data and not payload_data.get("finished"):
                     return
-
-                context_length = chunk_length if chunk_length != 0 else chunk_size
-                end_index = min(length, left_context_size + context_length)
-                # Correct logic to avoid duplication: only send the new context_length items
-                # end_index = context_length
-                payload_data["code_predictor_codes"] = (
-                    torch.tensor(self.code_prompt_token_ids[request_id][-end_index:])
-                        .transpose(0, 1)
-                        .reshape(-1)
-                        .tolist()
-                )
+                # If payload has data, it means custom function decided it's time to send
+                pass
 
         # Increment chunk_id here since we are committing to send
         self.put_requests[request_id] += 1
