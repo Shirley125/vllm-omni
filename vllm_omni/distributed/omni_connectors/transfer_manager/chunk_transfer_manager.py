@@ -74,10 +74,18 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
                 payload_data = custom_process_input_func(
                     pooling_output=pooling_output,
                     request=request,
+                    transfer_manager=self,
                 )
 
             except Exception as e:
-                logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
+                # Retry without transfer_manager for backward compatibility
+                try:
+                    payload_data = custom_process_input_func(
+                        pooling_output=pooling_output,
+                        request=request,
+                    )
+                except Exception as inner_e:
+                    logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}; Retry failed: {inner_e}")
 
             if not payload_data:
                 logger.warning(f"[Stage-{stage_id}] No payload data to send for request {request_id}")
