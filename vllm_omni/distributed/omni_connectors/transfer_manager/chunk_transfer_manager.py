@@ -175,8 +175,6 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
 
         if success:
             logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")
-            with self.lock:
-                self._finished_save_reqs.add(request_id)
 
     ########################################################################
     # Schedule Helper
