@@ -59,7 +59,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         """
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
-        request_id = request.request_id
+        request_id = request.external_req_id
         chunk_id = self.put_requests[request_id]
 
         # Process payload in main thread to avoid race conditions on request state
@@ -80,7 +80,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
 
         # Increment chunk_id here since we are committing to send
         self.put_requests[request_id] += 1
-        connector_put_key = f"{request.external_req_id}_{stage_id}_{chunk_id}"
+        connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
 
         task = {
             "stage_id": stage_id,
@@ -114,7 +114,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             # Update connector state
             self.get_requests[req_id] += 1
             req = self._pending_load_reqs[req_id]
-            self._update_request_payload(req_id, payload_data)
+            self._update_request_payload(external_req_id, payload_data)
 
             if stage_id != 2:
                 req.additional_information = payload_data
@@ -125,8 +125,8 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                     self.finished_requests.add(req_id)
                     req.status = RequestStatus.FINISHED_STOPPED
 
-                request.prompt_token_ids = payload_data.get("code_predictor_codes", [])
-                request.num_computed_tokens = 0
+                req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
+                req.num_computed_tokens = 0
 
             # Mark as finished for consumption
             with self.lock:
@@ -144,10 +144,10 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             req_id: Request ID to update
             payload_data: New payload data to store
         """
-        if not request_payload[req_id]:
-            request_payload[req_id] = payload_data
+        if req_id not in self.request_payload:
+            self.request_payload[req_id] = payload_data
             return
-        origin_payload = request_payload[req_id]
+        origin_payload = self.request_payload[req_id]
         for key, value in payload_data.items():
             if key == "finished":
                 continue
@@ -156,7 +156,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             elif isinstance(value, list) and key in origin_payload:
                 payload_data[key] = origin_payload[key] + value
 
-        request_payload[req_id] = payload_data
+        self.request_payload[req_id] = payload_data
         return payload_data
 
     def _process_single_save(self, task: dict):
@@ -240,7 +240,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                     continue
                 # Access finished_requests from self instead of connector
                 if request.request_id in self.finished_requests:
-                    request.additional_information = None
+                    request.additional_information = {}
                     continue
                 self.load(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
