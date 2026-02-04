@@ -7,13 +7,13 @@ from typing import Any
 import torch
 from vllm.v1.request import Request, RequestStatus
 
-from .base import BasicOmniTransferManager
+from .base import OmniTransferManagerBase
 from ..utils.logging import get_connector_logger
 
 logger = get_connector_logger(__name__)
 
 
-class OmniChunkTransferManager(BasicOmniTransferManager):
+class OmniChunkTransferManager(OmniTransferManagerBase):
     """Manages asynchronous retrieval and storage of data chunks via OmniConnector."""
 
     def __init__(self, connector):
@@ -60,10 +60,6 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
         request_id = request.request_id
-
-        # Snapshot prompt_token_ids
-        prompt_token_ids = list(request.prompt_token_ids)
-        self.request_prompt_token_ids[request_id] = prompt_token_ids
         chunk_id = self.put_requests[request_id]
 
         # Process payload in main thread to avoid race conditions on request state
@@ -71,6 +67,7 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
         if custom_process_input_func:
             try:
                 payload_data = custom_process_input_func(
+                    transfer_manager=self,
                     pooling_output=pooling_output,
                     request=request,
                 )
@@ -79,40 +76,7 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
                 logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
 
             if not payload_data:
-                logger.warning(f"[Stage-{stage_id}] No payload data to send for request {request_id}")
                 return
-            if stage_id == 0 and chunk_id == 0:
-                if self.request_payload.get(request_id) is None:
-                    if not payload_data.get("finished"):
-                        self.request_payload[request_id] = payload_data
-                        return
-                else:
-                    save_payload = self.request_payload.pop(request_id)
-                    payload_data["thinker_embeddings"] = torch.cat(
-                        (save_payload.get("thinker_embeddings"), payload_data.get("thinker_embeddings")), dim=0
-                    )
-                    payload_data["thinker_hidden_states"] = torch.cat(
-                        (save_payload.get("thinker_hidden_states"), payload_data.get("thinker_hidden_states")), dim=0
-                    )
-                    logger.info(f"[Stage-{stage_id}] Merged embeddings and hidden states for request {request_id}")
-
-            if stage_id == 1:
-                # TODO: Make parameters configurable and optimize algorithms
-                chunk_size = left_context_size = 25
-                self.code_prompt_token_ids[request_id].append(payload_data.get("code_predictor_codes", []))
-                length = len(self.code_prompt_token_ids[request_id])
-                chunk_length = length % chunk_size
-                if chunk_length != 0 and not payload_data.get("finished"):
-                    return
-
-                context_length = chunk_length if chunk_length != 0 else chunk_size
-                end_index = min(length, left_context_size + context_length)
-                payload_data["code_predictor_codes"] = (
-                    torch.tensor(self.code_prompt_token_ids[request_id][-end_index:])
-                        .transpose(0, 1)
-                        .reshape(-1)
-                        .tolist()
-                )
 
         # Increment chunk_id here since we are committing to send
         self.put_requests[request_id] += 1
@@ -152,6 +116,7 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
             req = self._pending_load_reqs[req_id]
 
             if stage_id != 2:
+                self._update_request_payload(req_id, payload_data)
                 req.additional_information = payload_data
                 if payload_data.get("finished"):
                     self.finished_requests.add(req_id)
@@ -160,11 +125,8 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
                     self.finished_requests.add(req_id)
                     req.status = RequestStatus.FINISHED_STOPPED
 
-                # TODO: remove special handling for prompt token ids ?
-                if chunk_id == 0:
-                    req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
-                else:
-                    req.prompt_token_ids += payload_data.get("code_predictor_codes", [])
+                req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
+                req.num_computed_tokens = 0
 
             # Mark as finished for consumption
             with self.lock:
@@ -172,6 +134,30 @@ class OmniChunkTransferManager(BasicOmniTransferManager):
                 if req_id in self._pending_load_reqs:
                     del self._pending_load_reqs[req_id]
             logger.info(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
+
+    def _update_request_payload(self, req_id: str, payload_data: dict[str, Any]) -> dict[
+        str, Any]:
+        """Update the payload data for a request in the connector.
+
+        Args:
+            connector: OmniConnectorBase instance
+            req_id: Request ID to update
+            payload_data: New payload data to store
+        """
+        if req_id not in self.request_payload:
+            self.request_payload[req_id] = payload_data
+            return
+        origin_payload = self.request_payload[req_id]
+        for key, value in payload_data.items():
+            if key == "finished":
+                continue
+            elif isinstance(value, torch.Tensor) and key in origin_payload:
+                payload_data[key] = torch.cat([origin_payload[key], value], dim=0)
+            elif isinstance(value, list) and key in origin_payload:
+                payload_data[key] = origin_payload[key] + value
+
+        self.request_payload[req_id] = payload_data
+        return payload_data
 
     def _process_single_save(self, task: dict):
         connector_put_key = task["put_key"]
