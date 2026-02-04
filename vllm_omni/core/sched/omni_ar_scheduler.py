@@ -338,7 +338,7 @@ class OmniARScheduler(VLLMScheduler):
                     routed_experts = self.routed_experts_reader.get_routed_experts(indices=slot_mapping)
 
                 kv_transfer_params = self._free_request(request)
-                if status_before_stop == RequestStatus.RUNNING:
+                if status_before_stop == RequestStatus.RUNNING or status_before_stop == RequestStatus.FINISHED_STOPPED:
                     stopped_running_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)
