@@ -52,18 +52,14 @@ class GPUGenerationModelRunner(OmniGPUModelRunner):
 
     def _update_request_states(self, scheduler_output: SchedulerOutput):
         cached_reqs = scheduler_output.scheduled_cached_reqs
-        input_batch_req_ids = self.input_batch.req_id_to_index.keys()
-        for req_id in list(input_batch_req_ids):
-            self.input_batch.remove_request(req_id)
         for _, req_id in enumerate(cached_reqs.req_ids):
             req_state = self.requests.get(req_id)
             assert req_state is not None
             req_state.prompt_token_ids = cached_reqs.prompt_token_ids.get(req_id)
+            self.input_batch.remove_request(req_id)
             # update the request state in self.input_batch
             self.input_batch.add_request(req_state)
-            # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
-            if self.uses_mrope:
-                self._init_mrope_positions(req_state)
+            self._init_mrope_positions(req_state)
 
     @torch.inference_mode()
     def execute_model(

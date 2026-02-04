@@ -37,6 +37,7 @@ stage_args:
       seed: 42
       detokenize: True
       repetition_penalty: 1.05
+      ignore_eos: True
 
   - stage_id: 1
     stage_type: llm  # Use llm stage type to launch OmniLLM
@@ -61,13 +62,14 @@ stage_args:
     # final_output: true
     # final_output_type: text
     default_sampling_params:
-      temperature: 0.9
+      temperature: 0
       top_k: 50
       max_tokens: 4096
       seed: 42
       detokenize: False
       repetition_penalty: 1.05
       stop_token_ids: [2150]
+      ignore_eos: True
 
   - stage_id: 2
     stage_type: llm  # Use llm stage type to launch OmniLLM
@@ -99,3 +101,4 @@ stage_args:
       seed: 42
       detokenize: True
       repetition_penalty: 1.1
+      ignore_eos: True

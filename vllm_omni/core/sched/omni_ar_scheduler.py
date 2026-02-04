@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from time import time
 from typing import Any
@@ -179,7 +179,6 @@ class OmniARScheduler(VLLMScheduler):
                 # Build omni entry preserving all base fields
                 omni_nr = OmniNewRequestData(
                     req_id=nr.req_id,
-                    external_req_id=(getattr(request, "external_req_id", None) if request else None),
                     prompt_token_ids=nr.prompt_token_ids,
                     mm_features=nr.mm_features,
                     sampling_params=nr.sampling_params,
@@ -201,15 +200,15 @@ class OmniARScheduler(VLLMScheduler):
                 request = self.requests.get(req_id) if req_id else None
                 additional_info = getattr(request, "additional_information", None) if request else None
                 cached_reqs.additional_information[req_id] = additional_info
-            if self.chunk_manager:
-                self.chunk_manager.filter_scheduler_output(scheduler_output)
+
             # Add information about requests needing KV cache transfer
             scheduler_output.finished_requests_needing_kv_transfer = self.get_finished_requests_needing_kv_transfer()
         except Exception:
             # If anything goes wrong, leave the original output unchanged
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
             scheduler_output.finished_requests_needing_kv_transfer = {}
-
+        if self.chunk_manager:
+            self.chunk_manager.filter_scheduler_output(scheduler_output)
         return scheduler_output
 
     def update_from_output(

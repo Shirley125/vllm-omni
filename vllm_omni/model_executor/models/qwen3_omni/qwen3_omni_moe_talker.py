@@ -135,11 +135,8 @@ class Qwen3OmniMoeTalkerForConditionalGeneration(
         self.code_predictor = Qwen3OmniMoeTalkerCodePredictor(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "code_predictor")
         )
-        max_batch_size = max(
-            vllm_config.scheduler_config.max_num_seqs, vllm_config.compilation_config.max_cudagraph_capture_size
-        )
         self.layer0_embed_buffer = torch.zeros(
-            (max_batch_size, 1, self.config.text_config.hidden_size),
+            (vllm_config.scheduler_config.max_num_seqs, 1, self.config.text_config.hidden_size),
             dtype=vllm_config.model_config.dtype,
         )
 

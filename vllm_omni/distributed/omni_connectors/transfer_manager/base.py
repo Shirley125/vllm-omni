@@ -9,7 +9,7 @@ from ..utils.logging import get_connector_logger
 logger = get_connector_logger(__name__)
 
 
-class OmniTransferManagerBase:
+class BasicOmniTransferManager:
     """Base class for managing asynchronous data transfer via OmniConnector.
 
     This class handles the core loop logic and connector interactions, but
