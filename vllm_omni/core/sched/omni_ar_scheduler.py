@@ -301,6 +301,10 @@ class OmniARScheduler(VLLMScheduler):
             # Check for stop and update request status.
             if new_token_ids:
                 new_token_ids, stopped = self._update_request_with_output(request, new_token_ids)
+                if stopped and self.chunk_manager and request.request_id not in self.chunk_manager.finished_requests:
+                    stopped = False
+                    request.status = RequestStatus.RUNNING
+                    request.stop_reason = None
 
             # If criteria returns True, it means we must STOP the request (e.g. legacy behavior, not used now)
             # If criteria returns False, it might have triggered a background transfer
