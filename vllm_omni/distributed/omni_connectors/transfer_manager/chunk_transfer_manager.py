@@ -144,10 +144,10 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             req_id: Request ID to update
             payload_data: New payload data to store
         """
-        if not request_payload[req_id]:
-            request_payload[req_id] = payload_data
+        if req_id not in self.request_payload:
+            self.request_payload[req_id] = payload_data
             return
-        origin_payload = request_payload[req_id]
+        origin_payload = self.request_payload[req_id]
         for key, value in payload_data.items():
             if key == "finished":
                 continue
@@ -156,7 +156,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             elif isinstance(value, list) and key in origin_payload:
                 payload_data[key] = origin_payload[key] + value
 
-        request_payload[req_id] = payload_data
+        self.request_payload[req_id] = payload_data
         return payload_data
 
     def _process_single_save(self, task: dict):
