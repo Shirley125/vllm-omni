@@ -67,6 +67,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         if custom_process_input_func:
             try:
                 payload_data = custom_process_input_func(
+                    transfer_manager=self,
                     pooling_output=pooling_output,
                     request=request,
                 )
@@ -113,6 +114,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             # Update connector state
             self.get_requests[req_id] += 1
             req = self._pending_load_reqs[req_id]
+            self._update_request_payload(req_id, payload_data)
 
             if stage_id != 2:
                 req.additional_information = payload_data
@@ -132,6 +134,30 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                 if req_id in self._pending_load_reqs:
                     del self._pending_load_reqs[req_id]
             logger.info(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
+
+    def _update_request_payload(self, req_id: str, payload_data: dict[str, Any]) -> dict[
+        str, Any]:
+        """Update the payload data for a request in the connector.
+
+        Args:
+            connector: OmniConnectorBase instance
+            req_id: Request ID to update
+            payload_data: New payload data to store
+        """
+        if not request_payload[req_id]:
+            request_payload[req_id] = payload_data
+            return
+        origin_payload = request_payload[req_id]
+        for key, value in payload_data.items():
+            if key == "finished":
+                continue
+            elif isinstance(value, torch.Tensor) and key in origin_payload:
+                payload_data[key] = torch.cat([origin_payload[key], value], dim=0)
+            elif isinstance(value, list) and key in origin_payload:
+                payload_data[key] = origin_payload[key] + value
+
+        request_payload[req_id] = payload_data
+        return payload_data
 
     def _process_single_save(self, task: dict):
         connector_put_key = task["put_key"]

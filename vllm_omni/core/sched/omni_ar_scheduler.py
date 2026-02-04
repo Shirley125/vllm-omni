@@ -20,7 +20,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniSchedulerOutput
-from vllm_omni.distributed.omni_connectors.adapter import get_chunk, put_chunk
+from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import OmniChunkTransferManager
 from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 
@@ -66,6 +66,7 @@ class OmniARScheduler(VLLMScheduler):
         self.transfer_triggered_requests: set[str] = set()
         model_config = self.vllm_config.model_config
         self.omni_connector = None
+        self.chunk_manager = None
         if model_config.async_chunk:
             connector_config = model_config.stage_connector_config
             connector_specs = ConnectorSpec(
@@ -73,6 +74,7 @@ class OmniARScheduler(VLLMScheduler):
                 extra=connector_config.get("extra", {}),
             )
             self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
+            self.chunk_manager = OmniChunkTransferManager(self.omni_connector)
 
             custom_process_next_stage_input_func = getattr(
                 self.vllm_config.model_config, "custom_process_next_stage_input_func", None
@@ -152,7 +154,18 @@ class OmniARScheduler(VLLMScheduler):
         return False
 
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
-        scheduler_output = super().schedule()
+        if self.chunk_manager:
+            num_waiting_running = self.chunk_manager.process_pending_chunks(
+                self.waiting, self.running
+            )
+            self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
+
+        try:
+            scheduler_output = super().schedule()
+        finally:
+            if self.chunk_manager:
+                # Add request waiting for chunk to the waiting and running queue
+                self.chunk_manager.restore_queues(self.waiting, self.running)
         try:
             # Late import to avoid circulars in some launch modes
             from .output import OmniNewRequestData
@@ -181,9 +194,15 @@ class OmniARScheduler(VLLMScheduler):
                 new_list.append(omni_nr)
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
-            if self.omni_connector is not None:
-                get_chunk(self.omni_connector, scheduler_output)
-
+            cached_reqs = scheduler_output.scheduled_cached_reqs
+            if not hasattr(cached_reqs, "additional_information"):
+                cached_reqs.additional_information = {}
+            for req_id in cached_reqs.req_ids:
+                request = self.requests.get(req_id) if req_id else None
+                additional_info = getattr(request, "additional_information", None) if request else None
+                cached_reqs.additional_information[req_id] = additional_info
+            if self.chunk_manager:
+                self.chunk_manager.filter_scheduler_output(scheduler_output)
             # Add information about requests needing KV cache transfer
             finished_reqs = self.get_finished_requests_needing_kv_transfer()
         except Exception:
@@ -355,9 +374,9 @@ class OmniARScheduler(VLLMScheduler):
                         num_nans_in_logits=request.num_nans_in_logits,
                     )
                 )
-                if self.omni_connector is not None:
+                if self.chunk_manager is not None:
                     custom_process_next_stage_input_func = self.custom_process_next_stage_input_func
-                    put_chunk(self.omni_connector, pooler_output, request, custom_process_next_stage_input_func)
+                    self.chunk_manager.save(pooler_output, request, custom_process_next_stage_input_func)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
