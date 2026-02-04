@@ -125,8 +125,10 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                     self.finished_requests.add(req_id)
                     req.status = RequestStatus.FINISHED_STOPPED
 
-                request.prompt_token_ids = payload_data.get("code_predictor_codes", [])
-                request.num_computed_tokens = 0
+                if chunk_id == 0:
+                    req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
+                else:
+                    req.prompt_token_ids.extend(payload_data.get("code_predictor_codes", []))
 
             # Mark as finished for consumption
             with self.lock:
