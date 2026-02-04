@@ -9,6 +9,7 @@ from vllm.v1.engine import EngineCoreOutput as _OriginalEngineCoreOutput
 from vllm.v1.engine import EngineCoreOutputs as _OriginalEngineCoreOutputs
 from vllm.v1.engine import EngineCoreRequest as _OriginalEngineCoreRequest
 from vllm.v1.request import Request as _OriginalRequest
+from vllm.v1.request import RequestStatus
 
 import vllm_omni.logger  # noqa: F401
 from vllm_omni.engine import OmniEngineCoreOutput, OmniEngineCoreOutputs, OmniEngineCoreRequest
