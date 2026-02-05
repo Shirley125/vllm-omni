@@ -114,9 +114,9 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             # Update connector state
             self.get_requests[req_id] += 1
             req = self._pending_load_reqs[req_id]
-            self._update_request_payload(external_req_id, payload_data)
 
             if stage_id != 2:
+                self._update_request_payload(external_req_id, payload_data)
                 req.additional_information = payload_data
                 if payload_data.get("finished"):
                     self.finished_requests.add(req_id)
