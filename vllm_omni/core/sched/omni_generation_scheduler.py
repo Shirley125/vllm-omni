@@ -67,8 +67,10 @@ class OmniGenerationScheduler(VLLMScheduler):
             num_waiting_running = self.chunk_manager.process_pending_chunks(
                 self.waiting, self.running
             )
-
-            self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
+            while len(self.running) > self.scheduler_config.max_num_seqs:
+                request = self.running.pop()
+                request.status = RequestStatus.PREEMPTED
+                self.waiting.prepend_requests([request])
 
         # OMNI: Track requests that are already finished (e.g., marked by connector)
         # These should be removed from running and not scheduled
