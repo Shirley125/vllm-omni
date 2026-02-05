@@ -69,7 +69,6 @@ class OmniGenerationScheduler(VLLMScheduler):
             )
             while len(self.running) > self.scheduler_config.max_num_seqs:
                 request = self.running.pop()
-                request.status = RequestStatus.PREEMPTED
                 self.waiting.prepend_requests([request])
 
         # OMNI: Track requests that are already finished (e.g., marked by connector)
