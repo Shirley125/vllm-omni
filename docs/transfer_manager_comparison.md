@@ -1,7 +1,3 @@
----
-title: Transfer Manager Comparison
----
-
 # Transfer Manager Comparison
 
 This document summarizes the commonalities and differences between the
