@@ -5,7 +5,7 @@
 
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from vllm_omni.entrypoints.stage_utils import OmniStageTaskType
 
