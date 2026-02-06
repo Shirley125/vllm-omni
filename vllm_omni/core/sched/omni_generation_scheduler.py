@@ -16,9 +16,10 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniCachedRequestData, OmniNewRequestData
-from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
-from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import OmniChunkTransferManager
-from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
+from vllm_omni.distributed.omni_connectors.transfer_manager.base import OmniModelMode
+from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import (
+    OmniChunkTransferManager,
+)
 from vllm_omni.outputs import OmniModelRunnerOutput
 
 
@@ -26,16 +27,10 @@ class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         model_config = self.vllm_config.model_config
-        self.omni_connector = None
         self.chunk_manager = None
-        if model_config.async_chunk:
-            connector_config = model_config.stage_connector_config
-            connector_specs = ConnectorSpec(
-                name=connector_config.get("name", "SharedMemoryConnector"),
-                extra=connector_config.get("extra", {}),
-            )
-            self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
-            self.chunk_manager = OmniChunkTransferManager(self.omni_connector)
+        if getattr(model_config, "async_chunk", False):
+            self.chunk_manager = OmniChunkTransferManager(
+                model_config, OmniModelMode.MODE_GENERATION)
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
@@ -76,7 +71,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             # OMNI: Skip requests that are not in self.requests
             # This can happen when connector marks request as finished and it's removed from requests
             if request.request_id not in self.requests or (
-                self.omni_connector is None and request.status == RequestStatus.FINISHED_STOPPED
+                self.chunk_manager is None and request.status == RequestStatus.FINISHED_STOPPED
             ):
                 already_finished_reqs.add(request)
                 req_index += 1
@@ -115,7 +110,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             request = self.waiting.peek_request()
             # OMNI: Skip requests that are not in self.requests
             if request.request_id not in self.requests or (
-                self.omni_connector is None and request.status == RequestStatus.FINISHED_STOPPED
+                self.chunk_manager is None and request.status == RequestStatus.FINISHED_STOPPED
             ):
                 # Pop the finished request from waiting queue and don't schedule it
                 self.waiting.pop_request()
@@ -367,7 +362,7 @@ class OmniGenerationScheduler(VLLMScheduler):
 
             # Diffusion request: completes in one step; mark finished and free resources
             if request.status == RequestStatus.FINISHED_STOPPED or (
-                self.omni_connector is None and request.num_computed_tokens >= request.num_prompt_tokens
+                self.chunk_manager is None and request.num_computed_tokens >= request.num_prompt_tokens
             ):
                 request.status = RequestStatus.FINISHED_STOPPED
                 # Optional: set a stop_reason for front-end clarity

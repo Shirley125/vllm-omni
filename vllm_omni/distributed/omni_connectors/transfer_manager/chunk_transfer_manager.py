@@ -7,8 +7,10 @@ from typing import Any
 import torch
 from vllm.v1.request import Request, RequestStatus
 
+from ..factory import OmniConnectorFactory
+from ..utils.config import ConnectorSpec
 from ..utils.logging import get_connector_logger
-from .base import OmniTransferManagerBase
+from .base import OmniModelMode, OmniTransferManagerBase
 
 logger = get_connector_logger(__name__)
 
@@ -16,9 +18,10 @@ logger = get_connector_logger(__name__)
 class OmniChunkTransferManager(OmniTransferManagerBase):
     """Manages asynchronous retrieval and storage of data chunks via OmniConnector."""
 
-    def __init__(self, connector):
-        super().__init__(connector)
-
+    def __init__(self, model_config: Any, mode: OmniModelMode):
+        self.connector = self.create_connector(model_config)
+        self.model_mode = mode
+        super().__init__(model_config)
         # State specific to Chunk management
         self.put_requests: dict[str, int] = defaultdict(int)
         self.get_requests: dict[str, int] = defaultdict(int)
@@ -31,6 +34,23 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self.waiting_for_chunk_waiting_requests: deque[Any] = deque()
         self.waiting_for_chunk_running_requests: deque[Any] = deque()
         self.requests_with_ready_chunks = set()
+
+    @classmethod
+    def create_connector(cls, model_config: Any):
+        connector_config = getattr(model_config, "stage_connector_config", None)
+        if connector_config is None:
+            connector_config = {}
+        elif not isinstance(connector_config, dict):
+            connector_config = {
+                "name": getattr(connector_config, "name", None),
+                "extra": getattr(connector_config, "extra", {}),
+            }
+
+        connector_specs = ConnectorSpec(
+            name=connector_config.get("name", "SharedMemoryConnector"),
+            extra=connector_config.get("extra", {}),
+        )
+        return OmniConnectorFactory.create_connector(connector_specs)
 
     def load(self, request):
         """Request to retrieve a chunk of data for a specific request.
@@ -115,7 +135,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             self.get_requests[req_id] += 1
             req = self._pending_load_reqs[req_id]
 
-            if stage_id != 2:
+            if self.model_mode == OmniModelMode.MODE_AR:
                 self._update_request_payload(external_req_id, payload_data)
                 req.additional_information = payload_data
                 if payload_data.get("finished"):
@@ -182,21 +202,19 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self,
         waiting_queue: Any,
         running_queue: list[Request],
-    ) -> int:
+    ) -> None:
         """
         Process pending chunks for waiting and running queues.
-        Returns the number of running requests waiting for chunks.
         """
         if self.connector.stage_id == 0:
-            return 0
-        finished_reqs = self.get_finished_requests()
+            return
+        finished_load_reqs = self.get_finished_requests()
         self._process_chunk_queue(
-            waiting_queue, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING, finished_reqs
+            waiting_queue, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING, finished_load_reqs
         )
         self._process_chunk_queue(
-            running_queue, self.waiting_for_chunk_running_requests, RequestStatus.RUNNING, finished_reqs
+            running_queue, self.waiting_for_chunk_running_requests, RequestStatus.RUNNING, finished_load_reqs
         )
-        return len(self.waiting_for_chunk_running_requests)
 
     def restore_queues(self, waiting_queue: Any, running_queue: list[Request]) -> None:
         """
@@ -211,32 +229,55 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             running_queue.extend(self.waiting_for_chunk_running_requests)
         self.waiting_for_chunk_running_requests = deque()
 
-    def filter_scheduler_output(self, scheduler_output: Any) -> None:
+    def filter_scheduler_output(
+        self,
+        scheduler_output: Any,
+        requests: dict[str, Request] | None = None,
+    ) -> None:
         """
-        Clean up ready chunks from scheduler output.
+        Add addtitional info for cached requests and
+        clean up ready chunks from scheduler output.
         """
+        if requests is not None:
+            self.attach_cached_additional_information(scheduler_output, requests)
         self._clear_chunk_ready(scheduler_output)
+
+    @staticmethod
+    def attach_cached_additional_information(
+            scheduler_output: Any, requests: dict[str, Request]
+    ) -> None:
+        cached_reqs = getattr(scheduler_output, "scheduled_cached_reqs", None)
+        if not cached_reqs:
+            return
+        if not hasattr(cached_reqs, "additional_information"):
+            cached_reqs.additional_information = {}
+        for req_id in cached_reqs.req_ids:
+            request = requests.get(req_id) if req_id else None
+            additional_info = getattr(request, "additional_information", None) if request else None
+            cached_reqs.additional_information[req_id] = additional_info
 
     def _process_chunk_queue(
         self,
         queue: Any,
         waiting_for_chunk_list: deque[Any],
         target_status: RequestStatus,
-        finished_reqs: set[str],
+        finished_load_reqs: set[str],
     ) -> None:
         queue_snapshot = list(queue)
         for request in queue_snapshot:
             if request.status != RequestStatus.WAITING_FOR_CHUNK:
                 if request.request_id in self.requests_with_ready_chunks:
+                    # Requests that have loaded chunk from last round
+                    # of schedule, but have not scheduled
                     continue
-                # Access finished_requests from self instead of connector
                 if request.request_id in self.finished_requests:
                     request.additional_information = {}
                     continue
+                # Requests that waiting for chunk
                 self.load(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
             else:
-                if request.request_id in finished_reqs:
+                if request.request_id in finished_load_reqs:
                     request.status = target_status
                     self.requests_with_ready_chunks.add(request.request_id)
                     continue
