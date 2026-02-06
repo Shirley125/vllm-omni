@@ -171,6 +171,7 @@ def try_recv_via_connector(
             # We'll return None to let caller handle error if strictly required.
             return None, None
 
+
 def compute_talker_prompt_ids_length(prompt_ids: list[int]) -> int:
     """Compute the length of the talker prompt ids.
 

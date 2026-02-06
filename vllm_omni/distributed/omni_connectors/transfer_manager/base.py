@@ -1,12 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import enum
 import threading
 import time
+from typing import Any
 
 from ..utils.logging import get_connector_logger
 
 logger = get_connector_logger(__name__)
+
+
+class OmniModelMode(enum.Enum):
+    # Omni AR Model
+    MODE_AR = "ar"
+
+    # Omni Generation Model
+    MODE_GENERATION = "generate"
 
 
 class OmniTransferManagerBase:
@@ -16,8 +26,10 @@ class OmniTransferManagerBase:
     leaves the specific data processing (chunks, KV cache, etc.) to subclasses.
     """
 
-    def __init__(self, connector):
-        self.connector = connector
+    def __init__(self, config: Any):
+        self.config = config
+        if not hasattr(self, "connector"):
+            self.connector = None
         # Requests that are waiting to be polled
         self._pending_load_reqs = {}
         # Requests that have successfully retrieved data
@@ -36,6 +48,10 @@ class OmniTransferManagerBase:
 
         self.save_thread = threading.Thread(target=self.save_loop, daemon=True)
         self.save_thread.start()
+
+    @classmethod
+    def create_connector(cls, model_config: Any):
+        raise NotImplementedError
 
     def recv_loop(self):
         """Loop to poll for incoming data."""
