@@ -14,6 +14,8 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
+from .transfer_manager import OmniChunkTransferManager
+
 
 class OmniARScheduler(VLLMScheduler):
     """
@@ -24,10 +26,19 @@ class OmniARScheduler(VLLMScheduler):
     specific to vLLM-Omni.
     """
 
+    def _ensure_chunk_manager(self) -> None:
+        if getattr(self, "_omni_chunk_manager_initialized", False):
+            return
+        vllm_config = getattr(self, "vllm_config", None)
+        self.chunk_manager = OmniChunkTransferManager.maybe_create(vllm_config)
+        self.omni_connector = self.chunk_manager.omni_connector if self.chunk_manager else None
+        self._omni_chunk_manager_initialized = True
+
     # Ensure scheduled_new_reqs carry omni-specific payloads
     # (e.g., additional_information)
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         scheduler_output = super().schedule()
+        self._ensure_chunk_manager()
         try:
             # Late import to avoid circulars in some launch modes
             from .output import OmniNewRequestData
@@ -58,6 +69,9 @@ class OmniARScheduler(VLLMScheduler):
         except Exception:
             # If anything goes wrong, leave the original output unchanged
             init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
+
+        if self.chunk_manager:
+            self.chunk_manager.filter_scheduler_output(scheduler_output, getattr(self, "requests", {}))
 
         return scheduler_output
 

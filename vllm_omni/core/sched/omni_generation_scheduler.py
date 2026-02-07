@@ -14,8 +14,18 @@ from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm_omni.core.sched.output import OmniNewRequestData
 from vllm_omni.outputs import OmniModelRunnerOutput
 
+from .transfer_manager import OmniChunkTransferManager
+
 
 class OmniGenerationScheduler(VLLMScheduler):
+    def _ensure_chunk_manager(self) -> None:
+        if getattr(self, "_omni_chunk_manager_initialized", False):
+            return
+        vllm_config = getattr(self, "vllm_config", None)
+        self.chunk_manager = OmniChunkTransferManager.maybe_create(vllm_config)
+        self.omni_connector = self.chunk_manager.omni_connector if self.chunk_manager else None
+        self._omni_chunk_manager_initialized = True
+
     def schedule(self) -> SchedulerOutput:
         """Diffusion fast path:
         - Feed all input tokens of the request at once
@@ -24,6 +34,7 @@ class OmniGenerationScheduler(VLLMScheduler):
           default vLLM scheduling.
         """
 
+        self._ensure_chunk_manager()
         token_budget = self.max_num_scheduled_tokens
         scheduled_timestamp = time.monotonic()
 
