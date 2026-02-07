@@ -32,6 +32,13 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self.waiting_for_chunk_running_requests: deque[Any] = deque()
         self.requests_with_ready_chunks = set()
 
+    @classmethod
+    def from_model_config(cls, model_config: Any):
+        connector = cls.create_connector_from_model_config(model_config)
+        if connector is None:
+            return None, None
+        return connector, cls(connector)
+
     def load(self, request):
         """Request to retrieve a chunk of data for a specific request.
 
@@ -211,11 +218,31 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             running_queue.extend(self.waiting_for_chunk_running_requests)
         self.waiting_for_chunk_running_requests = deque()
 
-    def filter_scheduler_output(self, scheduler_output: Any) -> None:
+    def filter_scheduler_output(
+        self,
+        scheduler_output: Any,
+        requests: dict[str, Request] | None = None,
+    ) -> None:
         """
         Clean up ready chunks from scheduler output.
         """
+        if requests is not None:
+            self.attach_cached_additional_information(scheduler_output, requests)
         self._clear_chunk_ready(scheduler_output)
+
+    @staticmethod
+    def attach_cached_additional_information(
+        scheduler_output: Any, requests: dict[str, Request]
+    ) -> None:
+        cached_reqs = getattr(scheduler_output, "scheduled_cached_reqs", None)
+        if not cached_reqs:
+            return
+        if not hasattr(cached_reqs, "additional_information"):
+            cached_reqs.additional_information = {}
+        for req_id in cached_reqs.req_ids:
+            request = requests.get(req_id) if req_id else None
+            additional_info = getattr(request, "additional_information", None) if request else None
+            cached_reqs.additional_information[req_id] = additional_info
 
     def _process_chunk_queue(
         self,

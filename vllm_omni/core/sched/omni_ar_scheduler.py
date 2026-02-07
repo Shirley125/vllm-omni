@@ -20,9 +20,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniSchedulerOutput
-from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import OmniChunkTransferManager
-from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 
 logger = init_logger(__name__)
 
@@ -65,17 +63,9 @@ class OmniARScheduler(VLLMScheduler):
         # Track requests that have already triggered prefill transfer to avoid duplicates
         self.transfer_triggered_requests: set[str] = set()
         model_config = self.vllm_config.model_config
-        self.omni_connector = None
-        self.chunk_manager = None
-        if model_config.async_chunk:
-            connector_config = model_config.stage_connector_config
-            connector_specs = ConnectorSpec(
-                name=connector_config.get("name", "SharedMemoryConnector"),
-                extra=connector_config.get("extra", {}),
-            )
-            self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
-            self.chunk_manager = OmniChunkTransferManager(self.omni_connector)
+        self.omni_connector, self.chunk_manager = OmniChunkTransferManager.from_model_config(model_config)
 
+        if self.chunk_manager:
             custom_process_next_stage_input_func = getattr(
                 self.vllm_config.model_config, "custom_process_next_stage_input_func", None
             )
@@ -192,15 +182,10 @@ class OmniARScheduler(VLLMScheduler):
                 new_list.append(omni_nr)
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
-            cached_reqs = scheduler_output.scheduled_cached_reqs
-            if not hasattr(cached_reqs, "additional_information"):
-                cached_reqs.additional_information = {}
-            for req_id in cached_reqs.req_ids:
-                request = self.requests.get(req_id) if req_id else None
-                additional_info = getattr(request, "additional_information", None) if request else None
-                cached_reqs.additional_information[req_id] = additional_info
             if self.chunk_manager:
-                self.chunk_manager.filter_scheduler_output(scheduler_output)
+                self.chunk_manager.filter_scheduler_output(scheduler_output, self.requests)
+            else:
+                OmniChunkTransferManager.attach_cached_additional_information(scheduler_output, self.requests)
             # Add information about requests needing KV cache transfer
             finished_reqs = self.get_finished_requests_needing_kv_transfer()
         except Exception:
