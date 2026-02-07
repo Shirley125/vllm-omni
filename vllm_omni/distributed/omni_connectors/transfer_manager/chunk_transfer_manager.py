@@ -35,14 +35,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self.requests_with_ready_chunks = set()
 
     @classmethod
-    def from_model_config(cls, model_config: Any):
-        connector = cls._create_connector_from_model_config(model_config)
-        if connector is None:
-            return None, None
-        return connector, cls(connector)
-
-    @classmethod
-    def _create_connector_from_model_config(cls, model_config: Any):
+    def create_connector(cls, model_config: Any):
         if model_config is None or not getattr(model_config, "async_chunk", False):
             return None
 

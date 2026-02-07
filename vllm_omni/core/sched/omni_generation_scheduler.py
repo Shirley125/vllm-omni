@@ -24,7 +24,8 @@ class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         model_config = self.vllm_config.model_config
-        self.omni_connector, self.chunk_manager = OmniChunkTransferManager.from_model_config(model_config)
+        self.omni_connector = OmniChunkTransferManager.create_connector(model_config)
+        self.chunk_manager = OmniChunkTransferManager(self.omni_connector) if self.omni_connector else None
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 

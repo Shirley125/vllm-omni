@@ -3,6 +3,7 @@
 
 import threading
 import time
+from typing import Any
 
 from ..utils.logging import get_connector_logger
 
@@ -36,6 +37,10 @@ class OmniTransferManagerBase:
 
         self.save_thread = threading.Thread(target=self.save_loop, daemon=True)
         self.save_thread.start()
+
+    @classmethod
+    def create_connector(cls, model_config: Any):
+        raise NotImplementedError
 
     def recv_loop(self):
         """Loop to poll for incoming data."""
