@@ -16,9 +16,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniCachedRequestData, OmniNewRequestData
-from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import OmniChunkTransferManager
-from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 from vllm_omni.outputs import OmniModelRunnerOutput
 
 
@@ -26,18 +24,9 @@ class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         model_config = self.vllm_config.model_config
-        self.omni_connector = None
-        self.chunk_manager = None
-        if model_config.async_chunk:
-            connector_config = model_config.stage_connector_config
-            connector_specs = ConnectorSpec(
-                name=connector_config.get("name", "SharedMemoryConnector"),
-                extra=connector_config.get("extra", {}),
-            )
-            self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
-            self.chunk_manager = OmniChunkTransferManager(self.omni_connector)
-
-        self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
+        self.chunk_manager = OmniChunkTransferManager.maybe_create(model_config)
+        self.omni_connector = self.chunk_manager.connector if self.chunk_manager else None
+        self.stage_id = getattr(model_config, "stage_id", None)
 
     def schedule(self) -> SchedulerOutput:
         """Diffusion fast path:

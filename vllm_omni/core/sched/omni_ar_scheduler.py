@@ -20,9 +20,7 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniSchedulerOutput
-from vllm_omni.distributed.omni_connectors.factory import OmniConnectorFactory
 from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import OmniChunkTransferManager
-from vllm_omni.distributed.omni_connectors.utils.config import ConnectorSpec
 
 logger = init_logger(__name__)
 
@@ -65,17 +63,9 @@ class OmniARScheduler(VLLMScheduler):
         # Track requests that have already triggered prefill transfer to avoid duplicates
         self.transfer_triggered_requests: set[str] = set()
         model_config = self.vllm_config.model_config
-        self.omni_connector = None
-        self.chunk_manager = None
-        if model_config.async_chunk:
-            connector_config = model_config.stage_connector_config
-            connector_specs = ConnectorSpec(
-                name=connector_config.get("name", "SharedMemoryConnector"),
-                extra=connector_config.get("extra", {}),
-            )
-            self.omni_connector = OmniConnectorFactory.create_connector(connector_specs)
-            self.chunk_manager = OmniChunkTransferManager(self.omni_connector)
-
+        self.chunk_manager = OmniChunkTransferManager.maybe_create(model_config)
+        self.omni_connector = self.chunk_manager.connector if self.chunk_manager else None
+        if self.chunk_manager:
             custom_process_next_stage_input_func = getattr(
                 self.vllm_config.model_config, "custom_process_next_stage_input_func", None
             )
@@ -84,7 +74,7 @@ class OmniARScheduler(VLLMScheduler):
                 module = importlib.import_module(module_path)
                 self.custom_process_next_stage_input_func = getattr(module, func_name)
 
-        self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
+        self.stage_id = getattr(model_config, "stage_id", None)
 
     def _get_kv_transfer_criteria(self) -> dict | None:
         # Note: vllm_config is available in Scheduler after super().__init__

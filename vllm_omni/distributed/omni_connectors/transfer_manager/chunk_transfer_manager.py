@@ -16,6 +16,42 @@ logger = get_connector_logger(__name__)
 class OmniChunkTransferManager(OmniTransferManagerBase):
     """Manages asynchronous retrieval and storage of data chunks via OmniConnector."""
 
+    @classmethod
+    def maybe_create(
+        cls,
+        config: Any | None = None,
+        *,
+        connector: Any | None = None,
+        enabled: bool | None = None,
+        connector_spec: dict[str, Any] | None = None,
+        connector_config: dict[str, Any] | None = None,
+    ) -> "OmniChunkTransferManager | None":
+        """Create a chunk manager when async chunking is enabled."""
+        if connector is not None:
+            return cls(connector)
+
+        if not cls._is_async_chunk_enabled(config, enabled):
+            return None
+
+        built_connector = cls.build_connector(
+            config=config,
+            connector_spec=connector_spec,
+            connector_config=connector_config,
+        )
+        if built_connector is None:
+            return None
+        return cls(built_connector)
+
+    @staticmethod
+    def _is_async_chunk_enabled(config: Any | None, enabled: bool | None) -> bool:
+        if enabled is not None:
+            return bool(enabled)
+        if config is None:
+            return False
+        if isinstance(config, dict):
+            return bool(config.get("async_chunk", False))
+        return bool(getattr(config, "async_chunk", False))
+
     def __init__(self, connector):
         super().__init__(connector)
 
