@@ -22,7 +22,8 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self.omni_connector = self.create_connector(model_config)
         if self.omni_connector is None:
             raise ValueError("OmniChunkTransferManager requires async_chunk-enabled model_config")
-        super().__init__(self.omni_connector)
+        self.connector = self.omni_connector
+        super().__init__(model_config)
 
         # State specific to Chunk management
         self.put_requests: dict[str, int] = defaultdict(int)

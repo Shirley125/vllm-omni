@@ -17,8 +17,10 @@ class OmniTransferManagerBase:
     leaves the specific data processing (chunks, KV cache, etc.) to subclasses.
     """
 
-    def __init__(self, connector):
-        self.connector = connector
+    def __init__(self, config: Any):
+        self.config = config
+        if not hasattr(self, "connector"):
+            self.connector = None
         # Requests that are waiting to be polled
         self._pending_load_reqs = {}
         # Requests that have successfully retrieved data
