@@ -56,7 +56,11 @@ class OmniGenerationScheduler(VLLMScheduler):
         skipped_waiting_requests = create_request_queue(self.policy)
         req_index = 0
         if self.chunk_manager:
-            self.chunk_manager.process_pending_chunks(self.waiting, self.running)
+            self.chunk_manager.process_pending_chunks(
+                self.waiting,
+                self.running,
+                load_mode=OmniChunkTransferManager.LOAD_MODE_GENERATION,
+            )
             while len(self.running) > self.scheduler_config.max_num_seqs:
                 request = self.running.pop()
                 self.waiting.prepend_requests([request])

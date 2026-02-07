@@ -149,7 +149,11 @@ class OmniARScheduler(VLLMScheduler):
 
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if self.chunk_manager:
-            num_waiting_running = self.chunk_manager.process_pending_chunks(self.waiting, self.running)
+            num_waiting_running = self.chunk_manager.process_pending_chunks(
+                self.waiting,
+                self.running,
+                load_mode=OmniChunkTransferManager.LOAD_MODE_AR,
+            )
             self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
 
         try:
