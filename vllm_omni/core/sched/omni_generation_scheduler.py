@@ -29,8 +29,7 @@ class OmniGenerationScheduler(VLLMScheduler):
         model_config = self.vllm_config.model_config
         self.chunk_manager = None
         if getattr(model_config, "async_chunk", False):
-            self.chunk_manager = OmniChunkTransferManager(
-                model_config, OmniModelMode.MODE_GENERATION)
+            self.chunk_manager = OmniChunkTransferManager(model_config, OmniModelMode.MODE_GENERATION)
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 

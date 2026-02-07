@@ -68,8 +68,7 @@ class OmniARScheduler(VLLMScheduler):
         model_config = self.vllm_config.model_config
         self.chunk_manager = None
         if getattr(model_config, "async_chunk", False):
-            self.chunk_manager = OmniChunkTransferManager(
-                model_config, OmniModelMode.MODE_AR)
+            self.chunk_manager = OmniChunkTransferManager(model_config, OmniModelMode.MODE_AR)
 
         if self.chunk_manager:
             custom_process_next_stage_input_func = getattr(

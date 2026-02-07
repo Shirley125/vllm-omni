@@ -153,7 +153,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                 self._finished_load_reqs.add(req_id)
                 if req_id in self._pending_load_reqs:
                     del self._pending_load_reqs[req_id]
-            logger.info(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
+            logger.debug(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
 
     def _update_request_payload(self, req_id: str, payload_data: dict[str, Any]) -> dict[str, Any]:
         """Update the payload data for a request in the connector.
@@ -235,7 +235,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         requests: dict[str, Request] | None = None,
     ) -> None:
         """
-        Add addtitional info for cached requests and
+        Add additional info for cached requests and
         clean up ready chunks from scheduler output.
         """
         if requests is not None:
@@ -243,9 +243,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self._clear_chunk_ready(scheduler_output)
 
     @staticmethod
-    def attach_cached_additional_information(
-            scheduler_output: Any, requests: dict[str, Request]
-    ) -> None:
+    def attach_cached_additional_information(scheduler_output: Any, requests: dict[str, Request]) -> None:
         cached_reqs = getattr(scheduler_output, "scheduled_cached_reqs", None)
         if not cached_reqs:
             return
