@@ -18,8 +18,11 @@ logger = get_connector_logger(__name__)
 class OmniChunkTransferManager(OmniTransferManagerBase):
     """Manages asynchronous retrieval and storage of data chunks via OmniConnector."""
 
-    def __init__(self, connector):
-        super().__init__(connector)
+    def __init__(self, model_config: Any):
+        self.omni_connector = self.create_connector(model_config)
+        if self.omni_connector is None:
+            raise ValueError("OmniChunkTransferManager requires async_chunk-enabled model_config")
+        super().__init__(self.omni_connector)
 
         # State specific to Chunk management
         self.put_requests: dict[str, int] = defaultdict(int)

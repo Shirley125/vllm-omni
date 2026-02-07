@@ -63,8 +63,11 @@ class OmniARScheduler(VLLMScheduler):
         # Track requests that have already triggered prefill transfer to avoid duplicates
         self.transfer_triggered_requests: set[str] = set()
         model_config = self.vllm_config.model_config
-        self.omni_connector = OmniChunkTransferManager.create_connector(model_config)
-        self.chunk_manager = OmniChunkTransferManager(self.omni_connector) if self.omni_connector else None
+        self.omni_connector = None
+        self.chunk_manager = None
+        if getattr(model_config, "async_chunk", False):
+            self.chunk_manager = OmniChunkTransferManager(model_config)
+            self.omni_connector = self.chunk_manager.omni_connector
 
         if self.chunk_manager:
             custom_process_next_stage_input_func = getattr(
