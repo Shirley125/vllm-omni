@@ -10,7 +10,7 @@ from vllm.v1.request import Request, RequestStatus
 from ..factory import OmniConnectorFactory
 from ..utils.config import ConnectorSpec
 from ..utils.logging import get_connector_logger
-from .base import OmniTransferManagerBase
+from .base import OmniModelMode, OmniTransferManagerBase
 
 logger = get_connector_logger(__name__)
 
@@ -18,14 +18,14 @@ logger = get_connector_logger(__name__)
 class OmniChunkTransferManager(OmniTransferManagerBase):
     """Manages asynchronous retrieval and storage of data chunks via OmniConnector."""
 
-    LOAD_MODE_GENERATION = "generation"
-    LOAD_MODE_AR = "ar"
-
-    def __init__(self, model_config: Any):
+    def __init__(self, model_config: Any, mode: OmniModelMode):
         self.omni_connector = self.create_connector(model_config)
         if self.omni_connector is None:
             raise ValueError("OmniChunkTransferManager requires async_chunk-enabled model_config")
+        if mode is None:
+            raise ValueError("OmniChunkTransferManager requires an OmniModelMode")
         self.connector = self.omni_connector
+        self.mode = mode
         super().__init__(model_config)
 
         # State specific to Chunk management
@@ -36,7 +36,6 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self.request_prompt_token_ids: dict[str, list[int]] = defaultdict(list)
         self.code_prompt_token_ids: dict[str, list[list[int]]] = defaultdict(list)
         self.request_ids_mapping: dict[str, str] = {}
-        self.request_load_modes: dict[str, str] = {}
 
         self.waiting_for_chunk_waiting_requests: deque[Any] = deque()
         self.waiting_for_chunk_running_requests: deque[Any] = deque()
@@ -62,18 +61,15 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         )
         return OmniConnectorFactory.create_connector(connector_specs)
 
-    def load(self, request, load_mode: str | None = None):
+    def load(self, request):
         """Request to retrieve a chunk of data for a specific request.
 
         Args:
             request: The request object needing data.
-            load_mode: Which scheduler path is issuing the load request.
         """
         stage_id = self.connector.stage_id
         request_id = request.request_id
         self.request_ids_mapping[request_id] = request.external_req_id
-        if load_mode is not None:
-            self.request_load_modes[request_id] = load_mode
 
         if stage_id == 0:
             return
@@ -148,10 +144,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             self.get_requests[req_id] += 1
             req = self._pending_load_reqs[req_id]
 
-            load_mode = self.request_load_modes.get(req_id)
-            use_generation_path = stage_id != 2 if load_mode is None else load_mode == self.LOAD_MODE_GENERATION
-
-            if use_generation_path:
+            if self.mode == OmniModelMode.MODE_GENERATION:
                 self._update_request_payload(external_req_id, payload_data)
                 req.additional_information = payload_data
                 if payload_data.get("finished"):
@@ -163,9 +156,6 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
 
                 req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
                 req.num_computed_tokens = 0
-
-            if payload_data.get("finished"):
-                self.request_load_modes.pop(req_id, None)
 
             # Mark as finished for consumption
             with self.lock:
@@ -221,7 +211,6 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self,
         waiting_queue: Any,
         running_queue: list[Request],
-        load_mode: str | None = None,
     ) -> int:
         """
         Process pending chunks for waiting and running queues.
@@ -235,14 +224,12 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             self.waiting_for_chunk_waiting_requests,
             RequestStatus.WAITING,
             finished_reqs,
-            load_mode,
         )
         self._process_chunk_queue(
             running_queue,
             self.waiting_for_chunk_running_requests,
             RequestStatus.RUNNING,
             finished_reqs,
-            load_mode,
         )
         return len(self.waiting_for_chunk_running_requests)
 
@@ -291,7 +278,6 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         waiting_for_chunk_list: deque[Any],
         target_status: RequestStatus,
         finished_reqs: set[str],
-        load_mode: str | None,
     ) -> None:
         queue_snapshot = list(queue)
         for request in queue_snapshot:
@@ -302,7 +288,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                 if request.request_id in self.finished_requests:
                     request.additional_information = {}
                     continue
-                self.load(request, load_mode=load_mode)
+                self.load(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
             else:
                 if request.request_id in finished_reqs:

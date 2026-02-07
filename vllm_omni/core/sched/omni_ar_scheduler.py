@@ -20,7 +20,10 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniSchedulerOutput
-from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import OmniChunkTransferManager
+from vllm_omni.distributed.omni_connectors.transfer_manager.base import OmniModelMode
+from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import (
+    OmniChunkTransferManager,
+)
 
 logger = init_logger(__name__)
 
@@ -66,7 +69,7 @@ class OmniARScheduler(VLLMScheduler):
         self.omni_connector = None
         self.chunk_manager = None
         if getattr(model_config, "async_chunk", False):
-            self.chunk_manager = OmniChunkTransferManager(model_config)
+            self.chunk_manager = OmniChunkTransferManager(model_config, OmniModelMode.MODE_AR)
             self.omni_connector = self.chunk_manager.omni_connector
 
         if self.chunk_manager:
@@ -152,7 +155,6 @@ class OmniARScheduler(VLLMScheduler):
             num_waiting_running = self.chunk_manager.process_pending_chunks(
                 self.waiting,
                 self.running,
-                load_mode=OmniChunkTransferManager.LOAD_MODE_AR,
             )
             self.max_num_running_reqs = self.scheduler_config.max_num_seqs - num_waiting_running
 

@@ -16,7 +16,10 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniCachedRequestData, OmniNewRequestData
-from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import OmniChunkTransferManager
+from vllm_omni.distributed.omni_connectors.transfer_manager.base import OmniModelMode
+from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import (
+    OmniChunkTransferManager,
+)
 from vllm_omni.outputs import OmniModelRunnerOutput
 
 
@@ -27,7 +30,7 @@ class OmniGenerationScheduler(VLLMScheduler):
         self.omni_connector = None
         self.chunk_manager = None
         if getattr(model_config, "async_chunk", False):
-            self.chunk_manager = OmniChunkTransferManager(model_config)
+            self.chunk_manager = OmniChunkTransferManager(model_config, OmniModelMode.MODE_GENERATION)
             self.omni_connector = self.chunk_manager.omni_connector
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
@@ -56,11 +59,7 @@ class OmniGenerationScheduler(VLLMScheduler):
         skipped_waiting_requests = create_request_queue(self.policy)
         req_index = 0
         if self.chunk_manager:
-            self.chunk_manager.process_pending_chunks(
-                self.waiting,
-                self.running,
-                load_mode=OmniChunkTransferManager.LOAD_MODE_GENERATION,
-            )
+            self.chunk_manager.process_pending_chunks(self.waiting, self.running)
             while len(self.running) > self.scheduler_config.max_num_seqs:
                 request = self.running.pop()
                 self.waiting.prepend_requests([request])

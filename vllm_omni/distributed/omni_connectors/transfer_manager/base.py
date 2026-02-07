@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import enum
 import threading
 import time
 from typing import Any
@@ -8,6 +9,14 @@ from typing import Any
 from ..utils.logging import get_connector_logger
 
 logger = get_connector_logger(__name__)
+
+
+class OmniModelMode(enum.Enum):
+    # Omni AR Model
+    MODE_AR = "ar"
+
+    # Omni Generation Model
+    MODE_GENERATION = "generate"
 
 
 class OmniTransferManagerBase:
