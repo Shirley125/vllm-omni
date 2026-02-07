@@ -3,10 +3,6 @@
 
 import threading
 import time
-from typing import Any
-
-from ..factory import OmniConnectorFactory
-from ..utils.config import ConnectorSpec
 
 from ..utils.logging import get_connector_logger
 
@@ -40,26 +36,6 @@ class OmniTransferManagerBase:
 
         self.save_thread = threading.Thread(target=self.save_loop, daemon=True)
         self.save_thread.start()
-
-    @classmethod
-    def create_connector_from_model_config(cls, model_config: Any):
-        if model_config is None or not getattr(model_config, "async_chunk", False):
-            return None
-
-        connector_config = getattr(model_config, "stage_connector_config", None)
-        if connector_config is None:
-            connector_config = {}
-        elif not isinstance(connector_config, dict):
-            connector_config = {
-                "name": getattr(connector_config, "name", None),
-                "extra": getattr(connector_config, "extra", {}),
-            }
-
-        connector_specs = ConnectorSpec(
-            name=connector_config.get("name", "SharedMemoryConnector"),
-            extra=connector_config.get("extra", {}),
-        )
-        return OmniConnectorFactory.create_connector(connector_specs)
 
     def recv_loop(self):
         """Loop to poll for incoming data."""
