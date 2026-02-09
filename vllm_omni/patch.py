@@ -1,5 +1,6 @@
 import sys
 
+from aenum import extend_enum
 from vllm.inputs.data import TokensPrompt as _OriginalTokensPrompt
 from vllm.model_executor.layers.rotary_embedding import (
     MRotaryEmbedding as _OriginalMRotaryEmbedding,
@@ -18,14 +19,7 @@ from vllm_omni.request import OmniRequest
 
 # Extend RequestStatus enum with omni-specific statuses
 if not hasattr(RequestStatus, "WAITING_FOR_CHUNK"):
-    member = object.__new__(RequestStatus)
-    member._name_ = "WAITING_FOR_CHUNK"
-    member._value_ = -1
-
-    RequestStatus._member_map_["WAITING_FOR_CHUNK"] = member
-    RequestStatus._value2member_map_[-1] = member
-    setattr(RequestStatus, "WAITING_FOR_CHUNK", member)
-
+    extend_enum(RequestStatus, "WAITING_FOR_CHUNK", -1)
 for module_name, module in sys.modules.items():
     # only do patch on module of vllm, pass others
     if "vllm" not in module_name:
