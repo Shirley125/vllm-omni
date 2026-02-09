@@ -10,7 +10,7 @@ from vllm.v1.request import Request, RequestStatus
 from ..factory import OmniConnectorFactory
 from ..utils.config import ConnectorSpec
 from ..utils.logging import get_connector_logger
-from .base import OmniModelMode, OmniTransferAdapterBase
+from .base import OmniTransferAdapterBase
 
 logger = get_connector_logger(__name__)
 
