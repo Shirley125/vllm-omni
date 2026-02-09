@@ -154,7 +154,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             res = super().schedule()
             if self.chunk_manager:
                 self.chunk_manager.restore_queues(self.waiting, self.running)
-                self.chunk_manager.filter_scheduler_output(res)
+                self.chunk_manager.filter_scheduler_output(res, self.requests)
             return res
 
         # Compute common prefix blocks (aligned with v1)
@@ -258,7 +258,7 @@ class OmniGenerationScheduler(VLLMScheduler):
 
             if self.chunk_manager:
                 self.chunk_manager.restore_queues(self.waiting, self.running)
-                self.chunk_manager.filter_scheduler_output(scheduler_output)
+                self.chunk_manager.filter_scheduler_output(scheduler_output, self.requests)
 
         except Exception:
             # If anything goes wrong, leave the original output unchanged

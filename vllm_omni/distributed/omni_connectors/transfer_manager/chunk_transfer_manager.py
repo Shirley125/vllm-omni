@@ -256,11 +256,12 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         requests: dict[str, Request] | None = None,
     ) -> None:
         """
-        Add additional info for cached requests and
-        clean up ready chunks from scheduler output.
+        Add additional info for cached requests, prune finished tracking,
+        and clean up ready chunks from scheduler output.
         """
         if requests is not None:
             self.attach_cached_additional_information(scheduler_output, requests)
+            self._cleanup_finished_requests(requests)
         self._clear_chunk_ready(scheduler_output)
 
     @staticmethod
@@ -274,6 +275,11 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             request = requests.get(req_id) if req_id else None
             additional_info = getattr(request, "additional_information", None) if request else None
             cached_reqs.additional_information[req_id] = additional_info
+
+    def _cleanup_finished_requests(self, requests: dict[str, Request]) -> None:
+        active_request_ids = set(requests.keys())
+        with self.lock:
+            self.finished_requests.intersection_update(active_request_ids)
 
     def _process_chunk_queue(
         self,
