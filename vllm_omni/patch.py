@@ -15,32 +15,18 @@ from vllm_omni.inputs.data import OmniTokensPrompt
 from vllm_omni.model_executor.layers.rotary_embedding import OmniMRotaryEmbedding
 from vllm_omni.request import OmniRequest
 
-
-def _extend_enum(enum_cls, name, value):
-    """Add a new Enum member at runtime without extra dependencies."""
-    if name in enum_cls.__members__:
-        return enum_cls.__members__[name]
-
-    value_map = getattr(enum_cls, "_value2member_map_", {})
-    if value in value_map:
-        member = value_map[value]
-        enum_cls._member_map_[name] = member
-        setattr(enum_cls, name, member)
-        return member
-
-    member = enum_cls.__new__(enum_cls, value)
-    member._name_ = name
-    member._value_ = value
-    enum_cls._member_map_[name] = member
-    enum_cls._value2member_map_[value] = member
-    if hasattr(enum_cls, "_member_names_"):
-        enum_cls._member_names_.append(name)
-    setattr(enum_cls, name, member)
-    return member
-
 # Extend RequestStatus enum with omni-specific statuses
 if not hasattr(RequestStatus, "WAITING_FOR_CHUNK"):
-    _extend_enum(RequestStatus, "WAITING_FOR_CHUNK", -1)
+    member = RequestStatus._value2member_map_.get(-1)
+    if member is None:
+        member = RequestStatus.__new__(RequestStatus, -1)
+        member._name_ = "WAITING_FOR_CHUNK"
+        member._value_ = -1
+        RequestStatus._value2member_map_[-1] = member
+        if hasattr(RequestStatus, "_member_names_"):
+            RequestStatus._member_names_.append("WAITING_FOR_CHUNK")
+    RequestStatus._member_map_["WAITING_FOR_CHUNK"] = member
+    setattr(RequestStatus, "WAITING_FOR_CHUNK", member)
 for module_name, module in sys.modules.items():
     # only do patch on module of vllm, pass others
     if "vllm" not in module_name:
