@@ -16,7 +16,22 @@ logger = get_connector_logger(__name__)
 
 
 class OmniChunkTransferManager(OmniTransferManagerBase):
-    """Manages asynchronous retrieval and storage of data chunks via OmniConnector."""
+    """Chunk-level transfer manager for Omni connector pipelines.
+
+    This class coordinates per-request chunk exchange between adjacent stages.
+    It tracks per-request chunk indices for put/get, maps internal request_id
+    values to external_req_id keys used by the connector, and accumulates
+    payloads across chunks (concatenating tensors/lists in AR mode). It also
+    caches prompt token ids and additional information for scheduler use.
+
+    Scheduler integration is handled via WAITING_FOR_CHUNK transitions:
+    requests are moved into waiting deques while polling, then restored to
+    waiting/running queues once a chunk arrives, with finished requests
+    detected through the payload "finished" flag.
+
+    The base class owns background recv/save loops; load/save only enqueue
+    work and return immediately.
+    """
 
     def __init__(self, model_config: Any, mode: OmniModelMode):
         self.connector = self.create_connector(model_config)
@@ -117,7 +132,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                 self._pending_save_reqs[request_id] = deque()
             self._pending_save_reqs[request_id].append(task)
 
-    def _process_single_recv(self, req_id: str):
+    def _poll_single_request(self, req_id: str):
         stage_id = self.connector.stage_id
         target_stage_id = stage_id - 1
         chunk_id = self.get_req_chunk[req_id]
@@ -180,7 +195,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self.request_payload[req_id] = payload_data
         return payload_data
 
-    def _process_single_save(self, task: dict):
+    def _send_single_task(self, task: dict):
         connector_put_key = task["put_key"]
         stage_id = task["stage_id"]
         next_stage_id = task["next_stage_id"]

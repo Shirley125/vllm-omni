@@ -62,7 +62,7 @@ class OmniTransferManagerBase:
 
             for req_id in pending_reqs_ids:
                 try:
-                    self._process_single_recv(req_id)
+                    self._poll_single_request(req_id)
                 except Exception as e:
                     logger.warning(f"Error receiving data for {req_id}: {e}")
                     pass
@@ -84,20 +84,24 @@ class OmniTransferManagerBase:
 
             if task:
                 try:
-                    self._process_single_save(task)
+                    self._send_single_task(task)
                 except Exception as e:
-                    logger.error(f"Error saving data for {task.get('request_id')}: {e}")
+                    logger.error(f"Error sending data for {task.get('request_id')}: {e}")
             else:
                 time.sleep(0.001)
 
-    def _process_single_recv(self, req_id: str):
-        """Process a single receive attempt. To be implemented by subclasses if needed,
-        or use a generic implementation."""
+    def _poll_single_request(self, req_id: str):
+        """Poll connector for a single request ID (non-blocking).
+
+        Subclasses should implement request-specific receive/merge behavior.
+        """
         raise NotImplementedError
 
-    def _process_single_save(self, task: dict):
-        """Process a single save attempt. To be implemented by subclasses if needed,
-        or use a generic implementation."""
+    def _send_single_task(self, task: dict):
+        """Send one pending task to the connector.
+
+        Subclasses should implement task-specific serialization and routing.
+        """
         raise NotImplementedError
 
     def load(self, *args, **kwargs):
