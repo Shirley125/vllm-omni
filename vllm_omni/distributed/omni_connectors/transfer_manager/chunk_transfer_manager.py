@@ -157,10 +157,12 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                 self._update_request_payload(external_req_id, payload_data)
                 req.additional_information = payload_data
                 if payload_data.get("finished"):
-                    self.finished_requests.add(req_id)
+                    with self.lock:
+                        self.finished_requests.add(req_id)
             else:
                 if payload_data.get("finished"):
-                    self.finished_requests.add(req_id)
+                    with self.lock:
+                        self.finished_requests.add(req_id)
                     req.status = RequestStatus.FINISHED_STOPPED
 
                 req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
@@ -181,19 +183,20 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             req_id: Request ID to update
             payload_data: New payload data to store
         """
-        if req_id not in self.request_payload:
-            self.request_payload[req_id] = payload_data
-            return
-        origin_payload = self.request_payload[req_id]
-        for key, value in payload_data.items():
-            if key == "finished":
-                continue
-            elif isinstance(value, torch.Tensor) and key in origin_payload:
-                payload_data[key] = torch.cat([origin_payload[key], value], dim=0)
-            elif isinstance(value, list) and key in origin_payload:
-                payload_data[key] = origin_payload[key] + value
+        with self.lock:
+            if req_id not in self.request_payload:
+                self.request_payload[req_id] = payload_data
+                return payload_data
+            origin_payload = self.request_payload[req_id]
+            for key, value in payload_data.items():
+                if key == "finished":
+                    continue
+                elif isinstance(value, torch.Tensor) and key in origin_payload:
+                    payload_data[key] = torch.cat([origin_payload[key], value], dim=0)
+                elif isinstance(value, list) and key in origin_payload:
+                    payload_data[key] = origin_payload[key] + value
 
-        self.request_payload[req_id] = payload_data
+            self.request_payload[req_id] = payload_data
         return payload_data
 
     def _send_single_task(self, task: dict):
@@ -279,6 +282,8 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         target_status: RequestStatus,
         finished_load_reqs: set[str],
     ) -> None:
+        with self.lock:
+            finished_requests = set(self.finished_requests)
         queue_snapshot = list(queue)
         for request in queue_snapshot:
             if request.status != RequestStatus.WAITING_FOR_CHUNK:
@@ -286,7 +291,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                     # Requests that have loaded chunk from last round
                     # of schedule, but have not scheduled
                     continue
-                if request.request_id in self.finished_requests:
+                if request.request_id in finished_requests:
                     request.additional_information = {}
                     continue
                 # Requests that waiting for chunk

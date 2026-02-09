@@ -114,12 +114,16 @@ def thinker2talker_async_chunk(
             "tts_pad_embed": pooling_output.get("tts_pad_embed").detach().cpu(),
             "finished": torch.tensor(request.is_finished(), dtype=torch.bool),
         }
-        if transfer_manager.request_payload.get(request_id) is None:
-            if not request.is_finished():
-                transfer_manager.request_payload[request_id] = talker_additional_info
-                return None
-        else:
-            save_payload = transfer_manager.request_payload.pop(request_id)
+        save_payload = None
+        with transfer_manager.lock:
+            existing_payload = transfer_manager.request_payload.get(request_id)
+            if existing_payload is None:
+                if not request.is_finished():
+                    transfer_manager.request_payload[request_id] = talker_additional_info
+                    return None
+            else:
+                save_payload = transfer_manager.request_payload.pop(request_id)
+        if save_payload is not None:
             talker_additional_info["thinker_embeddings"] = torch.cat(
                 (save_payload.get("thinker_embeddings"), talker_additional_info.get("thinker_embeddings")), dim=0
             )
