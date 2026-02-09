@@ -36,7 +36,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
     def __init__(self, model_config: Any):
         self.connector = self.create_connector(model_config)
         super().__init__(model_config)
-        self.model_mode = getattr(model_config, "worker_type", "ar"):
+        self.model_mode = getattr(model_config, "worker_type", "ar")
 
         # State specific to Chunk management
         # mapping for request id and chunk id
