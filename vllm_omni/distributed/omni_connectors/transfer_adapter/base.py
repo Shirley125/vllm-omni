@@ -11,16 +11,8 @@ from ..utils.logging import get_connector_logger
 logger = get_connector_logger(__name__)
 
 
-class OmniModelMode(enum.Enum):
-    # Omni AR Model
-    MODE_AR = "ar"
-
-    # Omni Generation Model
-    MODE_GENERATION = "generate"
-
-
-class OmniTransferManagerBase:
-    """Base class for managing asynchronous data transfer via OmniConnector.
+class OmniTransferAdapterBase:
+    """Base class for managing data transfer via OmniConnector.
 
     This class handles the core loop logic and connector interactions, but
     leaves the specific data processing (chunks, KV cache, etc.) to subclasses.
@@ -62,7 +54,7 @@ class OmniTransferManagerBase:
 
             for req_id in pending_reqs_ids:
                 try:
-                    self._process_single_recv(req_id)
+                    self._poll_single_request(req_id)
                 except Exception as e:
                     logger.warning(f"Error receiving data for {req_id}: {e}")
                     pass
@@ -84,29 +76,38 @@ class OmniTransferManagerBase:
 
             if task:
                 try:
-                    self._process_single_save(task)
+                    self._send_single_request(task)
                 except Exception as e:
                     logger.error(f"Error saving data for {task.get('request_id')}: {e}")
             else:
                 time.sleep(0.001)
 
-    def _process_single_recv(self, req_id: str):
-        """Process a single receive attempt. To be implemented by subclasses if needed,
-        or use a generic implementation."""
+    def _poll_single_request(self, *args, **kwargs):
+        """Poll connector for a single request task.
+        Subclasses should implement request-specific receive behavior."""
         raise NotImplementedError
 
-    def _process_single_save(self, task: dict):
-        """Process a single save attempt. To be implemented by subclasses if needed,
-        or use a generic implementation."""
+    def _send_single_request(self, *args, **kwargs):
+        """Send one pending save request task to the connector.
+        Subclasses should implement task-specific handling logic."""
         raise NotImplementedError
 
-    def load(self, *args, **kwargs):
+    def load_async(self, *args, **kwargs):
         """Register a request to load data. To be implemented by subclasses."""
         raise NotImplementedError
 
+    def save_async(self, *args, **kwargs):
+        """Submit data to be saved. To be implemented by subclasses."""
+        raise NotImplementedError
+
+    def load(self, *args, **kwargs):
+        """Load request data from connector synchronously. To be implemented by subclasses."""
+        raise NotImplementedError
+
     def save(self, *args, **kwargs):
-        """Submit data to be saved/sent. To be implemented by subclasses."""
+        """Save data to connector synchronously. To be implemented by subclasses."""
         raise NotImplementedError
 
     def get_finished_requests(self):
+        """Get finished loaded or saved requests"""
         raise NotImplementedError

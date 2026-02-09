@@ -10,18 +10,35 @@ from vllm.v1.request import Request, RequestStatus
 from ..factory import OmniConnectorFactory
 from ..utils.config import ConnectorSpec
 from ..utils.logging import get_connector_logger
-from .base import OmniModelMode, OmniTransferManagerBase
+from .base import OmniTransferAdapterBase
 
 logger = get_connector_logger(__name__)
 
 
-class OmniChunkTransferManager(OmniTransferManagerBase):
-    """Manages asynchronous retrieval and storage of data chunks via OmniConnector."""
+class OmniChunkTransferAdapter(OmniTransferAdapterBase):
+    """Chunk-level transfer adapter for Omni connector pipelines.
 
-    def __init__(self, model_config: Any, mode: OmniModelMode):
+    This class coordinates per-request chunk exchange between adjacent stages,
+    and implements asynchronous get/put of chunks via background threads.
+    It tracks per-request chunk indices for put/get, and accumulates
+    payloads across chunks (concatenating tensors/lists in AR mode). It also
+    caches prompt token ids and additional information for scheduler use.
+
+    Scheduler integration is handled via WAITING_FOR_CHUNK transitions:
+    requests are moved to waiting for chunk deque while polling, then restored
+    to waiting/running queues once a chunk arrives. The requests will finish
+    loading chunk util detecting the payload "finished" flag.
+
+    The base class owns background recv/save loops; load/save only enqueue
+    work and return immediately.
+    """
+
+    def __init__(self, vllm_config: Any):
+        model_config = vllm_config.model_config
+        self.scheduler_max_num_seqs = vllm_config.scheduler_config.max_num_seqs
         self.connector = self.create_connector(model_config)
-        self.model_mode = mode
         super().__init__(model_config)
+        self.model_mode = getattr(model_config, "worker_type", "ar")
 
         # State specific to Chunk management
         # mapping for request id and chunk id
@@ -54,7 +71,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         )
         return OmniConnectorFactory.create_connector(connector_specs)
 
-    def load(self, request):
+    def load_async(self, request: Request):
         """Request to retrieve a chunk of data for a specific request.
 
         Args:
@@ -71,7 +88,8 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         with self.lock:
             self._pending_load_reqs[request_id] = request
 
-    def save(self, pooling_output, request, custom_process_input_func=None):
+    def save_async(self, pooling_output: torch.Tensor | None = None, request: Request,
+                   custom_process_input_func: Any):
         """Submit a chunk of data to be stored/sent asynchronously.
 
         Args:
@@ -117,7 +135,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                 self._pending_save_reqs[request_id] = deque()
             self._pending_save_reqs[request_id].append(task)
 
-    def _process_single_recv(self, req_id: str):
+    def _poll_single_request(self, req_id: str):
         stage_id = self.connector.stage_id
         target_stage_id = stage_id - 1
         chunk_id = self.get_req_chunk[req_id]
@@ -137,7 +155,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
             self.get_req_chunk[req_id] += 1
             req = self._pending_load_reqs[req_id]
 
-            if self.model_mode == OmniModelMode.MODE_AR:
+            if self.model_mode == "ar":
                 self._update_request_payload(external_req_id, payload_data)
                 req.additional_information = payload_data
                 if payload_data.get("finished"):
@@ -180,7 +198,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self.request_payload[req_id] = payload_data
         return payload_data
 
-    def _process_single_save(self, task: dict):
+    def _send_single_request(self, task: dict):
         connector_put_key = task["put_key"]
         stage_id = task["stage_id"]
         next_stage_id = task["next_stage_id"]
@@ -217,6 +235,9 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self._process_chunk_queue(
             running_queue, self.waiting_for_chunk_running_requests, RequestStatus.RUNNING, finished_load_reqs
         )
+        while len(running_queue) > self.scheduler_max_num_seqs:
+            request = running_queue.pop()
+            waiting_queue.prepend_requests([request])
 
     def restore_queues(self, waiting_queue: Any, running_queue: list[Request]) -> None:
         """
@@ -274,7 +295,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                     request.additional_information = {}
                     continue
                 # Requests that waiting for chunk
-                self.load(request)
+                self.load_async(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
             else:
                 if request.request_id in finished_load_reqs:

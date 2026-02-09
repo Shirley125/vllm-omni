@@ -16,9 +16,8 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniCachedRequestData, OmniNewRequestData
-from vllm_omni.distributed.omni_connectors.transfer_manager.base import OmniModelMode
-from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import (
-    OmniChunkTransferManager,
+from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import (
+    OmniChunkTransferAdapter,
 )
 from vllm_omni.outputs import OmniModelRunnerOutput
 
@@ -27,9 +26,9 @@ class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         model_config = self.vllm_config.model_config
-        self.chunk_manager = None
+        self.chunk_transfer_adapter = None
         if getattr(model_config, "async_chunk", False):
-            self.chunk_manager = OmniChunkTransferManager(model_config, OmniModelMode.MODE_GENERATION)
+            self.chunk_transfer_adapter = OmniChunkTransferAdapter(self.vllm_config)
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
@@ -56,11 +55,8 @@ class OmniGenerationScheduler(VLLMScheduler):
         # Temporary queue: preserve waiting order, do not disturb non-diffusion requests
         skipped_waiting_requests = create_request_queue(self.policy)
         req_index = 0
-        if self.chunk_manager:
-            self.chunk_manager.process_pending_chunks(self.waiting, self.running)
-            while len(self.running) > self.scheduler_config.max_num_seqs:
-                request = self.running.pop()
-                self.waiting.prepend_requests([request])
+        if self.chunk_transfer_adapter:
+            self.chunk_transfer_adapter.process_pending_chunks(self.waiting, self.running)
 
         # OMNI: Track requests that are already finished (e.g., marked by connector)
         # These should be removed from running and not scheduled
@@ -70,7 +66,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             # OMNI: Skip requests that are not in self.requests
             # This can happen when connector marks request as finished and it's removed from requests
             if request.request_id not in self.requests or (
-                self.chunk_manager is None and request.status == RequestStatus.FINISHED_STOPPED
+                self.chunk_transfer_adapter is None and request.status == RequestStatus.FINISHED_STOPPED
             ):
                 already_finished_reqs.add(request)
                 req_index += 1
@@ -109,7 +105,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             request = self.waiting.peek_request()
             # OMNI: Skip requests that are not in self.requests
             if request.request_id not in self.requests or (
-                self.chunk_manager is None and request.status == RequestStatus.FINISHED_STOPPED
+                self.chunk_transfer_adapter is None and request.status == RequestStatus.FINISHED_STOPPED
             ):
                 # Pop the finished request from waiting queue and don't schedule it
                 self.waiting.pop_request()
@@ -152,9 +148,9 @@ class OmniGenerationScheduler(VLLMScheduler):
         # If fast path scheduled none, fall back to the original scheduling
         if not num_scheduled_tokens:
             res = super().schedule()
-            if self.chunk_manager:
-                self.chunk_manager.restore_queues(self.waiting, self.running)
-                self.chunk_manager.filter_scheduler_output(res)
+            if self.chunk_transfer_adapter:
+                self.chunk_transfer_adapter.restore_queues(self.waiting, self.running)
+                self.chunk_transfer_adapter.filter_scheduler_output(res)
             return res
 
         # Compute common prefix blocks (aligned with v1)
@@ -256,9 +252,9 @@ class OmniGenerationScheduler(VLLMScheduler):
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
 
-            if self.chunk_manager:
-                self.chunk_manager.restore_queues(self.waiting, self.running)
-                self.chunk_manager.filter_scheduler_output(scheduler_output)
+            if self.chunk_transfer_adapter:
+                self.chunk_transfer_adapter.restore_queues(self.waiting, self.running)
+                self.chunk_transfer_adapter.filter_scheduler_output(scheduler_output)
 
         except Exception:
             # If anything goes wrong, leave the original output unchanged
@@ -361,7 +357,7 @@ class OmniGenerationScheduler(VLLMScheduler):
 
             # Diffusion request: completes in one step; mark finished and free resources
             if request.status == RequestStatus.FINISHED_STOPPED or (
-                self.chunk_manager is None and request.num_computed_tokens >= request.num_prompt_tokens
+                self.chunk_transfer_adapter is None and request.num_computed_tokens >= request.num_prompt_tokens
             ):
                 request.status = RequestStatus.FINISHED_STOPPED
                 # Optional: set a stop_reason for front-end clarity
