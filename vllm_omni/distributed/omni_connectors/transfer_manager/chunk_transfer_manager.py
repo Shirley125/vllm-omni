@@ -23,18 +23,26 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self.model_mode = mode
         super().__init__(model_config)
 
-        # State specific to Chunk management
-        # mapping for request id and chunk id
+        # State specific to chunk management.
+        # Next chunk index to send per external request id.
         self.put_req_chunk: dict[str, int] = defaultdict(int)
+        # Next chunk index to receive per internal request id.
         self.get_req_chunk: dict[str, int] = defaultdict(int)
+        # Requests that have received a "finished" signal from upstream.
         self.finished_requests: set[str] = set()
+        # Cached payload per request for incremental concatenation.
         self.request_payload = {}
+        # Latest prompt tokens received per request.
         self.request_prompt_token_ids: dict[str, list[int]] = defaultdict(list)
+        # Code predictor prompt tokens (generation mode) per request.
         self.code_prompt_token_ids: dict[str, list[list[int]]] = defaultdict(list)
+        # Map internal request id -> external request id used in connector keys.
         self.request_ids_mapping: dict[str, str] = {}
 
+        # Temporary queues for requests waiting on chunks.
         self.waiting_for_chunk_waiting_requests: deque[Any] = deque()
         self.waiting_for_chunk_running_requests: deque[Any] = deque()
+        # Requests that already have chunks ready for the scheduler.
         self.requests_with_ready_chunks = set()
 
     @classmethod
@@ -64,6 +72,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         request_id = request.request_id
         self.request_ids_mapping[request_id] = request.external_req_id
 
+        # Stage 0 is the producer and does not pull from upstream.
         if stage_id == 0:
             return
         if not hasattr(request, "additional_information"):
@@ -81,8 +90,9 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         """
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
-        request_id = request.external_req_id
-        chunk_id = self.put_req_chunk[request_id]
+        # Use external request id for connector keys across stages.
+        external_req_id = request.external_req_id
+        chunk_id = self.put_req_chunk[external_req_id]
 
         # Process payload in main thread to avoid race conditions on request state
         payload_data = None
@@ -101,50 +111,52 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
                 return
 
         # Increment chunk_id here since we are committing to send
-        self.put_req_chunk[request_id] += 1
-        connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
+        self.put_req_chunk[external_req_id] += 1
+        connector_put_key = f"{external_req_id}_{stage_id}_{chunk_id}"
 
         task = {
             "stage_id": stage_id,
             "next_stage_id": next_stage_id,
             "put_key": connector_put_key,
             "data": payload_data,
-            "request_id": request_id,
+            # Used only for logging when the background save fails.
+            "request_id": external_req_id,
         }
 
         with self.lock:
-            if request_id not in self._pending_save_reqs:
-                self._pending_save_reqs[request_id] = deque()
-            self._pending_save_reqs[request_id].append(task)
+            if external_req_id not in self._pending_save_reqs:
+                self._pending_save_reqs[external_req_id] = deque()
+            self._pending_save_reqs[external_req_id].append(task)
 
-    def _process_single_recv(self, req_id: str):
-        stage_id = self.connector.stage_id
-        target_stage_id = stage_id - 1
-        chunk_id = self.get_req_chunk[req_id]
-        external_req_id = self.request_ids_mapping.get(req_id, req_id)
-        connector_get_key = f"{external_req_id}_{target_stage_id}_{chunk_id}"
+    def _process_single_recv(self, internal_req_id: str):
+        # Poll upstream stage for the next chunk for this internal request id.
+        current_stage_id = self.connector.stage_id
+        upstream_stage_id = current_stage_id - 1
+        expected_chunk_id = self.get_req_chunk[internal_req_id]
+        external_req_id = self.request_ids_mapping.get(internal_req_id, internal_req_id)
+        connector_get_key = f"{external_req_id}_{upstream_stage_id}_{expected_chunk_id}"
 
         # Use timeout=0 for non-blocking poll
         payload_data, size = self.connector.get(
-            str(target_stage_id),
-            str(stage_id),
+            str(upstream_stage_id),
+            str(current_stage_id),
             connector_get_key,
         )
 
         if payload_data:
-            self.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
+            self.request_prompt_token_ids[internal_req_id] = payload_data.get("thinker_input_ids", [])
             # Update connector state
-            self.get_req_chunk[req_id] += 1
-            req = self._pending_load_reqs[req_id]
+            self.get_req_chunk[internal_req_id] += 1
+            req = self._pending_load_reqs[internal_req_id]
 
             if self.model_mode == OmniModelMode.MODE_AR:
                 self._update_request_payload(external_req_id, payload_data)
                 req.additional_information = payload_data
                 if payload_data.get("finished"):
-                    self.finished_requests.add(req_id)
+                    self.finished_requests.add(internal_req_id)
             else:
                 if payload_data.get("finished"):
-                    self.finished_requests.add(req_id)
+                    self.finished_requests.add(internal_req_id)
                     req.status = RequestStatus.FINISHED_STOPPED
 
                 req.prompt_token_ids = payload_data.get("code_predictor_codes", [])
@@ -152,10 +164,12 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
 
             # Mark as finished for consumption
             with self.lock:
-                self._finished_load_reqs.add(req_id)
-                if req_id in self._pending_load_reqs:
-                    del self._pending_load_reqs[req_id]
-            logger.debug(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
+                self._finished_load_reqs.add(internal_req_id)
+                if internal_req_id in self._pending_load_reqs:
+                    del self._pending_load_reqs[internal_req_id]
+            logger.debug(
+                f"[Stage-{current_stage_id}] Received one chunk for key {connector_get_key}"
+            )
 
     def _update_request_payload(self, req_id: str, payload_data: dict[str, Any]) -> dict[str, Any]:
         """Update the payload data for a request in the connector.
@@ -180,21 +194,22 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         self.request_payload[req_id] = payload_data
         return payload_data
 
-    def _process_single_save(self, task: dict):
-        connector_put_key = task["put_key"]
-        stage_id = task["stage_id"]
-        next_stage_id = task["next_stage_id"]
-        payload_data = task["data"]
+    def _process_single_save(self, save_task: dict):
+        # Push the prepared payload to the downstream stage.
+        connector_put_key = save_task["put_key"]
+        from_stage_id = save_task["stage_id"]
+        to_stage_id = save_task["next_stage_id"]
+        payload_data = save_task["data"]
 
         success, size, metadata = self.connector.put(
-            from_stage=str(stage_id),
-            to_stage=str(next_stage_id),
+            from_stage=str(from_stage_id),
+            to_stage=str(to_stage_id),
             put_key=connector_put_key,
             data=payload_data,
         )
 
         if success:
-            logger.info(f"[Stage-{stage_id}] Sent {connector_put_key}")
+            logger.info(f"[Stage-{from_stage_id}] Sent {connector_put_key}")
 
     ########################################################################
     # Schedule Helper
@@ -208,6 +223,7 @@ class OmniChunkTransferManager(OmniTransferManagerBase):
         """
         Process pending chunks for waiting and running queues.
         """
+        # No-op for stage 0, since it does not receive from upstream.
         if self.connector.stage_id == 0:
             return
         finished_load_reqs = self.get_finished_requests()
