@@ -96,7 +96,7 @@ def thinker2talker_async_chunk(
     """
 
     request_id = request.external_req_id
-    chunk_id = transfer_manager.put_requests[request_id]
+    chunk_id = transfer_manager.put_req_chunk[request_id]
     if chunk_id == 0:
         all_token_ids = request.all_token_ids  # prefill + decode
         prompt_token_ids = request.prompt_token_ids

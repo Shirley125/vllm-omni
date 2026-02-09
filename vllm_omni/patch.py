@@ -31,6 +31,8 @@ if not hasattr(RequestStatus, "WAITING_FOR_CHUNK"):
         if hasattr(RequestStatus, "_member_names_"):
             RequestStatus._member_names_.append("WAITING_FOR_CHUNK")
     RequestStatus._member_map_["WAITING_FOR_CHUNK"] = member
+    if "WAITING_FOR_CHUNK" not in RequestStatus.__dict__:
+        type.__setattr__(RequestStatus, "WAITING_FOR_CHUNK", member)
 
 for module_name, module in sys.modules.items():
     # only do patch on module of vllm, pass others
