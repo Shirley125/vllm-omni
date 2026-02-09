@@ -18,7 +18,8 @@ logger = get_connector_logger(__name__)
 class OmniChunkTransferManager(OmniTransferManagerBase):
     """Chunk-level transfer manager for Omni connector pipelines.
 
-    This class coordinates per-request chunk exchange between adjacent stages.
+    This class coordinates per-request chunk exchange between adjacent stages,
+    and implements asynchronous get/put of chunks via background threads.
     It tracks per-request chunk indices for put/get, maps internal request_id
     values to external_req_id keys used by the connector, and accumulates
     payloads across chunks (concatenating tensors/lists in AR mode). It also
