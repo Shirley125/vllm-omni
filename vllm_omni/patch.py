@@ -19,7 +19,11 @@ from vllm_omni.request import OmniRequest
 if not hasattr(RequestStatus, "WAITING_FOR_CHUNK"):
     member = RequestStatus._value2member_map_.get(-1)
     if member is None:
-        member = RequestStatus.__new__(RequestStatus, -1)
+        member_type = getattr(RequestStatus, "_member_type_", object)
+        if member_type is object:
+            member = object.__new__(RequestStatus)
+        else:
+            member = member_type.__new__(RequestStatus, -1)
         member._name_ = "WAITING_FOR_CHUNK"
         member._value_ = -1
         RequestStatus._value2member_map_[-1] = member
