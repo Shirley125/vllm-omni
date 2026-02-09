@@ -56,10 +56,11 @@ class OmniGenerationScheduler(VLLMScheduler):
         skipped_waiting_requests = create_request_queue(self.policy)
         req_index = 0
         if self.chunk_transfer_adapter:
-            self.chunk_transfer_adapter.process_pending_chunks(self.waiting, self.running)
-            while len(self.running) > self.scheduler_config.max_num_seqs:
-                request = self.running.pop()
-                self.waiting.prepend_requests([request])
+            self.chunk_transfer_adapter.process_pending_chunks(
+                self.waiting,
+                self.running,
+                self.scheduler_config.max_num_seqs,
+            )
 
         # OMNI: Track requests that are already finished (e.g., marked by connector)
         # These should be removed from running and not scheduled

@@ -219,10 +219,15 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self,
         waiting_queue: Any,
         running_queue: list[Request],
+        max_num_seqs: int | None = None,
     ) -> None:
         """
         Process pending chunks for waiting and running queues.
         """
+        if max_num_seqs is not None:
+            while len(running_queue) > max_num_seqs:
+                request = running_queue.pop()
+                waiting_queue.prepend_requests([request])
         if self.connector.stage_id == 0:
             return
         finished_load_reqs = self.get_finished_requests()
