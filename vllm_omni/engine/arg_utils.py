@@ -74,6 +74,7 @@ class OmniEngineArgs(EngineArgs):
     stage_connector_spec: dict[str, Any] = field(default_factory=dict)
     async_chunk: bool = False
     omni_kv_config: dict | None = None
+    worker_type: str | None = None
 
     def draw_hf_text_config(self, config_dict: dict) -> Qwen3OmniMoeTextConfig:
         # transformers' get_text_config method is used to get the text config from thinker_config.
@@ -129,6 +130,7 @@ class OmniEngineArgs(EngineArgs):
         config_dict["async_chunk"] = self.async_chunk
         config_dict["model_stage"] = self.model_stage
         config_dict["model_arch"] = self.model_arch
+        config_dict["worker_type"] = self.worker_type
         config_dict["engine_output_type"] = self.engine_output_type
         # Build stage_connector_config from stage_connector_spec
         stage_connector_config = {
@@ -176,6 +178,7 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
     stage_connector_spec: dict[str, Any] = field(default_factory=dict)
     async_chunk: bool = False
     omni_kv_config: dict | None = None
+    worker_type: str | None = None
 
     def draw_hf_text_config(self, config_dict: dict) -> Qwen3OmniMoeTextConfig:
         # transformers' get_text_config method is used to get the text config from thinker_config.
@@ -221,6 +224,7 @@ class AsyncOmniEngineArgs(AsyncEngineArgs):
         config_dict["async_chunk"] = self.async_chunk
         config_dict["model_stage"] = self.model_stage
         config_dict["model_arch"] = self.model_arch
+        config_dict["worker_type"] = self.worker_type
         config_dict["engine_output_type"] = self.engine_output_type
         stage_connector_config = {
             "name": self.stage_connector_spec.get("name", "SharedMemoryConnector"),

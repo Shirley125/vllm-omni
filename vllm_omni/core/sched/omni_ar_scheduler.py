@@ -20,9 +20,9 @@ from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniSchedulerOutput
-from vllm_omni.distributed.omni_connectors.transfer_manager.base import OmniModelMode
-from vllm_omni.distributed.omni_connectors.transfer_manager.chunk_transfer_manager import (
-    OmniChunkTransferManager,
+from vllm_omni.distributed.omni_connectors.transfer_adapter.base import OmniModelMode
+from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import (
+    OmniChunkTransferAdapter,
 )
 
 logger = init_logger(__name__)
@@ -66,11 +66,11 @@ class OmniARScheduler(VLLMScheduler):
         # Track requests that have already triggered prefill transfer to avoid duplicates
         self.transfer_triggered_requests: set[str] = set()
         model_config = self.vllm_config.model_config
-        self.chunk_manager = None
+        self.chunk_transfer_adapter = None
         if getattr(model_config, "async_chunk", False):
-            self.chunk_manager = OmniChunkTransferManager(model_config, OmniModelMode.MODE_AR)
+            self.chunk_transfer_adapter = OmniChunkTransferAdapter(model_config)
 
-        if self.chunk_manager:
+        if self.chunk_transfer_adapter:
             custom_process_next_stage_input_func = getattr(
                 self.vllm_config.model_config, "custom_process_next_stage_input_func", None
             )
@@ -149,8 +149,8 @@ class OmniARScheduler(VLLMScheduler):
         return False
 
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
-        if self.chunk_manager:
-            self.chunk_manager.process_pending_chunks(self.waiting, self.running)
+        if self.chunk_transfer_adapter:
+            self.chunk_transfer_adapter.process_pending_chunks(self.waiting, self.running)
             while len(self.running) > self.scheduler_config.max_num_seqs:
                 request = self.running.pop()
                 self.waiting.prepend_requests([request])
@@ -158,9 +158,9 @@ class OmniARScheduler(VLLMScheduler):
         try:
             scheduler_output = super().schedule()
         finally:
-            if self.chunk_manager:
+            if self.chunk_transfer_adapter:
                 # Add request waiting for chunk to the waiting and running queue
-                self.chunk_manager.restore_queues(self.waiting, self.running)
+                self.chunk_transfer_adapter.restore_queues(self.waiting, self.running)
         try:
             # Late import to avoid circulars in some launch modes
             from .output import OmniNewRequestData
@@ -189,8 +189,8 @@ class OmniARScheduler(VLLMScheduler):
                 new_list.append(omni_nr)
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
-            if self.chunk_manager:
-                self.chunk_manager.filter_scheduler_output(scheduler_output, self.requests)
+            if self.chunk_transfer_adapter:
+                self.chunk_transfer_adapter.filter_scheduler_output(scheduler_output, self.requests)
             # Add information about requests needing KV cache transfer
             finished_reqs = self.get_finished_requests_needing_kv_transfer()
         except Exception:
@@ -362,9 +362,9 @@ class OmniARScheduler(VLLMScheduler):
                         num_nans_in_logits=request.num_nans_in_logits,
                     )
                 )
-                if self.chunk_manager is not None:
+                if self.chunk_transfer_adapter is not None:
                     custom_process_next_stage_input_func = self.custom_process_next_stage_input_func
-                    self.chunk_manager.save(pooler_output, request, custom_process_next_stage_input_func)
+                    self.chunk_transfer_adapter.save_async(pooler_output, request, custom_process_next_stage_input_func)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors

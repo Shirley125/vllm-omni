@@ -63,6 +63,7 @@ class OmniModelConfig(ModelConfig):
     async_chunk: bool = False
     model_stage: str = "thinker"
     model_arch: str = "Qwen2_5OmniForConditionalGeneration"
+    worker_type: str | None = None
     engine_output_type: str | None = None
     hf_config_name: str | None = None
     custom_process_next_stage_input_func: str | None = None
