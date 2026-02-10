@@ -786,6 +786,13 @@ def _stage_worker(
         task_type = task.get("type", OmniStageTaskType.GENERATE)
         if task_type == OmniStageTaskType.SHUTDOWN:
             logger.info("Received shutdown signal")
+            try:
+                if hasattr(stage_engine, "close"):
+                    stage_engine.close()
+                elif hasattr(stage_engine, "shutdown"):
+                    stage_engine.shutdown()
+            except Exception as e:
+                logger.warning("Stage engine shutdown failed: %s", e)
             break
 
         # Handle profiler control commands

@@ -20,6 +20,7 @@ from vllm_omni.distributed.omni_connectors import initialize_orchestrator_connec
 # Internal imports (our code)
 from vllm_omni.engine.arg_utils import OmniEngineArgs
 from vllm_omni.engine.input_processor import OmniInputProcessor
+from vllm_omni.engine.lifecycle import shutdown_chunk_transfer_adapters
 from vllm_omni.engine.output_processor import MultimodalOutputProcessor
 from vllm_omni.entrypoints.utils import (
     load_stage_configs_from_model,
@@ -187,6 +188,10 @@ class OmniLLM(LLM):
         """
         # Close the LLM engine if it exists
         if hasattr(self, "llm_engine") and self.llm_engine is not None:
+            try:
+                shutdown_chunk_transfer_adapters(self.llm_engine, logger)
+            except Exception as e:
+                logger.debug("Best-effort chunk transfer adapter shutdown failed: %s", e, exc_info=True)
             if hasattr(self.llm_engine, "shutdown"):
                 self.llm_engine.shutdown()
 

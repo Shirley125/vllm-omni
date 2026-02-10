@@ -22,6 +22,7 @@ from vllm.v1.metrics.loggers import StatLoggerFactory, StatLoggerManager
 
 from vllm_omni.engine.arg_utils import AsyncOmniEngineArgs
 from vllm_omni.engine.input_processor import OmniInputProcessor
+from vllm_omni.engine.lifecycle import shutdown_chunk_transfer_adapters
 from vllm_omni.engine.output_processor import MultimodalOutputProcessor
 
 if TYPE_CHECKING:
@@ -217,3 +218,16 @@ class AsyncOmniLLM(AsyncLLM):
             client_index=client_index,
             engine_args=engine_args,
         )
+
+    def shutdown(self) -> None:
+        try:
+            shutdown_chunk_transfer_adapters(self, logger)
+        except Exception as e:
+            logger.debug("Best-effort chunk transfer adapter shutdown failed: %s", e, exc_info=True)
+
+        super_shutdown = getattr(super(), "shutdown", None)
+        if callable(super_shutdown):
+            super_shutdown()
+
+    def close(self) -> None:
+        self.shutdown()
