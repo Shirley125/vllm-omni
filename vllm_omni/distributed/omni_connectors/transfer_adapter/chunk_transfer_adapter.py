@@ -289,7 +289,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             running_queue.extend(self.waiting_for_chunk_running_requests)
         self.waiting_for_chunk_running_requests = deque()
 
-    def filter_scheduler_output(
+    def postprocess_scheduler_output(
         self,
         scheduler_output: Any,
         requests: dict[str, Request] | None = None,
