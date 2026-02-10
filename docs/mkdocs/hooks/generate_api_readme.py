@@ -9,12 +9,16 @@ categorizes them, and generates a summary README file.
 
 import ast
 import logging
+import shutil
 from pathlib import Path
 
 logger = logging.getLogger("mkdocs")
 
 ROOT_DIR = Path(__file__).parent.parent.parent.parent
 API_README_PATH = ROOT_DIR / "docs" / "api" / "README.md"
+GENERATED_API_MODULE_DIRS = [
+    ROOT_DIR / "docs" / "api" / "vllm_omni",
+]
 
 # Category mappings: module prefix -> category name and description
 CATEGORIES = {
@@ -261,6 +265,16 @@ def generate_readme(categorized: dict[str, list[str]]) -> str:
 
 def on_startup(command, dirty: bool):
     """MkDocs hook entry point."""
+    # Remove previously generated API pages to avoid stale modules causing build
+    # failures after refactors (e.g. deleted/renamed modules).
+    for generated_dir in GENERATED_API_MODULE_DIRS:
+        if generated_dir.exists():
+            shutil.rmtree(generated_dir)
+            logger.info(
+                "Removed stale generated API docs: %s",
+                generated_dir.relative_to(ROOT_DIR),
+            )
+
     logger.info("Generating API README documentation")
 
     # Scan the package
