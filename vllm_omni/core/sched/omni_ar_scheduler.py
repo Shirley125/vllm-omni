@@ -69,15 +69,6 @@ class OmniARScheduler(VLLMScheduler):
         if getattr(model_config, "async_chunk", False):
             self.chunk_transfer_adapter = OmniChunkTransferAdapter(self.vllm_config)
 
-        if self.chunk_transfer_adapter:
-            custom_process_next_stage_input_func = getattr(
-                self.vllm_config.model_config, "custom_process_next_stage_input_func", None
-            )
-            if custom_process_next_stage_input_func:
-                module_path, func_name = custom_process_next_stage_input_func.rsplit(".", 1)
-                module = importlib.import_module(module_path)
-                self.custom_process_next_stage_input_func = getattr(module, func_name)
-
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
     def _get_kv_transfer_criteria(self) -> dict | None:
@@ -359,8 +350,7 @@ class OmniARScheduler(VLLMScheduler):
                     )
                 )
                 if self.chunk_transfer_adapter is not None:
-                    custom_process_next_stage_input_func = self.custom_process_next_stage_input_func
-                    self.chunk_transfer_adapter.save_async(pooler_output, request, custom_process_next_stage_input_func)
+                    self.chunk_transfer_adapter.save_async(pooler_output, request)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors

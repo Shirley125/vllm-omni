@@ -39,14 +39,19 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self.connector = self.create_connector(model_config)
         super().__init__(model_config)
         self.model_mode = getattr(model_config, "worker_type", "ar")
-
         # State specific to Chunk management
+        custom_process_next_stage_input_func = getattr(
+            model_config, "custom_process_next_stage_input_func", None
+        )
+        if custom_process_next_stage_input_func:
+            module_path, func_name = custom_process_next_stage_input_func.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            self.custom_process_next_stage_input_func = getattr(module, func_name)
         # mapping for request id and chunk id
         self.put_req_chunk: dict[str, int] = defaultdict(int)
         self.get_req_chunk: dict[str, int] = defaultdict(int)
         self.finished_requests: set[str] = set()
         self.request_payload = {}
-        self.request_prompt_token_ids: dict[str, list[int]] = defaultdict(list)
         self.code_prompt_token_ids: dict[str, list[list[int]]] = defaultdict(list)
         self.request_ids_mapping: dict[str, str] = {}
 
@@ -88,8 +93,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         with self.lock:
             self._pending_load_reqs[request_id] = request
 
-    def save_async(self, pooling_output: torch.Tensor | None = None, request: Request,
-                   custom_process_input_func: Any):
+    def save_async(self, pooling_output: torch.Tensor | None = None, request: Request):
         """Submit a chunk of data to be stored/sent asynchronously.
 
         Args:
@@ -104,9 +108,9 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
 
         # Process payload in main thread to avoid race conditions on request state
         payload_data = None
-        if custom_process_input_func:
+        if self.custom_process_next_stage_input_func:
             try:
-                payload_data = custom_process_input_func(
+                payload_data = self.custom_process_next_stage_input_func(
                     transfer_manager=self,
                     pooling_output=pooling_output,
                     request=request,
@@ -115,8 +119,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             except Exception as e:
                 logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
 
-            if not payload_data:
-                return
+        if not payload_data:
+            return
 
         # Increment chunk_id here since we are committing to send
         self.put_req_chunk[request_id] += 1
@@ -143,14 +147,18 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         connector_get_key = f"{external_req_id}_{target_stage_id}_{chunk_id}"
 
         # Use timeout=0 for non-blocking poll
-        payload_data, size = self.connector.get(
+        result = self.connector.get(
             str(target_stage_id),
             str(stage_id),
             connector_get_key,
         )
 
+        if result is None:
+            return
+
+        payload_data, size = result
+
         if payload_data:
-            self.request_prompt_token_ids[req_id] = payload_data.get("thinker_input_ids", [])
             # Update connector state
             self.get_req_chunk[req_id] += 1
             req = self._pending_load_reqs[req_id]
@@ -185,7 +193,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         """
         if req_id not in self.request_payload:
             self.request_payload[req_id] = payload_data
-            return
+            return payload_data
         origin_payload = self.request_payload[req_id]
         for key, value in payload_data.items():
             if key == "finished":

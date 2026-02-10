@@ -57,7 +57,6 @@ class OmniTransferAdapterBase:
                     self._poll_single_request(req_id)
                 except Exception as e:
                     logger.warning(f"Error receiving data for {req_id}: {e}")
-                    pass
 
             time.sleep(0.001)
 
