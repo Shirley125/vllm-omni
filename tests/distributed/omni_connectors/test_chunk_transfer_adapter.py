@@ -114,6 +114,22 @@ def test_load_then_poll_ar_marks_chunk_finished(build_adapter):
     assert "req-1" not in adapter._pending_load_reqs
 
 
+def test_load_then_poll_non_ar_updates_prompt_and_status(build_adapter):
+    adapter, connector = build_adapter(stage_id=2, model_mode="generation")
+    request = _req("req-2", RequestStatus.WAITING, external_req_id="external-2")
+    request.num_computed_tokens = 9
+
+    adapter.load_async(request)
+    payload = {"code_predictor_codes": [[7, 8]], "finished": True}
+    connector.get.return_value = (payload, 8)
+    adapter._poll_single_request("req-2")
+
+    assert request.prompt_token_ids == [[7, 8]]
+    assert request.num_computed_tokens == 0
+    assert request.status == RequestStatus.FINISHED_STOPPED
+    assert "req-2" in adapter.finished_requests
+
+
 def test_save_async_keeps_only_non_empty_payload(build_adapter):
     adapter, _ = build_adapter(stage_id=1)
     request = SimpleNamespace(external_req_id="external-1")
