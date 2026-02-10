@@ -33,119 +33,128 @@ class OmniGenerationScheduler(VLLMScheduler):
         num_scheduled_tokens: dict[str, int] = {}
         scheduled_spec_decode_tokens: dict[str, list[int]] = {}
         scheduled_encoder_inputs: dict[str, list[int]] = {}
+        scheduler_output: SchedulerOutput | None = None
 
-        # Temporary queue: preserve waiting order, do not disturb non-diffusion requests
-        skipped_waiting_requests = create_request_queue(self.policy)
+        try:
+            # Temporary queue: preserve waiting order, do not disturb non-diffusion requests
+            skipped_waiting_requests = create_request_queue(self.policy)
 
-        # Fast path selection and scheduling (treat all as diffusion requests,
-        # independent of pooling_params)
-        while self.waiting and token_budget > 0 and len(self.running) < self.max_num_running_reqs:
-            request = self.waiting.peek_request()
-            # Uniformly treat as diffusion. A feature flag can be added later
-            # via config or request tag.
+            # Fast path selection and scheduling (treat all as diffusion requests,
+            # independent of pooling_params)
+            while self.waiting and token_budget > 0 and len(self.running) < self.max_num_running_reqs:
+                request = self.waiting.peek_request()
+                # Uniformly treat as diffusion. A feature flag can be added later
+                # via config or request tag.
 
-            # Allocate all input tokens for the request in one shot
-            # (allocate 1 placeholder if zero)
-            required_tokens = max(getattr(request, "num_prompt_tokens", 0), 1)
-            if required_tokens > token_budget:
-                # Insufficient budget to process all inputs at once;
-                # stop fast path attempt
-                break
-            num_new_tokens = required_tokens
-            new_blocks = self.kv_cache_manager.allocate_slots(
-                request,
-                num_new_tokens,
-                num_lookahead_tokens=self.num_lookahead_tokens,
-            )
-            if new_blocks is None:
-                # Allocation failed (e.g., VRAM pressure); stop fast path and
-                # fall back to default scheduling
-                # Put the current request back to the head of the waiting queue
-                # Note: the original queue order is preserved
-                break
-
-            # Officially schedule this request
-            request = self.waiting.pop_request()
-            self.running.append(request)
-            request.status = RequestStatus.RUNNING
-            if self.log_stats:
-                request.record_event(EngineCoreEventType.SCHEDULED, scheduled_timestamp)
-
-            req_to_new_blocks[request.request_id] = new_blocks
-            num_scheduled_tokens[request.request_id] = num_new_tokens
-            token_budget -= num_new_tokens
-            scheduled_new_reqs.append(request)
-
-        # Return skipped waiting requests
-        if skipped_waiting_requests:
-            self.waiting.prepend_requests(skipped_waiting_requests)
-
-        # If fast path scheduled none, fall back to the original scheduling
-        if not num_scheduled_tokens:
-            return super().schedule()
-
-        # Compute common prefix blocks (aligned with v1)
-        num_common_prefix_blocks = [0] * len(self.kv_cache_config.kv_cache_groups)
-        if self.running:
-            any_request = self.running[0]
-            num_common_prefix_blocks = self.kv_cache_manager.get_num_common_prefix_blocks(any_request.request_id)
-
-        # Assemble SchedulerOutput (align with v0.12.0)
-        if self.use_v2_model_runner:
-            # No resumed reqs in fast path; pass prefill_token_ids for new reqs.
-            new_reqs_data = [
-                OmniNewRequestData.from_request(
-                    req,
-                    req_to_new_blocks[req.request_id].get_block_ids(),
-                    getattr(req, "_all_token_ids", None),
+                # Allocate all input tokens for the request in one shot
+                # (allocate 1 placeholder if zero)
+                required_tokens = max(getattr(request, "num_prompt_tokens", 0), 1)
+                if required_tokens > token_budget:
+                    # Insufficient budget to process all inputs at once;
+                    # stop fast path attempt
+                    break
+                num_new_tokens = required_tokens
+                new_blocks = self.kv_cache_manager.allocate_slots(
+                    request,
+                    num_new_tokens,
+                    num_lookahead_tokens=self.num_lookahead_tokens,
                 )
-                for req in scheduled_new_reqs
-            ]
-        else:
-            new_reqs_data = [
-                OmniNewRequestData.from_request(req, req_to_new_blocks[req.request_id].get_block_ids())
-                for req in scheduled_new_reqs
-            ]
-        # No running/resumed reqs scheduled in our fast path
-        cached_reqs_data = self._make_cached_request_data(
-            running_reqs=[],
-            resumed_reqs=[],
-            num_scheduled_tokens=num_scheduled_tokens,
-            spec_decode_tokens=scheduled_spec_decode_tokens,
-            req_to_new_blocks=req_to_new_blocks,
-        )
+                if new_blocks is None:
+                    # Allocation failed (e.g., VRAM pressure); stop fast path and
+                    # fall back to default scheduling
+                    # Put the current request back to the head of the waiting queue
+                    # Note: the original queue order is preserved
+                    break
 
-        total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
-        scheduler_output = SchedulerOutput(
-            scheduled_new_reqs=new_reqs_data,
-            scheduled_cached_reqs=cached_reqs_data,
-            num_scheduled_tokens=num_scheduled_tokens,
-            total_num_scheduled_tokens=total_num_scheduled_tokens,
-            scheduled_spec_decode_tokens=scheduled_spec_decode_tokens,
-            scheduled_encoder_inputs=scheduled_encoder_inputs,
-            num_common_prefix_blocks=num_common_prefix_blocks,
-            finished_req_ids=self.finished_req_ids,
-            free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
-            preempted_req_ids=set(),
-        )
+                # Officially schedule this request
+                request = self.waiting.pop_request()
+                self.running.append(request)
+                request.status = RequestStatus.RUNNING
+                if self.log_stats:
+                    request.record_event(EngineCoreEventType.SCHEDULED, scheduled_timestamp)
 
-        # Record the request ids scheduled in this step (v0.12.0 behavior).
-        self.prev_step_scheduled_req_ids.clear()
-        self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
+                req_to_new_blocks[request.request_id] = new_blocks
+                num_scheduled_tokens[request.request_id] = num_new_tokens
+                token_budget -= num_new_tokens
+                scheduled_new_reqs.append(request)
 
-        # KVTransfer: package metadata
-        if self.connector is not None:
-            meta = self.connector.build_connector_meta(scheduler_output)
-            scheduler_output.kv_connector_metadata = meta
-        # EC Connector: package metadata
-        if self.ec_connector is not None:
-            ec_meta = self.ec_connector.build_connector_meta(scheduler_output)
-            scheduler_output.ec_connector_metadata = ec_meta
+            # Return skipped waiting requests
+            if skipped_waiting_requests:
+                self.waiting.prepend_requests(skipped_waiting_requests)
 
-        # Update internal state (advance num_computed_tokens, free encoder inputs,
-        # etc.)
-        self._update_after_schedule(scheduler_output)
-        return scheduler_output
+            # If fast path scheduled none, fall back to the original scheduling
+            if not num_scheduled_tokens:
+                scheduler_output = super().schedule()
+                return scheduler_output
+
+            # Compute common prefix blocks (aligned with v1)
+            num_common_prefix_blocks = [0] * len(self.kv_cache_config.kv_cache_groups)
+            if self.running:
+                any_request = self.running[0]
+                num_common_prefix_blocks = self.kv_cache_manager.get_num_common_prefix_blocks(any_request.request_id)
+
+            # Assemble SchedulerOutput (align with v0.12.0)
+            if self.use_v2_model_runner:
+                # No resumed reqs in fast path; pass prefill_token_ids for new reqs.
+                new_reqs_data = [
+                    OmniNewRequestData.from_request(
+                        req,
+                        req_to_new_blocks[req.request_id].get_block_ids(),
+                        getattr(req, "_all_token_ids", None),
+                    )
+                    for req in scheduled_new_reqs
+                ]
+            else:
+                new_reqs_data = [
+                    OmniNewRequestData.from_request(req, req_to_new_blocks[req.request_id].get_block_ids())
+                    for req in scheduled_new_reqs
+                ]
+            # No running/resumed reqs scheduled in our fast path
+            cached_reqs_data = self._make_cached_request_data(
+                running_reqs=[],
+                resumed_reqs=[],
+                num_scheduled_tokens=num_scheduled_tokens,
+                spec_decode_tokens=scheduled_spec_decode_tokens,
+                req_to_new_blocks=req_to_new_blocks,
+            )
+
+            total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
+            scheduler_output = SchedulerOutput(
+                scheduled_new_reqs=new_reqs_data,
+                scheduled_cached_reqs=cached_reqs_data,
+                num_scheduled_tokens=num_scheduled_tokens,
+                total_num_scheduled_tokens=total_num_scheduled_tokens,
+                scheduled_spec_decode_tokens=scheduled_spec_decode_tokens,
+                scheduled_encoder_inputs=scheduled_encoder_inputs,
+                num_common_prefix_blocks=num_common_prefix_blocks,
+                finished_req_ids=self.finished_req_ids,
+                free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
+                preempted_req_ids=set(),
+            )
+
+            # Record the request ids scheduled in this step (v0.12.0 behavior).
+            self.prev_step_scheduled_req_ids.clear()
+            self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
+
+            # KVTransfer: package metadata
+            if self.connector is not None:
+                meta = self.connector.build_connector_meta(scheduler_output)
+                scheduler_output.kv_connector_metadata = meta
+            # EC Connector: package metadata
+            if self.ec_connector is not None:
+                ec_meta = self.ec_connector.build_connector_meta(scheduler_output)
+                scheduler_output.ec_connector_metadata = ec_meta
+
+            # Update internal state (advance num_computed_tokens, free encoder inputs,
+            # etc.)
+            self._update_after_schedule(scheduler_output)
+            return scheduler_output
+        finally:
+            chunk_transfer_adapter = getattr(self, "chunk_transfer_adapter", None)
+            if chunk_transfer_adapter:
+                chunk_transfer_adapter.restore_queues(self.waiting, self.running)
+                if scheduler_output is not None:
+                    chunk_transfer_adapter.postprocess_scheduler_output(scheduler_output)
 
     """
     Scheduler for the diffusion model.
