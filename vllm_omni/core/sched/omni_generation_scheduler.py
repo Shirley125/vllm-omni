@@ -21,6 +21,8 @@ from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapt
 )
 from vllm_omni.outputs import OmniModelRunnerOutput
 
+logger = init_logger(__name__)
+
 
 class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
@@ -31,6 +33,35 @@ class OmniGenerationScheduler(VLLMScheduler):
             self.chunk_transfer_adapter = OmniChunkTransferAdapter(self.vllm_config)
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
+
+    def _shutdown_chunk_transfer_adapter(self) -> None:
+        adapter = getattr(self, "chunk_transfer_adapter", None)
+        if adapter is None:
+            return
+        try:
+            adapter.shutdown()
+        except Exception:
+            logger.exception("Failed to shutdown chunk transfer adapter")
+        finally:
+            self.chunk_transfer_adapter = None
+
+    def shutdown(self) -> None:
+        """Release scheduler-owned background adapter resources."""
+        self._shutdown_chunk_transfer_adapter()
+        super_shutdown = getattr(super(), "shutdown", None)
+        if callable(super_shutdown):
+            super_shutdown()
+
+    def close(self) -> None:
+        """Alias for :meth:`shutdown`."""
+        self.shutdown()
+
+    def __del__(self) -> None:
+        # Best-effort cleanup when scheduler is GC'ed.
+        try:
+            self._shutdown_chunk_transfer_adapter()
+        except Exception:
+            pass
 
     def schedule(self) -> SchedulerOutput:
         """Diffusion fast path:
@@ -258,7 +289,7 @@ class OmniGenerationScheduler(VLLMScheduler):
 
         except Exception:
             # If anything goes wrong, leave the original output unchanged
-            init_logger(__name__).exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
+            logger.exception("Failed to wrap scheduled_new_reqs with OmniNewRequestData")
 
         return scheduler_output
 

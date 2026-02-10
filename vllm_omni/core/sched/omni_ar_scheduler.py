@@ -71,6 +71,35 @@ class OmniARScheduler(VLLMScheduler):
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
+    def _shutdown_chunk_transfer_adapter(self) -> None:
+        adapter = getattr(self, "chunk_transfer_adapter", None)
+        if adapter is None:
+            return
+        try:
+            adapter.shutdown()
+        except Exception:
+            logger.exception("Failed to shutdown chunk transfer adapter")
+        finally:
+            self.chunk_transfer_adapter = None
+
+    def shutdown(self) -> None:
+        """Release scheduler-owned background adapter resources."""
+        self._shutdown_chunk_transfer_adapter()
+        super_shutdown = getattr(super(), "shutdown", None)
+        if callable(super_shutdown):
+            super_shutdown()
+
+    def close(self) -> None:
+        """Alias for :meth:`shutdown`."""
+        self.shutdown()
+
+    def __del__(self) -> None:
+        # Best-effort cleanup when scheduler is GC'ed.
+        try:
+            self._shutdown_chunk_transfer_adapter()
+        except Exception:
+            pass
+
     def _get_kv_transfer_criteria(self) -> dict | None:
         # Note: vllm_config is available in Scheduler after super().__init__
         if not hasattr(self, "vllm_config"):

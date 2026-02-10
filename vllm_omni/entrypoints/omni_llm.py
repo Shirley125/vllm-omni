@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import cloudpickle
@@ -179,6 +179,75 @@ class OmniLLM(LLM):
         self.model_config = self.llm_engine.model_config
         self.input_processor = self.llm_engine.input_processor
 
+    @staticmethod
+    def _collect_candidate_schedulers(llm_engine: Any) -> list[Any]:
+        schedulers: list[Any] = []
+        seen_ids: set[int] = set()
+
+        def _append_scheduler(candidate: Any) -> None:
+            if candidate is None:
+                return
+            candidate_id = id(candidate)
+            if candidate_id in seen_ids:
+                return
+            seen_ids.add(candidate_id)
+            schedulers.append(candidate)
+
+        def _append_from_owner(owner: Any) -> None:
+            if owner is None:
+                return
+            _append_scheduler(getattr(owner, "scheduler", None))
+            scheduler_group = getattr(owner, "schedulers", None)
+            if isinstance(scheduler_group, dict):
+                for candidate in scheduler_group.values():
+                    _append_scheduler(candidate)
+            elif isinstance(scheduler_group, Iterable) and not isinstance(scheduler_group, (str, bytes)):
+                for candidate in scheduler_group:
+                    _append_scheduler(candidate)
+
+        _append_scheduler(getattr(llm_engine, "scheduler", None))
+        for attr_name in ("engine_core", "_engine_core", "model_executor", "executor"):
+            owner = getattr(llm_engine, attr_name, None)
+            _append_from_owner(owner)
+            _append_from_owner(getattr(owner, "driver_worker", None))
+
+        return schedulers
+
+    def _shutdown_scheduler_transfer_adapters(self) -> None:
+        llm_engine = getattr(self, "llm_engine", None)
+        if llm_engine is None:
+            return
+
+        for scheduler in self._collect_candidate_schedulers(llm_engine):
+            if not hasattr(scheduler, "chunk_transfer_adapter"):
+                continue
+            try:
+                shutdown = getattr(scheduler, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                    continue
+
+                close = getattr(scheduler, "close", None)
+                if callable(close):
+                    close()
+                    continue
+
+                adapter = getattr(scheduler, "chunk_transfer_adapter", None)
+                if adapter is None:
+                    continue
+                adapter_shutdown = getattr(adapter, "shutdown", None)
+                if callable(adapter_shutdown):
+                    adapter_shutdown()
+                    continue
+                adapter_close = getattr(adapter, "close", None)
+                if callable(adapter_close):
+                    adapter_close()
+            except Exception:
+                logger.exception(
+                    "Failed to shutdown transfer adapter from scheduler type %s",
+                    type(scheduler).__name__,
+                )
+
     def close(self) -> None:
         """Close resources.
 
@@ -187,6 +256,7 @@ class OmniLLM(LLM):
         """
         # Close the LLM engine if it exists
         if hasattr(self, "llm_engine") and self.llm_engine is not None:
+            self._shutdown_scheduler_transfer_adapters()
             if hasattr(self.llm_engine, "shutdown"):
                 self.llm_engine.shutdown()
 

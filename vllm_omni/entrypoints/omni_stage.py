@@ -1008,6 +1008,35 @@ def _stage_worker(
                     }
                 )
 
+    # Best-effort cleanup before worker exits.
+    try:
+        close_func = getattr(stage_engine, "close", None)
+        if callable(close_func):
+            close_func()
+        else:
+            shutdown_func = getattr(stage_engine, "shutdown", None)
+            if callable(shutdown_func):
+                shutdown_func()
+    except Exception as exc:
+        logger.warning("[Stage-%s] Failed to close stage engine: %s", stage_id, exc)
+
+    seen_connector_ids: set[int] = set()
+    for connector in (connectors or {}).values():
+        if connector is None:
+            continue
+        connector_id = id(connector)
+        if connector_id in seen_connector_ids:
+            continue
+        seen_connector_ids.add(connector_id)
+        close_func = getattr(connector, "close", None)
+        if callable(close_func):
+            try:
+                close_func()
+            except Exception as exc:
+                logger.warning("[Stage-%s] Failed to close connector: %s", stage_id, exc)
+
+    logger.info("Stage worker exiting")
+
 
 def _stage_worker_async_entry(
     omni_stage: OmniStage,
@@ -1514,6 +1543,22 @@ async def _stage_worker_async(
             logger.debug("Enqueued result for request %s to downstream", rid)
     if log_stats_task is not None:
         log_stats_task.cancel()
+
+    seen_connector_ids: set[int] = set()
+    for connector in (connectors or {}).values():
+        if connector is None:
+            continue
+        connector_id = id(connector)
+        if connector_id in seen_connector_ids:
+            continue
+        seen_connector_ids.add(connector_id)
+        close_func = getattr(connector, "close", None)
+        if callable(close_func):
+            try:
+                close_func()
+            except Exception as exc:
+                logger.warning("[Stage-%s] Failed to close connector: %s", stage_id, exc)
+
     logger.info("Stage worker exiting")
 
 

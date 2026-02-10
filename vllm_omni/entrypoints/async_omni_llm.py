@@ -3,6 +3,8 @@
 import asyncio
 import os
 import socket
+from collections.abc import Iterable
+from typing import Any
 from typing import TYPE_CHECKING
 
 import torch
@@ -217,3 +219,72 @@ class AsyncOmniLLM(AsyncLLM):
             client_index=client_index,
             engine_args=engine_args,
         )
+
+    @staticmethod
+    def _collect_candidate_schedulers(owner_root: Any) -> list[Any]:
+        schedulers: list[Any] = []
+        seen_ids: set[int] = set()
+
+        def _append_scheduler(candidate: Any) -> None:
+            if candidate is None:
+                return
+            candidate_id = id(candidate)
+            if candidate_id in seen_ids:
+                return
+            seen_ids.add(candidate_id)
+            schedulers.append(candidate)
+
+        def _append_from_owner(owner: Any) -> None:
+            if owner is None:
+                return
+            _append_scheduler(getattr(owner, "scheduler", None))
+            scheduler_group = getattr(owner, "schedulers", None)
+            if isinstance(scheduler_group, dict):
+                for candidate in scheduler_group.values():
+                    _append_scheduler(candidate)
+            elif isinstance(scheduler_group, Iterable) and not isinstance(scheduler_group, (str, bytes)):
+                for candidate in scheduler_group:
+                    _append_scheduler(candidate)
+
+        _append_from_owner(owner_root)
+        for attr_name in ("engine_core", "_engine_core", "model_executor", "executor"):
+            owner = getattr(owner_root, attr_name, None)
+            _append_from_owner(owner)
+            _append_from_owner(getattr(owner, "driver_worker", None))
+        return schedulers
+
+    def _shutdown_scheduler_transfer_adapters(self) -> None:
+        for scheduler in self._collect_candidate_schedulers(self):
+            if not hasattr(scheduler, "chunk_transfer_adapter"):
+                continue
+            try:
+                shutdown = getattr(scheduler, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                    continue
+                close = getattr(scheduler, "close", None)
+                if callable(close):
+                    close()
+                    continue
+                adapter = getattr(scheduler, "chunk_transfer_adapter", None)
+                if adapter is None:
+                    continue
+                adapter_shutdown = getattr(adapter, "shutdown", None)
+                if callable(adapter_shutdown):
+                    adapter_shutdown()
+                    continue
+                adapter_close = getattr(adapter, "close", None)
+                if callable(adapter_close):
+                    adapter_close()
+            except Exception:
+                logger.exception(
+                    "Failed to shutdown transfer adapter from scheduler type %s",
+                    type(scheduler).__name__,
+                )
+
+    def shutdown(self) -> None:
+        self._shutdown_scheduler_transfer_adapters()
+        super().shutdown()
+
+    def close(self) -> None:
+        self.shutdown()
