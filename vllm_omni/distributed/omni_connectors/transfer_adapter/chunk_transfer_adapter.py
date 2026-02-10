@@ -219,7 +219,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         stage_id = task["stage_id"]
         next_stage_id = task["next_stage_id"]
         payload_data = task["data"]
-        request_id = task["request_id"]
 
         success, size, metadata = self.connector.put(
             from_stage=str(stage_id),
