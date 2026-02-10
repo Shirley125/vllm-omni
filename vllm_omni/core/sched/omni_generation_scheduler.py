@@ -32,6 +32,34 @@ class OmniGenerationScheduler(VLLMScheduler):
 
         self.stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
 
+    def _shutdown_chunk_transfer_adapter(self) -> None:
+        adapter = getattr(self, "chunk_transfer_adapter", None)
+        if adapter is None:
+            return
+        self.chunk_transfer_adapter = None
+        try:
+            adapter.shutdown()
+        except Exception:
+            init_logger(__name__).exception("Failed to shutdown chunk transfer adapter.")
+
+    def shutdown(self) -> None:
+        self._shutdown_chunk_transfer_adapter()
+        super_shutdown = getattr(super(), "shutdown", None)
+        if callable(super_shutdown):
+            super_shutdown()
+
+    def close(self) -> None:
+        self.shutdown()
+        super_close = getattr(super(), "close", None)
+        if callable(super_close):
+            super_close()
+
+    def __del__(self):
+        try:
+            self.shutdown()
+        except Exception:
+            pass
+
     def schedule(self) -> SchedulerOutput:
         """Diffusion fast path:
         - Feed all input tokens of the request at once

@@ -34,6 +34,8 @@ class OmniTransferAdapterBase:
 
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
+        self._shutdown_lock = threading.Lock()
+        self._is_shutdown = False
 
         self.recv_thread = threading.Thread(target=self.recv_loop, daemon=True)
         self.recv_thread.start()
@@ -80,6 +82,45 @@ class OmniTransferAdapterBase:
                     logger.error(f"Error saving data for {task.get('request_id')}: {e}")
             else:
                 time.sleep(0.001)
+
+    def shutdown(self, *, close_connector: bool = True, join_timeout: float = 1.0) -> None:
+        """Stop background loops and optionally close the connector."""
+        with self._shutdown_lock:
+            if self._is_shutdown:
+                return
+            self._is_shutdown = True
+            self.stop_event.set()
+
+        current_thread = threading.current_thread()
+        for thread_name in ("recv_thread", "save_thread"):
+            worker = getattr(self, thread_name, None)
+            if worker is None or worker is current_thread:
+                continue
+            if worker.is_alive():
+                worker.join(timeout=join_timeout)
+                if worker.is_alive():
+                    logger.warning(f"Timed out waiting for {thread_name} to stop.")
+
+        if not close_connector:
+            return
+
+        connector = getattr(self, "connector", None)
+        close_fn = getattr(connector, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception as e:
+                logger.warning(f"Error closing connector: {e}")
+
+    def close(self) -> None:
+        self.shutdown()
+
+    def __del__(self):
+        try:
+            self.shutdown()
+        except Exception:
+            # Avoid raising during interpreter shutdown / cyclic GC cleanup.
+            pass
 
     def _poll_single_request(self, *args, **kwargs):
         """Poll connector for a single request task.
