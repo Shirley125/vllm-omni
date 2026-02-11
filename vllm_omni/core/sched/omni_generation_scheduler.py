@@ -371,6 +371,11 @@ class OmniGenerationScheduler(VLLMScheduler):
                     kv_transfer_params = self._free_request(request)
                 if status_before_stop == RequestStatus.RUNNING:
                     stopped_running_reqs.add(request)
+                elif status_before_stop == RequestStatus.WAITING_FOR_CHUNK:
+                    # In async chunk mode, request may live in either queue.
+                    # Remove from both to avoid stale queue entries.
+                    stopped_running_reqs.add(request)
+                    stopped_preempted_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)
 
