@@ -135,20 +135,7 @@ class OmniARScheduler(VLLMScheduler):
 
         return False
 
-    def _drop_orphaned_queue_requests(self) -> None:
-        """Remove queue entries whose IDs are no longer tracked in self.requests."""
-        orphaned_running = {req for req in self.running if req.request_id not in self.requests}
-        if orphaned_running:
-            self.running = remove_all(self.running, orphaned_running)
-
-        orphaned_waiting = {req for req in self.waiting if req.request_id not in self.requests}
-        if orphaned_waiting:
-            self.waiting.remove_requests(orphaned_waiting)
-
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
-        # Keep queue state consistent with request table before scheduling.
-        # Otherwise base scheduler._update_after_schedule can hit KeyError.
-        self._drop_orphaned_queue_requests()
         if self.chunk_transfer_adapter:
             self.chunk_transfer_adapter.process_pending_chunks(self.waiting, self.running)
 
@@ -157,10 +144,7 @@ class OmniARScheduler(VLLMScheduler):
         finally:
             if self.chunk_transfer_adapter:
                 # Add request waiting for chunk to the waiting and running queue
-                self.chunk_transfer_adapter.restore_queues(self.waiting, self.running, self.requests)
-
-        # Reconcile queues once more in case requests finished/aborted this step.
-        self._drop_orphaned_queue_requests()
+                self.chunk_transfer_adapter.restore_queues(self.waiting, self.running)
         try:
             # Late import to avoid circulars in some launch modes
             from .output import OmniNewRequestData
@@ -244,7 +228,6 @@ class OmniARScheduler(VLLMScheduler):
         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
         # the below loop can be a performance bottleneck. We should do our best
         # to avoid expensive operations inside the loop.
-        running_reqs_snapshot = set(self.running)
         stopped_running_reqs: set[Request] = set()
         stopped_preempted_reqs: set[Request] = set()
         for req_id, num_tokens_scheduled in num_scheduled_tokens.items():
@@ -291,6 +274,7 @@ class OmniARScheduler(VLLMScheduler):
             new_token_ids = generated_token_ids
             pooler_output = pooler_outputs[req_index] if pooler_outputs else None
             kv_transfer_params = None
+            status_before_stop = request.status
             finish_reason = None
             routed_experts = None
 
@@ -317,7 +301,7 @@ class OmniARScheduler(VLLMScheduler):
                 finished = self._handle_stopped_request(request)
                 if finished:
                     kv_transfer_params = self._free_request(request)
-                if request in running_reqs_snapshot:
+                if status_before_stop == RequestStatus.RUNNING:
                     stopped_running_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)

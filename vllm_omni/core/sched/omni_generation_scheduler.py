@@ -147,7 +147,7 @@ class OmniGenerationScheduler(VLLMScheduler):
         if not num_scheduled_tokens:
             res = super().schedule()
             if self.chunk_transfer_adapter:
-                self.chunk_transfer_adapter.restore_queues(self.waiting, self.running, self.requests)
+                self.chunk_transfer_adapter.restore_queues(self.waiting, self.running)
                 self.chunk_transfer_adapter.postprocess_scheduler_output(res)
             return res
 
@@ -251,7 +251,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
 
             if self.chunk_transfer_adapter:
-                self.chunk_transfer_adapter.restore_queues(self.waiting, self.running, self.requests)
+                self.chunk_transfer_adapter.restore_queues(self.waiting, self.running)
                 self.chunk_transfer_adapter.postprocess_scheduler_output(scheduler_output)
 
         except Exception:
@@ -309,7 +309,6 @@ class OmniGenerationScheduler(VLLMScheduler):
         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
         # the below loop can be a performance bottleneck. We should do our best
         # to avoid expensive operations inside the loop.
-        running_reqs_snapshot = set(self.running)
         stopped_running_reqs: set[Request] = set()
         stopped_preempted_reqs: set[Request] = set()
         for req_id, num_tokens_scheduled in num_scheduled_tokens.items():
@@ -350,6 +349,7 @@ class OmniGenerationScheduler(VLLMScheduler):
             new_token_ids = generated_token_ids
             kv_transfer_params = None
             pooler_output = pooler_outputs[req_index] if pooler_outputs else None
+            status_before_stop = request.status
             finish_reason = None
             routed_experts = None
 
@@ -369,7 +369,7 @@ class OmniGenerationScheduler(VLLMScheduler):
                 finished = self._handle_stopped_request(request)
                 if finished:
                     kv_transfer_params = self._free_request(request)
-                if request in running_reqs_snapshot:
+                if status_before_stop == RequestStatus.RUNNING:
                     stopped_running_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)

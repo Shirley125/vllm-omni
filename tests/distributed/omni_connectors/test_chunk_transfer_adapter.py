@@ -191,6 +191,28 @@ def test_restore_queues_skips_inactive_requests(build_adapter):
     assert adapter.waiting_for_chunk_running_requests == deque()
 
 
+def test_process_pending_chunks_drops_recently_finished_requests(build_adapter):
+    adapter, _ = build_adapter(stage_id=1, max_num_seqs=8)
+    stale_req = _req("stale", RequestStatus.WAITING_FOR_CHUNK)
+    waiting_queue = DummyWaitingQueue()
+    running_queue = [stale_req]
+
+    adapter._mark_request_recently_finished("stale")
+    adapter.request_ids_mapping["stale"] = "external-stale"
+    with adapter.lock:
+        adapter._pending_load_reqs["stale"] = stale_req
+        adapter._finished_load_reqs.add("stale")
+
+    adapter.process_pending_chunks(waiting_queue, running_queue)
+
+    assert waiting_queue == []
+    assert running_queue == []
+    assert "stale" not in adapter.request_ids_mapping
+    with adapter.lock:
+        assert "stale" not in adapter._pending_load_reqs
+        assert "stale" not in adapter._finished_load_reqs
+
+
 def test_postprocess_scheduler_output(build_adapter):
     adapter, _ = build_adapter()
     adapter.requests_with_ready_chunks = {"new-ready", "cached-ready", "leftover"}

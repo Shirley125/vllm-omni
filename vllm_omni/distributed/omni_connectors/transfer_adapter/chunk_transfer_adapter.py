@@ -34,6 +34,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
     work and return immediately.
     """
 
+    MAX_RECENTLY_FINISHED_REQS = 8192
+
     def __init__(self, vllm_config: Any):
         model_config = vllm_config.model_config
         self.scheduler_max_num_seqs = vllm_config.scheduler_config.max_num_seqs
@@ -58,6 +60,52 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self.waiting_for_chunk_waiting_requests: deque[Any] = deque()
         self.waiting_for_chunk_running_requests: deque[Any] = deque()
         self.requests_with_ready_chunks = set()
+        # Track recently finished request IDs to avoid re-scheduling stale
+        # queue entries after asynchronous output/connector callbacks.
+        self.recently_finished_requests: deque[str] = deque()
+        self.recently_finished_request_ids: set[str] = set()
+
+    @staticmethod
+    def _request_has_finished_status(request: Request) -> bool:
+        status = getattr(request, "status", None)
+        if status is None:
+            return False
+        status_name = getattr(status, "name", str(status))
+        return str(status_name).startswith("FINISHED_")
+
+    def _request_is_finished(self, request: Request) -> bool:
+        is_finished_fn = getattr(request, "is_finished", None)
+        if callable(is_finished_fn):
+            try:
+                return bool(is_finished_fn())
+            except Exception:
+                # Fall back to status-based check for mocked requests.
+                pass
+        return self._request_has_finished_status(request)
+
+    def _mark_request_recently_finished(self, req_id: str) -> None:
+        if req_id in self.recently_finished_request_ids:
+            return
+        if len(self.recently_finished_requests) >= self.MAX_RECENTLY_FINISHED_REQS:
+            evicted_req_id = self.recently_finished_requests.popleft()
+            self.recently_finished_request_ids.discard(evicted_req_id)
+        self.recently_finished_requests.append(req_id)
+        self.recently_finished_request_ids.add(req_id)
+
+    def _cleanup_request_local_state(self, request: Request) -> None:
+        req_id = request.request_id
+        external_req_id = self.request_ids_mapping.get(req_id, req_id)
+
+        self.requests_with_ready_chunks.discard(req_id)
+        self.finished_requests.discard(req_id)
+        self.request_ids_mapping.pop(req_id, None)
+        self.get_req_chunk.pop(req_id, None)
+        self.request_payload.pop(external_req_id, None)
+        self.code_prompt_token_ids.pop(external_req_id, None)
+
+        with self.lock:
+            self._finished_load_reqs.discard(req_id)
+            self._pending_load_reqs.pop(req_id, None)
 
     @classmethod
     def create_connector(cls, model_config: Any):
@@ -90,6 +138,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         """
         stage_id = self.connector.stage_id
         request_id = request.request_id
+        if request_id in self.recently_finished_request_ids:
+            return
         self.request_ids_mapping[request_id] = request.external_req_id
 
         if stage_id == 0:
@@ -109,9 +159,14 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             pooling_output: Partial pooling output dictionary
             request: Request object
         """
+        if request is None:
+            return
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
         request_id = request.external_req_id
+        internal_req_id = getattr(request, "request_id", None)
+        if internal_req_id is not None and self._request_is_finished(request):
+            self._mark_request_recently_finished(internal_req_id)
         chunk_id = self.put_req_chunk[request_id]
 
         # Process payload in main thread to avoid race conditions on request state
@@ -148,6 +203,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             self._pending_save_reqs[request_id].append(task)
 
     def _poll_single_request(self, req_id: str):
+        if req_id in self.recently_finished_request_ids:
+            return
         stage_id = self.connector.stage_id
         target_stage_id = stage_id - 1
         chunk_id = self.get_req_chunk[req_id]
@@ -167,9 +224,12 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         payload_data, size = result
 
         if payload_data:
+            with self.lock:
+                req = self._pending_load_reqs.get(req_id)
+            if req is None:
+                return
             # Update connector state
             self.get_req_chunk[req_id] += 1
-            req = self._pending_load_reqs[req_id]
 
             if self.model_mode == "ar":
                 self._update_request_payload(external_req_id, payload_data)
@@ -267,21 +327,20 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         active_request_ids = set(active_requests.keys()) if active_requests is not None else None
 
         def _is_active(request: Request) -> bool:
-            if active_request_ids is None:
-                return True
-            return request.request_id in active_request_ids
-
-        def _drop_request_local_state(request: Request) -> None:
             req_id = request.request_id
-            self.requests_with_ready_chunks.discard(req_id)
-            self.finished_requests.discard(req_id)
-            self.request_ids_mapping.pop(req_id, None)
-            self.get_req_chunk.pop(req_id, None)
+            if active_request_ids is not None and req_id not in active_request_ids:
+                return False
+            if req_id in self.recently_finished_request_ids:
+                return False
+            if self._request_is_finished(request):
+                self._mark_request_recently_finished(req_id)
+                return False
+            return True
 
         # Add request waiting for chunk to the waiting and running queue
         for request in self.waiting_for_chunk_waiting_requests:
             if not _is_active(request):
-                _drop_request_local_state(request)
+                self._cleanup_request_local_state(request)
                 continue
             waiting_queue.add_request(request)
         self.waiting_for_chunk_waiting_requests = deque()
@@ -289,7 +348,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         if self.waiting_for_chunk_running_requests:
             for request in self.waiting_for_chunk_running_requests:
                 if not _is_active(request):
-                    _drop_request_local_state(request)
+                    self._cleanup_request_local_state(request)
                     continue
                 running_queue.append(request)
         self.waiting_for_chunk_running_requests = deque()
@@ -328,21 +387,28 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
     ) -> None:
         queue_snapshot = list(queue)
         for request in queue_snapshot:
+            req_id = request.request_id
+            if req_id in self.recently_finished_request_ids or self._request_is_finished(request):
+                if self._request_is_finished(request):
+                    self._mark_request_recently_finished(req_id)
+                queue.remove(request)
+                self._cleanup_request_local_state(request)
+                continue
             if request.status != RequestStatus.WAITING_FOR_CHUNK:
-                if request.request_id in self.requests_with_ready_chunks:
+                if req_id in self.requests_with_ready_chunks:
                     # Requests that have loaded chunk from last round
                     # of schedule, but have not scheduled
                     continue
-                if request.request_id in self.finished_requests:
+                if req_id in self.finished_requests:
                     request.additional_information = {}
                     continue
                 # Requests that waiting for chunk
                 self.load_async(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
             else:
-                if request.request_id in finished_load_reqs:
+                if req_id in finished_load_reqs:
                     request.status = target_status
-                    self.requests_with_ready_chunks.add(request.request_id)
+                    self.requests_with_ready_chunks.add(req_id)
                     continue
             queue.remove(request)
             waiting_for_chunk_list.append(request)
@@ -362,4 +428,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         with self.lock:
             finished_load = set(self._finished_load_reqs)
             self._finished_load_reqs = set()
+        if self.recently_finished_request_ids:
+            finished_load.difference_update(self.recently_finished_request_ids)
         return finished_load
