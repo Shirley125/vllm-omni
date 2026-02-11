@@ -255,17 +255,43 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             request = running_queue.pop()
             waiting_queue.prepend_requests([request])
 
-    def restore_queues(self, waiting_queue: Any, running_queue: list[Request]) -> None:
+    def restore_queues(
+        self,
+        waiting_queue: Any,
+        running_queue: list[Request],
+        active_requests: dict[str, Request] | None = None,
+    ) -> None:
         """
         Restore requests waiting for chunk to the waiting and running queues.
         """
+        active_request_ids = set(active_requests.keys()) if active_requests is not None else None
+
+        def _is_active(request: Request) -> bool:
+            if active_request_ids is None:
+                return True
+            return request.request_id in active_request_ids
+
+        def _drop_request_local_state(request: Request) -> None:
+            req_id = request.request_id
+            self.requests_with_ready_chunks.discard(req_id)
+            self.finished_requests.discard(req_id)
+            self.request_ids_mapping.pop(req_id, None)
+            self.get_req_chunk.pop(req_id, None)
+
         # Add request waiting for chunk to the waiting and running queue
         for request in self.waiting_for_chunk_waiting_requests:
+            if not _is_active(request):
+                _drop_request_local_state(request)
+                continue
             waiting_queue.add_request(request)
         self.waiting_for_chunk_waiting_requests = deque()
 
         if self.waiting_for_chunk_running_requests:
-            running_queue.extend(self.waiting_for_chunk_running_requests)
+            for request in self.waiting_for_chunk_running_requests:
+                if not _is_active(request):
+                    _drop_request_local_state(request)
+                    continue
+                running_queue.append(request)
         self.waiting_for_chunk_running_requests = deque()
 
     def postprocess_scheduler_output(

@@ -164,6 +164,33 @@ def test_process_and_restore_queues(build_adapter):
     assert adapter.waiting_for_chunk_running_requests == deque()
 
 
+def test_restore_queues_skips_inactive_requests(build_adapter):
+    adapter, _ = build_adapter(stage_id=1, max_num_seqs=8)
+    active_req = _req("active", RequestStatus.WAITING_FOR_CHUNK)
+    stale_req = _req("stale", RequestStatus.WAITING_FOR_CHUNK)
+
+    waiting_queue = DummyWaitingQueue()
+    running_queue = []
+
+    adapter.waiting_for_chunk_waiting_requests = deque([active_req, stale_req])
+    adapter.waiting_for_chunk_running_requests = deque([stale_req])
+    adapter.requests_with_ready_chunks = {"active", "stale"}
+    adapter.finished_requests = {"stale"}
+    adapter.request_ids_mapping = {"active": "external-active", "stale": "external-stale"}
+    adapter.get_req_chunk["stale"] = 3
+
+    adapter.restore_queues(waiting_queue, running_queue, {"active": active_req})
+
+    assert waiting_queue == [active_req]
+    assert running_queue == []
+    assert "stale" not in adapter.requests_with_ready_chunks
+    assert "stale" not in adapter.finished_requests
+    assert "stale" not in adapter.request_ids_mapping
+    assert "stale" not in adapter.get_req_chunk
+    assert adapter.waiting_for_chunk_waiting_requests == deque()
+    assert adapter.waiting_for_chunk_running_requests == deque()
+
+
 def test_postprocess_scheduler_output(build_adapter):
     adapter, _ = build_adapter()
     adapter.requests_with_ready_chunks = {"new-ready", "cached-ready", "leftover"}
