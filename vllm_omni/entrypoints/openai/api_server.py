@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import base64
+import inspect
 import io
 import json
 import multiprocessing
@@ -215,6 +216,10 @@ async def omni_run_server_worker(listen_address, sock, args, client_config=None,
         # OMNI: Remove upstream routes that we override with omni-specific handlers
         _remove_route_from_app(app, "/v1/chat/completions", {"POST"})
         _remove_route_from_app(app, "/v1/models", {"GET"})  # Remove upstream /v1/models to use omni's handler
+        _remove_route_from_app(app, "/start_profile", {"GET", "POST"})
+        _remove_route_from_app(app, "/stop_profile", {"GET", "POST"})
+        _remove_route_from_app(app, "/v1/start_profile", {"GET", "POST"})
+        _remove_route_from_app(app, "/v1/stop_profile", {"GET", "POST"})
         app.include_router(router)
 
         await omni_init_app_state(engine_client, app.state, args)
@@ -839,6 +844,162 @@ async def list_voices(raw_request: Request):
 
     speakers = sorted(handler.supported_speakers) if handler.supported_speakers else []
     return JSONResponse(content={"voices": speakers})
+
+
+def _parse_profile_stages(stages: Any) -> list[int]:
+    if isinstance(stages, int):
+        return [stages]
+
+    if isinstance(stages, str):
+        stage_tokens = [token.strip() for token in stages.split(",") if token.strip()]
+        if not stage_tokens:
+            raise HTTPException(
+                status_code=HTTPStatus.BAD_REQUEST.value,
+                detail="Invalid stages value: expected int, list[int], or comma-separated string.",
+            )
+        try:
+            return [int(token) for token in stage_tokens]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=HTTPStatus.BAD_REQUEST.value,
+                detail="Invalid stages value: all stages must be integers.",
+            ) from exc
+
+    if isinstance(stages, list):
+        try:
+            return [int(stage) for stage in stages]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=HTTPStatus.BAD_REQUEST.value,
+                detail="Invalid stages value: all stages must be integers.",
+            ) from exc
+
+    raise HTTPException(
+        status_code=HTTPStatus.BAD_REQUEST.value,
+        detail="Invalid stages value: expected int, list[int], or comma-separated string.",
+    )
+
+
+async def _extract_profile_stages(raw_request: Request) -> list[int] | None:
+    query_stages = raw_request.query_params.get("stages")
+    if query_stages is not None:
+        return _parse_profile_stages(query_stages)
+
+    body = await raw_request.body()
+    if not body:
+        return None
+
+    try:
+        payload = await raw_request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST.value,
+            detail="Invalid JSON payload for profiler endpoint.",
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=HTTPStatus.BAD_REQUEST.value,
+            detail="Profiler request body must be a JSON object.",
+        )
+
+    if "stages" not in payload:
+        return None
+
+    return _parse_profile_stages(payload["stages"])
+
+
+async def _invoke_profile_control(
+    raw_request: Request, method_name: str, stages: list[int] | None
+) -> dict[str, Any] | list[Any] | str | None:
+    engine_client = getattr(raw_request.app.state, "engine_client", None)
+    if engine_client is None:
+        raise HTTPException(
+            status_code=HTTPStatus.SERVICE_UNAVAILABLE.value,
+            detail="Engine not initialized.",
+        )
+
+    method = getattr(engine_client, method_name, None)
+    if not callable(method):
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_IMPLEMENTED.value,
+            detail=f"Engine does not support {method_name}.",
+        )
+
+    try:
+        result = method(stages)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to run %s: %s", method_name, exc)
+        raise HTTPException(
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to run {method_name}: {str(exc)}",
+        ) from exc
+
+
+@router.post(
+    "/start_profile",
+    responses={
+        HTTPStatus.OK.value: {"model": dict},
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.SERVICE_UNAVAILABLE.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@router.post(
+    "/v1/start_profile",
+    responses={
+        HTTPStatus.OK.value: {"model": dict},
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.SERVICE_UNAVAILABLE.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+async def start_profile(raw_request: Request) -> JSONResponse:
+    stages = await _extract_profile_stages(raw_request)
+    await _invoke_profile_control(raw_request, "start_profile", stages)
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "message": "Profiler started.",
+            "stages": stages,
+        }
+    )
+
+
+@router.post(
+    "/stop_profile",
+    responses={
+        HTTPStatus.OK.value: {"model": dict},
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.SERVICE_UNAVAILABLE.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+@router.post(
+    "/v1/stop_profile",
+    responses={
+        HTTPStatus.OK.value: {"model": dict},
+        HTTPStatus.BAD_REQUEST.value: {"model": ErrorResponse},
+        HTTPStatus.SERVICE_UNAVAILABLE.value: {"model": ErrorResponse},
+        HTTPStatus.INTERNAL_SERVER_ERROR.value: {"model": ErrorResponse},
+    },
+)
+async def stop_profile(raw_request: Request) -> JSONResponse:
+    stages = await _extract_profile_stages(raw_request)
+    profile_data = await _invoke_profile_control(raw_request, "stop_profile", stages)
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "message": "Profiler stopped.",
+            "stages": stages,
+            "profile_data": profile_data if profile_data is not None else {},
+        }
+    )
 
 
 # Health and Model endpoints for diffusion mode

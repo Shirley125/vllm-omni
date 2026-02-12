@@ -80,23 +80,12 @@ async def async_request_openai_chat_omni_completions(
     mm_position: Literal["first", "last"] = "last",
 ) -> MixRequestFuncOutput:
     api_url = request_func_input.api_url
-    _validate_api_url(api_url, "OpenAI Chat Completions API", "chat/completions")
-
-    content = _get_chat_content(request_func_input, mm_position=mm_position)
-
-    payload = {
-        "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
-        "messages": [
-            {"role": "user", "content": content},
-        ],
-        "temperature": 0.0,
-        "max_tokens": request_func_input.output_len,
-        "stream": True,
-        "stream_options": {
-            "include_usage": True,
-        },
-    }
-    _update_payload_common(payload, request_func_input)
+    normalized_api_url = api_url.split("?", maxsplit=1)[0].rstrip("/")
+    is_profile_endpoint = normalized_api_url.endswith("/start_profile") or normalized_api_url.endswith(
+        "/stop_profile"
+    )
+    if not is_profile_endpoint:
+        _validate_api_url(api_url, "OpenAI Chat Completions API", "chat/completions")
 
     headers = {
         "Content-Type": "application/json",
@@ -115,6 +104,46 @@ async def async_request_openai_chat_omni_completions(
     most_recent_timestamp = st
     timestamp = st
     audio_generate_time = 0.0
+
+    if is_profile_endpoint:
+        profile_payload: dict = {}
+        if isinstance(request_func_input.extra_body, dict):
+            profile_payload.update(request_func_input.extra_body)
+        try:
+            async with session.post(url=api_url, json=profile_payload, headers=headers) as response:
+                output.latency = time.perf_counter() - st
+                if response.status == 200:
+                    output.success = True
+                    output.generated_text = await response.text()
+                else:
+                    response_text = await response.text()
+                    output.error = response_text or response.reason or ""
+                    output.success = False
+        except Exception:
+            output.success = False
+            exc_info = sys.exc_info()
+            output.error = "".join(traceback.format_exception(*exc_info))
+            logger.error(f"ERROR: profiler request failed, reason is: {output.error}")
+        if pbar:
+            pbar.update(1)
+        return output
+
+    content = _get_chat_content(request_func_input, mm_position=mm_position)
+
+    payload = {
+        "model": request_func_input.model_name if request_func_input.model_name else request_func_input.model,
+        "messages": [
+            {"role": "user", "content": content},
+        ],
+        "temperature": 0.0,
+        "max_tokens": request_func_input.output_len,
+        "stream": True,
+        "stream_options": {
+            "include_usage": True,
+        },
+    }
+    _update_payload_common(payload, request_func_input)
+
     try:
         async with session.post(url=api_url, json=payload, headers=headers) as response:
             if response.status == 200:

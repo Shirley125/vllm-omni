@@ -718,7 +718,7 @@ class AsyncOmni(OmniBase):
         """
         super().start_profile(stages)
 
-    async def stop_profile(self, stages: list[int] | None = None) -> None:
+    async def stop_profile(self, stages: list[int] | None = None) -> dict:
         """Stop profiling for specified stages.
 
         Async wrapper around the base implementation for API consistency.
@@ -733,7 +733,7 @@ class AsyncOmni(OmniBase):
             ...     pass
             >>> await async_omni.stop_profile()
         """
-        super().stop_profile(stages)
+        return super().stop_profile(stages)
 
     async def pause_generation(
         self,
