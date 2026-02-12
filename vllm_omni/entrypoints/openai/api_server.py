@@ -135,6 +135,42 @@ def _remove_route_from_app(app, path: str, methods: set[str] | None = None):
         app.routes.remove(route)
 
 
+def _normalize_profiler_config_for_manual_control(args: Namespace) -> None:
+    """Prefer manual profile boundaries for online benchmark workflows.
+
+    In online serving mode, users usually control profiling via
+    /start_profile and /stop_profile. Non-zero delay/max iteration settings
+    can auto-stop profiling before /stop_profile is called.
+    """
+    allow_auto_schedule = os.getenv("VLLM_OMNI_PROFILE_ALLOW_AUTO_SCHEDULE", "").lower() in {"1", "true", "yes"}
+    if allow_auto_schedule:
+        return
+
+    profiler_config = getattr(args, "profiler_config", None)
+    if profiler_config is None:
+        return
+
+    profiler_kind = getattr(profiler_config, "profiler", None)
+    if profiler_kind is None:
+        return
+
+    max_iterations = int(getattr(profiler_config, "max_iterations", 0) or 0)
+    delay_iterations = int(getattr(profiler_config, "delay_iterations", 0) or 0)
+    if max_iterations <= 0 and delay_iterations <= 0:
+        return
+
+    logger.warning(
+        "Detected profiler auto schedule (delay_iterations=%s, max_iterations=%s). "
+        "Overriding both to 0 for manual /start_profile and /stop_profile control. "
+        "Set VLLM_OMNI_PROFILE_ALLOW_AUTO_SCHEDULE=1 to keep auto-stop behavior.",
+        delay_iterations,
+        max_iterations,
+    )
+
+    setattr(profiler_config, "delay_iterations", 0)
+    setattr(profiler_config, "max_iterations", 0)
+
+
 class _DiffusionServingModels:
     """Minimal OpenAIServingModels implementation for diffusion-only servers.
 
@@ -199,6 +235,8 @@ async def omni_run_server_worker(listen_address, sock, args, client_config=None,
     log_config = load_log_config(getattr(args, "log_config_file", None))
     if log_config is not None:
         uvicorn_kwargs["log_config"] = log_config
+
+    _normalize_profiler_config_for_manual_control(args)
 
     async with build_async_omni(
         args,
