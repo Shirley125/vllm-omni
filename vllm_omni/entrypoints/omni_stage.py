@@ -366,22 +366,35 @@ class OmniStage:
 
         # Wait for result from worker
         try:
-            # Profiling stop might take time to flush files, give it 600s
-            response = self._out_q.get(timeout=600)
+            deadline = time.time() + 600.0
+            pending_messages: list[Any] = []
+            while True:
+                timeout = deadline - time.time()
+                if timeout <= 0:
+                    raise queue.Empty
+                # Profiling stop might take time to flush files, give it up to 600s.
+                response = self._out_q.get(timeout=timeout)
 
-            if isinstance(response, dict):
-                if response.get("type") == "profiler_result":
-                    return response.get("data", {})
-                elif "error" in response:
-                    logger.error(f"[Stage-{self.stage_id}] Profiler error: {response['error']}")
-                    return {}
+                if isinstance(response, dict):
+                    if response.get("type") == "profiler_result":
+                        result = response.get("data", {})
+                        # Put unrelated messages back for normal orchestration flow.
+                        for msg in pending_messages:
+                            self._out_q.put(msg)
+                        return result
+                    if "error" in response:
+                        logger.error(f"[Stage-{self.stage_id}] Profiler error: {response['error']}")
+                        for msg in pending_messages:
+                            self._out_q.put(msg)
+                        return {}
 
-            # If we got something else (e.g. late generation result), we might lose it here,
-            # but usually profiling stop is called when generation is done.
-            logger.warning(
-                f"[Stage-{self.stage_id}] Received unexpected message while waiting for profiler: {response}"
-            )
-            return {}
+                # Keep non-profiler messages and continue waiting for the profiler response.
+                pending_messages.append(response)
+                logger.debug(
+                    "[Stage-%s] Ignoring non-profiler message while waiting for profiler_result: %s",
+                    self.stage_id,
+                    response.get("type") if isinstance(response, dict) else type(response),
+                )
 
         except queue.Empty:
             logger.error(f"[Stage-{self.stage_id}] Timeout waiting for profiler results.")
@@ -1143,7 +1156,7 @@ async def _stage_worker_async(
         await stage_engine.reset_mm_cache()
     logger.debug("[Stage-%s] Engine initialized", stage_id)
 
-    async def handle_profiler_task_async(task_type: OmniStageTaskType) -> None:
+    async def handle_profiler_task_async(task_type: OmniStageTaskType) -> dict:
         """Handle profiler task asynchronously for both LLM and diffusion stages."""
         if task_type == OmniStageTaskType.PROFILER_START:
             if stage_type == "diffusion":
@@ -1162,6 +1175,7 @@ async def _stage_worker_async(
                     logger.info("[Stage-%s] vLLM profiler started", stage_id)
                 except Exception as e:
                     logger.warning("[Stage-%s] Failed to start vLLM profiler: %s", stage_id, e)
+            return {}
 
         elif task_type == OmniStageTaskType.PROFILER_STOP:
             if stage_type == "diffusion":
@@ -1170,14 +1184,19 @@ async def _stage_worker_async(
                     logger.info("[Stage-%s] Diffusion Torch profiler stopped", stage_id)
                     if trace_files:
                         logger.info("Diffusion trace files: %s", trace_files)
+                    return trace_files if isinstance(trace_files, dict) else {}
                 except Exception as e:
                     logger.warning("[Stage-%s] Failed to stop diffusion profiler: %s", stage_id, e)
+                    return {}
             else:
                 try:
-                    await stage_engine.stop_profile()
+                    llm_profile_data = await stage_engine.stop_profile()
                     logger.info("[Stage-%s] vLLM profiler stopped", stage_id)
+                    return llm_profile_data if isinstance(llm_profile_data, dict) else {}
                 except Exception as e:
                     logger.warning("[Stage-%s] Failed to stop vLLM profiler: %s", stage_id, e)
+                    return {}
+        return {}
 
     # Signal readiness to orchestrator and send vllm_config back to main process
     try:
@@ -1279,7 +1298,9 @@ async def _stage_worker_async(
                 rid = task["request_id"]
                 asyncio.create_task(stage_engine.abort(rid))
             elif is_profiler_task(task_type):
-                await handle_profiler_task_async(task_type)
+                profiler_data = await handle_profiler_task_async(task_type)
+                if task_type == OmniStageTaskType.PROFILER_STOP:
+                    out_q.put({"type": "profiler_result", "data": profiler_data})
             else:
                 asyncio.create_task(generation_single_request(task))
 
