@@ -39,6 +39,7 @@ nav:
     - models/supported_models.md
   - Features:
     - Sleep Mode: features/sleep_mode.md
+    - Async Chunk: features/async_chunk.md
     - Async Chunk (中文): features/async_chunk_zh.md
     - Diffusion Features:
       - Overview: user_guide/diffusion_acceleration.md
