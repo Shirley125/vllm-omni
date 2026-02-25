@@ -1,59 +1,94 @@
 # Async Chunk: Making Multi-Stage Speech Generation Truly Streamable
 
-In multi-stage multimodal systems like Qwen3-Omni, user-perceived latency is often determined not by a single model, but by the slowest wait in the end-to-end pipeline.  
-The core idea of **Async Chunk** is simple: instead of waiting for a full stage output, forward small chunks as soon as they are ready, so the system shifts from serial waiting to pipelined overlap.
+In multi-stage multimodal systems like Qwen3-Omni, latency is shaped by the whole pipeline, not one model kernel.  
+Async Chunk changes the serving pattern from "finish everything, then hand off" to "ship useful partial outputs immediately."
 
 ---
 
-## Why Async Chunk?
+## Motivation: Why Async Chunk in Multi-Stage Multimodal Systems?
 
-### 1) Serial stage handoff amplifies first-packet latency
+### 1) Full-buffer handoff creates long silence, amplifies first-packet latency
 
-Speech generation typically goes through multiple stages (for example, Thinker -> Talker -> Code2Wav).  
-If each stage must fully complete before the next stage starts, users experience a long initial silence before hearing anything.
+A typical speech path is **Thinker -> Talker -> Code2Wav**.  
+When each stage waits for full upstream completion, first audio is delayed by stacked waiting time.
 
-This is a pipeline-level waiting problem, not just a model-speed problem.
+### 2) Model streaming ability is wasted without system streaming
 
-### 2) Model-side streaming potential needs system-side support
+The models like Qwen3-Omni can start producing useful outputs early, but if serving still buffers everything, that early work is invisible to users.
 
-The models like Qwen3-Omni can start producing useful outputs early, but if serving still uses full-buffer handoff, users cannot feel that benefit in practice.
+### 3) Concurrency amplifies queueing and jitter
 
-### 3) At higher concurrency, waiting turns into a system bottleneck
+At higher load, requests waiting on full upstream outputs occupy scheduler attention and hurt batch stability for everyone else.
 
-Under concurrent traffic, requests blocked on full upstream outputs can also reduce scheduler efficiency.  
-What starts as a per-request first-packet issue quickly becomes a throughput and stability issue for the whole service.
-
----
-## Where It Matters Most
-
+#### Where It Matters Most
 - Real-time voice assistants that care about "time to first sound"
 - Multimodal applications that need fast spoken responses
-- Online serving environments where first-packet stability is critical at concurrency
+- Online serving environments where first-packet stability is critical under concurrency
 
 ---
 
-## Solution Strategy: From Full-Buffer Handoff to Asynchronous Chunk Pipeline
+## Solution: Async Chunk Pipeline
 
-Async Chunk can be understood in three layers:
+We split the problem into three coordinated behaviors:
 
-### Strategy 1: Chunk-level forwarding to start downstream earlier
+### 1) Chunk-level forwarding
 
-Downstream stages no longer wait for full upstream completion.  
-Once a chunk is available, it is forwarded immediately.  
-This allows stage execution to overlap like a pipeline instead of running as a strict relay race.
+Send partial upstream payloads as soon as they are available, instead of waiting for stage completion.
 
-### Strategy 2: Non-blocking scheduling for chunk-waiting requests
+### 2) Non-blocking scheduling
 
-Async Chunk is not only about chunking, but also about asynchronous scheduling.  
-Requests waiting for chunks enter a waiting state, while the scheduler continues serving runnable requests, preventing one blocked request from slowing down everyone else.
+Requests with missing upstream chunks move to `WAITING_FOR_CHUNK`; runnable requests continue to execute.
 
-### Strategy 3: Lightweight chunk aggregation where it helps
+### 3) Controlled aggregation
 
-For later speech stages (such as Code2Wav), chunk aggregation can be applied before processing to avoid excessive fragmentation overhead.  
-This balances two goals: faster perceived response and stable overall throughput.
+For downstream speech generation (especially codec/audio stages), we aggregate where needed to avoid too many tiny kernels.
 
 ---
 
-## Results and User Impact
+## Design: Key Components
 
-**Async Chunk first improves when users hear the first audio packet, then improves overall system efficiency.**
+![Async Chunk architecture](async_chunk_architecture.png)
+
+### Chunk Transfer Adapter
+
+Tracks per-request `put`/`get` chunk ids, merges partial payloads, and polls chunks asynchronously.
+
+### Stage Schedulers
+
+Before each scheduling step, schedulers call adapter hooks to:
+- move chunk-waiting requests out of active queues,
+- restore requests that now have data ready,
+- keep queues healthy under concurrency.
+
+### Stage Input Processors
+
+Define how each stage converts upstream chunk payloads:
+- Thinker -> Talker: embeddings/hidden states and token context
+- Talker -> Code2Wav: codec code accumulation and chunked emission
+
+---
+
+## Request Lifecycle
+
+Qwen3-Omni as an Example
+1. A request enters Thinker.  
+2. Thinker emits partial results; adapter sends chunk `0`, `1`, `2`... asynchronously.  
+3. Talker polls adapter; if no chunk is ready, request stays in `WAITING_FOR_CHUNK`.  
+4. Once enough chunk data is ready, Talker prefill starts and progresses chunk by chunk.  
+5. Talker outputs codec chunks; Code2Wav consumes aggregated windows and emits audio packets.  
+6. The final short tail is flushed when upstream marks `finished`.
+
+The user hears audio earlier because downstream work starts before upstream is fully done.
+
+---
+
+## Performance Results & User Impact
+
+TODO: add performance results
+
+- **Lower first-audio latency:** downstream can begin earlier.
+- **Higher stability under concurrency:** waiting requests stop blocking runnable work.
+- **Better end-to-end smoothness:** chunk-aware scheduling reduces jitter and avoids bursty handoff.
+
+Async Chunk is not just "send smaller pieces."  
+It is a scheduler-and-transfer contract: **forward early, schedule only when ready, and flush tails safely.**
