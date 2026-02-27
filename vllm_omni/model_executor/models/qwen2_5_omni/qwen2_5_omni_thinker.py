@@ -26,7 +26,6 @@ from vllm.model_executor.models.qwen2_5_omni_thinker import (
     Qwen2_5OmniAudioFeatureInputs,
     Qwen2_5OmniThinkerDummyInputsBuilder,
     Qwen2_5OmniThinkerProcessingInfo,
-    check_interleaved_audio_video,
     merge_interleaved_embeddings,
 )
 from vllm.model_executor.models.qwen2_5_omni_thinker import (
@@ -70,6 +69,51 @@ try:
 except (ImportError, ModuleNotFoundError):
     flash_attn = None
 logger = init_logger(__name__)
+
+
+def check_interleaved_audio_video(
+    is_video: torch.Tensor,
+    is_audio: torch.Tensor,
+    num_video: int,
+    num_audio: int,
+) -> bool:
+    """
+    Check if video and audio positions are interleaved in the multimodal region.
+
+    Returns True only for the use_audio_in_video=True case, where video and
+    audio tokens alternate within a single contiguous region with no gaps.
+
+    A simple range-overlap check produces false positives when multiple
+    non-interleaved requests are batched together: audio tokens from request N
+    fall between video tokens from request N and request N+1, making the
+    global ranges overlap even though each individual request is non-interleaved.
+
+    To distinguish true interleaving from this batching artefact we require
+    that every position in the combined [first_VA, last_VA] range is occupied
+    by either a video or an audio token (no text/image gaps).
+    """
+    if num_video == 0 or num_audio == 0:
+        return False
+
+    video_pos = is_video.nonzero(as_tuple=True)[0]
+    audio_pos = is_audio.nonzero(as_tuple=True)[0]
+
+    # Quick range-overlap pre-check (necessary but not sufficient).
+    if not (
+        video_pos[0].item() < audio_pos[-1].item()
+        and audio_pos[0].item() < video_pos[-1].item()
+    ):
+        return False
+
+    # Density check: for true use_audio_in_video interleaving every position
+    # in the combined span is a video or audio token.  Batched non-interleaved
+    # requests have text/image tokens between the per-request V and A blocks.
+    # combined_start/end encompass all V/A tokens, so num_video + num_audio
+    # equals the number of V/A tokens in range; compare directly to span size.
+    combined_start = min(video_pos[0].item(), audio_pos[0].item())
+    combined_end = max(video_pos[-1].item(), audio_pos[-1].item())
+    total_in_range = combined_end - combined_start + 1
+    return (num_video + num_audio) == total_in_range
 
 
 class Qwen2_5OmniThinkerMultiModalProcessor(

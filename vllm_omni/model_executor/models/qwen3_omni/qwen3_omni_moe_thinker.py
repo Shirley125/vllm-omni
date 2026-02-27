@@ -60,7 +60,6 @@ from vllm.model_executor.models.qwen2_5_omni_thinker import (
     Qwen2_5OmniAudioFeatureInputs,
     Qwen2_5OmniThinkerDummyInputsBuilder,
     Qwen2_5OmniThinkerMultiModalProcessor,
-    check_interleaved_audio_video,
     merge_interleaved_embeddings,
 )
 from vllm.model_executor.models.qwen2_5_vl import (
@@ -95,6 +94,7 @@ from vllm.transformers_utils.processor import cached_processor_from_config
 
 from vllm_omni.model_executor.models.qwen2_5_omni.qwen2_5_omni_thinker import (
     Qwen2_5OmniConditionalGenerationMixin,
+    check_interleaved_audio_video
 )
 
 try:
