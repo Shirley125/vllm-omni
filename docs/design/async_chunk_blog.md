@@ -78,8 +78,21 @@ For downstream speech generation (especially codec/audio stages), we aggregate w
 
 ---
 
-## Design: Key Components
+## Request Lifecycle
+
 Qwen3-Omni as an Example
+1. A request enters Thinker.  
+2. Thinker emits partial results; adapter sends chunk `0`, `1`, `2`... asynchronously.  
+3. Talker polls adapter; if no chunk is ready, request stays in `WAITING_FOR_CHUNK`.  
+4. Once enough chunk data is ready, Talker prefill starts and progresses chunk by chunk.  
+5. Talker outputs codec chunks; Code2Wav consumes aggregated windows and emits audio packets.  
+6. The final short tail is flushed when upstream marks `finished`.
+
+The user hears audio earlier because downstream work starts before upstream is fully done.
+
+---
+
+## Design: Key Components
 
 The design separates **transport**, **chunk lifecycle**, and **scheduling hooks**.
 
@@ -117,20 +130,6 @@ Before each scheduling step, schedulers call adapter hooks to:
 Define how each stage converts upstream chunk payloads:
 - Thinker -> Talker: embeddings/hidden states and token context
 - Talker -> Code2Wav: codec code accumulation and chunked emission
-
----
-
-## Request Lifecycle
-
-Qwen3-Omni as an Example
-1. A request enters Thinker.  
-2. Thinker emits partial results; adapter sends chunk `0`, `1`, `2`... asynchronously.  
-3. Talker polls adapter; if no chunk is ready, request stays in `WAITING_FOR_CHUNK`.  
-4. Once enough chunk data is ready, Talker prefill starts and progresses chunk by chunk.  
-5. Talker outputs codec chunks; Code2Wav consumes aggregated windows and emits audio packets.  
-6. The final short tail is flushed when upstream marks `finished`.
-
-The user hears audio earlier because downstream work starts before upstream is fully done.
 
 ---
 
