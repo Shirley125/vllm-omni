@@ -158,8 +158,6 @@ Performance data below is collected on **H800 GPUs** with **cudagraph enabled**;
 - **Async_chunk also improves E2E latency and RTF**  
   Example: concurrency 1, E2E improves by ~6% (**6.58s → 6.18s**); concurrency 10 improves by ~17% (**13.52s → 11.15s**).  
   RTF improves (e.g., ~8% at conc 1: **0.24 → 0.22**, ~16% at conc 10: **0.49 → 0.41**).
-- **Code2Wav batching (batch size 64 vs 1) helps when async_chunk is off, especially at higher concurrency**  
-  Example: concurrency 10, E2E improves by ~30% (**13.5s → 9.5s**), and TTFP improves similarly (**13.4s → 9.4s**).
 
 ### Plots (TTFP and RTF)
 
