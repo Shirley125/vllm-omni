@@ -142,11 +142,31 @@ References:
   <https://github.com/vllm-project/vllm-omni/issues/268>
 - Design document: `docs/design/feature/async_chunk_design.md`
 
-### Figure placeholders (to be replaced)
+### Visualizing the TTFP impact of async chunk
 
-- **Figure 1 [TBD]**: Sequential pipeline vs async-chunk pipeline timeline
-- **Figure 2 [TBD]**: TTFP vs concurrency (async chunk off/on)
-- **Figure 3 [TBD]**: E2E and RTF comparison after stacking optimizations
+#### Async Chunk Off (sequential stage handoff)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" src="https://raw.githubusercontent.com/vllm-project/vllm-omni/refs/heads/main/docs/source/architecture/qwen3-omni-non-async-chunk.png">
+    <img alt="Sequential data flow between stages" src="https://raw.githubusercontent.com/vllm-project/vllm-omni/refs/heads/main/docs/source/architecture/qwen3-omni-non-async-chunk.png" width=100%>
+  </picture>
+</p>
+
+#### Async Chunk On (chunked overlapping stage handoff)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" src="https://raw.githubusercontent.com/vllm-project/vllm-omni/refs/heads/main/docs/source/architecture/qwen3-omni-async-chunk.png">
+    <img alt="Async chunk data flow between stages" src="https://raw.githubusercontent.com/vllm-project/vllm-omni/refs/heads/main/docs/source/architecture/qwen3-omni-async-chunk.png" width=100%>
+  </picture>
+</p>
+
+What these figures show:
+
+- **Top figure (async chunk off)**: stage handoff is more request-level and sequential; Talker/Code2Wav wait longer before useful data arrives, so first audio packet is delayed.
+- **Bottom figure (async chunk on)**: intermediate outputs are forwarded chunk by chunk; downstream stages start earlier and overlap with upstream compute.
+- This earlier overlap is exactly why **TTFP drops significantly** when async chunk is enabled, especially under concurrency.
 
 ### Async chunk results after stacking all previous features `[TBD]`
 
