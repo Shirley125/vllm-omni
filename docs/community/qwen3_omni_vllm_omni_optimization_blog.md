@@ -1,170 +1,174 @@
-# Qwen3-Omni 在 vLLM-Omni 上的支持与性能优化实践（草稿）
+# Qwen3-Omni on vLLM-Omni: Streaming-First Performance Optimizations (Draft)
 
-> 本文为可发布博客草稿，按 vLLM blog 风格组织。  
-> 所有实验数据与图片位置已预留，你可以后续直接替换“待补充”内容。
+> This draft follows the writing style of the vLLM blog and keeps explicit placeholders for benchmark numbers and figures.
+> You can directly replace all `[TBD]` fields with your final data and charts.
 
-## 1. 总结
+## Summary
 
-Qwen3-Omni 目前已经可以在 vLLM-Omni 上稳定运行，并可通过以下能力实现性能优化和流式体验增强：
+Qwen3-Omni is a native multimodal model that can understand **text, audio, image, and video** inputs, and generate both **text** and **speech** outputs. In production serving, this architecture is naturally split into three stages:
 
-- **Batching（跨 stage 批量推理）**
-- **CUDA Graph（Thinker / Talker 图捕获）**
-- **Text Streaming Output（文本流式输出）**
-- **Audio Streaming Output（音频流式输出）**
-- **Async Chunk（跨 stage 异步分块流水）**
+- **Thinker**: multimodal understanding and text generation
+- **Talker (+ Talker-MTP / code predictor path)**: converts semantic/text representations into codec tokens
+- **Code2Wav**: decodes codec tokens into waveform audio
 
-相较于 Transformers 基线，在同等硬件和请求配置下，vLLM-Omni 的整体性能提升为：
+vLLM-Omni now supports running this full Qwen3-Omni pipeline end-to-end, and more importantly, supports stacking multiple latency/throughput optimizations that work together:
 
-- **吞吐提升：`[待补充：xx%]`**
-- **E2E 时延下降：`[待补充：xx%]`**
-- **TTFP 改善：`[待补充：xx%]`**
+1. **Batching** improves GPU utilization stage by stage and increases overall throughput.
+2. **CUDA Graph** reduces CPU launch overhead and decode-time jitter on stable shapes.
+3. **Text streaming output** returns text tokens as soon as they are available, improving TTFT.
+4. **Audio streaming output** returns audio chunks earlier, improving TTFP.
+5. **Async chunk** overlaps compute and communication across stages, improving both TTFP and E2E.
+
+Compared with the Transformers baseline, the end-to-end throughput gain is:
+
+- **Overall throughput improvement**: `[TBD: xx%]`
+- **E2E latency reduction**: `[TBD: xx%]`
+- **TTFP improvement**: `[TBD: xx%]`
+
+This post walks through each optimization in the same order they are typically enabled in practice, then ends with a deployment playbook you can directly apply.
 
 ---
 
-## 2. Batching 支持
+## Pipeline Batching Across Three Stages
 
-### 2.1 三阶段（Thinker、Talker & Talker-MTP、Code2Wav）批量推理原理
+### How stage-wise batching works
 
-Qwen3-Omni 在 vLLM-Omni 中采用三阶段架构：
+For Qwen3-Omni, batching is not a single switch at one model boundary. It is a pipeline-level optimization:
 
-- Stage 0：**Thinker**（多模态理解 + 文本生成）
-- Stage 1：**Talker + Talker-MTP**（文本到 codec 表示）
-- Stage 2：**Code2Wav**（codec 到波形）
+- requests are grouped per stage using `runtime.max_batch_size`
+- each stage executes batch inference with its own scheduler/worker
+- stage outputs are routed to downstream stages with per-request mapping preserved
 
-Batching 的核心是：在每个 stage 内将可合并请求打包执行，并在 stage 间通过连接器传递结果，以减少单请求调度和 kernel 启动开销。
+This is especially important for multimodal speech generation, where bottlenecks may move between Thinker, Talker, and Code2Wav depending on concurrency and output length.
 
-1) **Thinker / Talker 批量执行**  
-   在 stage worker 中，按 `runtime.max_batch_size` 与时间窗口聚合请求，再统一调用 `generate`。  
-   参考：
-   - PR #438: [Support Qwen Omni online batch inference](https://github.com/vllm-project/vllm-omni/pull/438)
+References:
 
-2) **Talker-MTP / Code Predictor 批量解码**  
-   Talker 的解码链路中引入对 code predictor 的 batch 推理能力。  
-   参考：
-   - Issue #420: [Code_predictor Support batch inference](https://github.com/vllm-project/vllm-omni/issues/420)
-   - PR #456: [Support code_predictor batch inference](https://github.com/vllm-project/vllm-omni/pull/456)
+- Thinker/Talker online batching: PR #438  
+  <https://github.com/vllm-project/vllm-omni/pull/438>
+- Code predictor batching: Issue #420 + PR #456  
+  <https://github.com/vllm-project/vllm-omni/issues/420>  
+  <https://github.com/vllm-project/vllm-omni/pull/456>
+- Code2Wav batching RFC/implementation: Issue #1211 + PR #1246  
+  <https://github.com/vllm-project/vllm-omni/issues/1211>  
+  <https://github.com/vllm-project/vllm-omni/pull/1246>
 
-3) **Code2Wav 批量生成**  
-   Code2Wav 阶段支持 batch 化音频解码，并按请求切分输出，缓解高并发下 stage2 瓶颈。  
-   参考：
-   - RFC #1211: [Qwen3 Omni code2wav stage support batching](https://github.com/vllm-project/vllm-omni/issues/1211)
-   - PR #1246: [Support Qwen3 Omni code2wav batch infernce with async chunk](https://github.com/vllm-project/vllm-omni/pull/1246)
+### Stage-level batching results (before vs. after) `[TBD]`
 
-### 2.2 各 Stage 开启 Batching 前后性能对比（待补充）
+Metrics: **E2E**, **TTFP**, **RTF**.
 
-> 指标：E2E、TTFP、RTF。  
-> 测试条件（硬件、并发、输入长度、输出长度）请在你补数据时一起写入。
-
-| Stage | 配置 | E2E (ms) | TTFP (ms) | RTF | 相对提升 |
+| Stage | Config | E2E (ms) | TTFP (ms) | RTF | Relative Change |
 |---|---|---:|---:|---:|---:|
-| Thinker | Batching Off | 待补充 | 待补充 | 待补充 | - |
-| Thinker | Batching On | 待补充 | 待补充 | 待补充 | 待补充 |
-| Talker & Talker-MTP | Batching Off | 待补充 | 待补充 | 待补充 | - |
-| Talker & Talker-MTP | Batching On | 待补充 | 待补充 | 待补充 | 待补充 |
-| Code2Wav | Batching Off | 待补充 | 待补充 | 待补充 | - |
-| Code2Wav | Batching On | 待补充 | 待补充 | 待补充 | 待补充 |
+| Thinker | Batching Off | [TBD] | [TBD] | [TBD] | - |
+| Thinker | Batching On | [TBD] | [TBD] | [TBD] | [TBD] |
+| Talker + Talker-MTP | Batching Off | [TBD] | [TBD] | [TBD] | - |
+| Talker + Talker-MTP | Batching On | [TBD] | [TBD] | [TBD] | [TBD] |
+| Code2Wav | Batching Off | [TBD] | [TBD] | [TBD] | - |
+| Code2Wav | Batching On | [TBD] | [TBD] | [TBD] | [TBD] |
 
 ---
 
-## 3. CUDA Graph 支持
+## CUDA Graph on the Critical Decode Path
 
-### 3.1 CUDA Graph 原理简介
+### Why CUDA Graph helps here
 
-CUDA Graph 通过捕获稳定形状下的一组 GPU 操作并重复回放，减少 CPU 侧 launch 开销和调度抖动，通常对高频 decode 场景收益明显。
+In decode-heavy serving, repeatedly launching many small kernels from CPU can become a visible overhead. CUDA Graph reduces this overhead by capturing and replaying stable execution graphs.
 
-在 Qwen3-Omni 的 vLLM-Omni 实践中，CUDA Graph 已支持：
+For Qwen3-Omni on vLLM-Omni:
 
-- **Thinker 阶段**
-- **Talker 阶段（含 Talker-MTP 相关路径）**
+- Thinker CUDA Graph support: PR #523  
+  <https://github.com/vllm-project/vllm-omni/pull/523>
+- Talker CUDA Graph support: PR #669  
+  <https://github.com/vllm-project/vllm-omni/pull/669>
 
-参考：
+In stage configs, this is typically represented by `enforce_eager: false` for stages where graph capture is desired (commonly Thinker/Talker), while Code2Wav may keep eager mode depending on stage behavior.
 
-- PR #523: [Support Qwen3 Omni thinker cuda graph](https://github.com/vllm-project/vllm-omni/pull/523)
-- PR #669: [Support Qwen3 Omni talker cudagraph](https://github.com/vllm-project/vllm-omni/pull/669)
+### CUDA Graph results on top of batching `[TBD]`
 
-工程侧常见开关方式为在 stage config 中对对应 stage 设置 `enforce_eager: false`（启用图捕获路径），并结合 batching 获取更稳定收益。
+Metrics: **E2E**, **TTFP**, **RTF**.
 
-### 3.2 叠加 Batching 后，CUDA Graph 开关对比（待补充）
-
-| 配置 | E2E (ms) | TTFP (ms) | RTF | 备注 |
+| Config | E2E (ms) | TTFP (ms) | RTF | Notes |
 |---|---:|---:|---:|---|
-| Batching On + CUDA Graph Off | 待补充 | 待补充 | 待补充 | `enforce_eager: true` |
-| Batching On + CUDA Graph On | 待补充 | 待补充 | 待补充 | `enforce_eager: false` |
-| 相对变化 | 待补充 | 待补充 | 待补充 | 待补充 |
+| Batching On + CUDA Graph Off | [TBD] | [TBD] | [TBD] | `enforce_eager: true` |
+| Batching On + CUDA Graph On | [TBD] | [TBD] | [TBD] | `enforce_eager: false` |
+| Relative Change | [TBD] | [TBD] | [TBD] | [TBD] |
 
 ---
 
-## 4. Text Streaming Output 和 Audio Streaming Output 支持
+## Streaming Outputs: Lower TTFT, Earlier Audio
 
-### 4.1 Streaming Output 原理简介及对 TTFT/TTFP 的影响
+### Streaming mechanism and latency impact
 
-Streaming 的核心收益是“边生成边返回”：
+Streaming changes the user-visible latency profile:
 
-- **Text Streaming**：token 级增量返回，显著降低 TTFT（首 token 时间）体感。
-- **Audio Streaming**：音频 chunk 增量返回，显著降低 TTFP（首包时间）体感。
+- **Text streaming output** emits text deltas as soon as text tokens are generated, reducing **TTFT**.
+- **Audio streaming output** emits audio chunks earlier in the pipeline, reducing **TTFP**.
 
-参考：
+References:
 
-- PR #367: [Basic version of supporting streaming output](https://github.com/vllm-project/vllm-omni/pull/367)
-- Audio streaming output：在 Qwen3-Omni 实践里可结合 stage2 调度参数（如 `max_num_batched_tokens`）进行吞吐/首包延迟权衡。
+- Basic streaming output support: PR #367  
+  <https://github.com/vllm-project/vllm-omni/pull/367>
+- For Qwen3-Omni audio behavior, stage2 scheduling/batching knobs (such as `max_num_batched_tokens`) can shift the tradeoff between first-packet latency and throughput.
 
-实践建议：
+### Streaming results on top of batching + CUDA Graph `[TBD]`
 
-- 若优先首包体验（TTFP），可尝试降低 stage2 的 batch 聚合强度（例如更保守的 `max_num_batched_tokens`）。
-- 若优先吞吐，可提高 stage2 batch 聚合强度，但首包延迟可能上升。
+Metrics: **E2E**, **TTFT**, **TTFP**, **RTF**.
 
-### 4.2 叠加 Batching + CUDA Graph 后，Streaming 开关对比（待补充）
-
-> 指标：E2E、TTFT、TTFP、RTF。
-
-| 配置 | E2E (ms) | TTFT (ms) | TTFP (ms) | RTF | 备注 |
+| Config | E2E (ms) | TTFT (ms) | TTFP (ms) | RTF | Notes |
 |---|---:|---:|---:|---:|---|
-| Streaming Off | 待补充 | 待补充 | 待补充 | 待补充 | 仅最终返回 |
-| Text Streaming On, Audio Streaming Off | 待补充 | 待补充 | 待补充 | 待补充 | 文本先返回 |
-| Text Streaming On, Audio Streaming On | 待补充 | 待补充 | 待补充 | 待补充 | 文本+音频都流式 |
-| 相对变化 | 待补充 | 待补充 | 待补充 | 待补充 | 待补充 |
+| Streaming Off | [TBD] | [TBD] | [TBD] | [TBD] | Full response only |
+| Text Streaming On, Audio Streaming Off | [TBD] | [TBD] | [TBD] | [TBD] | Text first |
+| Text Streaming On, Audio Streaming On | [TBD] | [TBD] | [TBD] | [TBD] | Text + audio progressive |
+| Relative Change | [TBD] | [TBD] | [TBD] | [TBD] | [TBD] |
 
 ---
 
-## 5. Async Chunk 支持
+## Async Chunk: Overlapping Stages for Faster First Packet
 
-### 5.1 Async Chunk 原理简介（含图位占位）
+### Why async chunk matters for Qwen3-Omni
 
-Async Chunk 的核心思想是：将跨 stage 的“整请求串行传递”改为“按 chunk 异步传递”，让 Thinker / Talker / Code2Wav 尽早并行重叠执行。
+Without async chunk, stage handoff is closer to request-level synchronization. With async chunk, stage outputs are forwarded in chunks so downstream stages can start earlier:
 
-在 Qwen3-Omni 中，典型路径为：
+- Thinker -> Talker: chunk-level hidden-state forwarding
+- Talker -> Code2Wav: chunk-level codec forwarding
+- Code2Wav: chunk decode and earlier packet emission
 
-- Thinker → Talker：按解码步持续传递中间表示
-- Talker → Code2Wav：按 codec chunk 传递
-- Code2Wav：按 chunk 解码并可直接流式输出
+This creates cross-stage overlap and directly targets first-packet latency.
 
-参考：
+References:
 
-- PR #727: [Support async computation and communication across stages by chunks](https://github.com/vllm-project/vllm-omni/pull/727)
-- RFC #268: [Support async computation and communication across stages by chunks](https://github.com/vllm-project/vllm-omni/issues/268)
-- 设计文档：`docs/design/feature/async_chunk_design.md`
+- Async chunk feature PR: #727  
+  <https://github.com/vllm-project/vllm-omni/pull/727>
+- Async chunk RFC: #268  
+  <https://github.com/vllm-project/vllm-omni/issues/268>
+- Design document: `docs/design/feature/async_chunk_design.md`
 
-**图位占位（待补充图片）**
+### Figure placeholders (to be replaced)
 
-> **图 1（待补充）**：同步串行流水 vs Async Chunk 流水示意图（重点突出 stage 间重叠执行）。  
-> **图 2（待补充）**：TTFP 对比曲线（Async Chunk Off/On，多并发点位）。  
-> **图 3（待补充）**：E2E 与 RTF 对比柱状图（叠加 batching + cuda graph + streaming 输入输出）。
+- **Figure 1 [TBD]**: Sequential pipeline vs async-chunk pipeline timeline
+- **Figure 2 [TBD]**: TTFP vs concurrency (async chunk off/on)
+- **Figure 3 [TBD]**: E2E and RTF comparison after stacking optimizations
 
-### 5.2 叠加 CUDA Graph + Batching + Streaming Input/Output 后，Async Chunk 开关对比（待补充）
+### Async chunk results after stacking all previous features `[TBD]`
 
-| 配置 | E2E (ms) | TTFP (ms) | RTF | 备注 |
+Stacking assumptions for this table:
+
+- Batching enabled
+- CUDA Graph enabled where applicable
+- Streaming input/output enabled
+
+Metrics: **E2E**, **TTFP**, **RTF**.
+
+| Config | E2E (ms) | TTFP (ms) | RTF | Notes |
 |---|---:|---:|---:|---|
-| Async Chunk Off | 待补充 | 待补充 | 待补充 | 已开启 batching + cuda graph + streaming input/output |
-| Async Chunk On | 待补充 | 待补充 | 待补充 | 已开启 batching + cuda graph + streaming input/output |
-| 相对变化 | 待补充 | 待补充 | 待补充 | 待补充 |
+| Async Chunk Off | [TBD] | [TBD] | [TBD] | Stacked baseline without async chunk |
+| Async Chunk On | [TBD] | [TBD] | [TBD] | Stacked baseline with async chunk |
+| Relative Change | [TBD] | [TBD] | [TBD] | [TBD] |
 
 ---
 
-## 6. Qwen3-Omni 推理实践
+## Deployment Playbook: Enabling Qwen3-Omni Optimizations in vLLM-Omni
 
-下面给出一组可直接复现的实践步骤，覆盖如何部署以及如何开启 batching、cuda graph、text/audio streaming、async chunk。
-
-### 6.1 启动服务（默认三阶段 + batching + thinker/talker cudagraph）
+### 1) Serve Qwen3-Omni with the default 3-stage config
 
 ```bash
 vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct \
@@ -173,13 +177,13 @@ vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --stage-configs-path vllm_omni/model_executor/stage_configs/qwen3_omni_moe.yaml
 ```
 
-说明：
+Notes:
 
-- `runtime.max_batch_size` 控制各 stage 请求批大小。
-- Thinker / Talker 设置 `enforce_eager: false` 可走 CUDA Graph 路径。
-- Code2Wav 默认 `enforce_eager: true`。
+- `runtime.max_batch_size` controls stage-level batching.
+- Thinker/Talker commonly use `enforce_eager: false` for CUDA Graph paths.
+- Code2Wav often remains eager (`enforce_eager: true`) depending on runtime behavior.
 
-### 6.2 启动服务（开启 Async Chunk）
+### 2) Enable async chunk
 
 ```bash
 vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct \
@@ -188,37 +192,36 @@ vllm serve Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --stage-configs-path vllm_omni/model_executor/stage_configs/qwen3_omni_moe_async_chunk.yaml
 ```
 
-说明：
+The async chunk config enables:
 
-- 顶层 `async_chunk: true`。
-- 使用 `custom_process_next_stage_input_func`（thinker2talker_async_chunk / talker2code2wav_async_chunk）实现分块传递。
+- top-level `async_chunk: true`
+- async stage handoff processors (`thinker2talker_async_chunk`, `talker2code2wav_async_chunk`)
 
-### 6.3 客户端开启 Text / Audio Streaming
+### 3) Enable streaming output in client requests
 
 ```bash
 cd examples/online_serving/qwen3_omni
 
-# 流式返回（文本 + 音频）
 python openai_chat_completion_client_for_multimodal_generation.py \
   --query-type use_image \
   --stream
 ```
 
-可选：
+Optional:
 
-- `--modalities text`：仅文本输出
-- 默认或 `--modalities audio`：文本 + 音频输出
+- `--modalities text` for text-only output
+- default / `--modalities audio` for text + audio output
 
-### 6.4 关键配置项速查（建议在自定义 stage config 中显式声明）
+### 4) Key config knobs (quick reference)
 
 ```yaml
-async_chunk: true  # 是否启用跨 stage 异步分块
+async_chunk: true
 stage_args:
   - stage_id: 0 # thinker
     runtime:
-      max_batch_size: 64   # batching
+      max_batch_size: 64
     engine_args:
-      enforce_eager: false # cudagraph on
+      enforce_eager: false
       max_num_batched_tokens: 32768
       custom_process_next_stage_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.thinker2talker_async_chunk
 
@@ -226,7 +229,7 @@ stage_args:
     runtime:
       max_batch_size: 64
     engine_args:
-      enforce_eager: false # cudagraph on
+      enforce_eager: false
       max_num_batched_tokens: 32768
       custom_process_next_stage_input_func: vllm_omni.model_executor.stage_input_processors.qwen3_omni.talker2code2wav_async_chunk
 
@@ -235,33 +238,22 @@ stage_args:
       max_batch_size: 64
     engine_args:
       enforce_eager: true
-      max_num_batched_tokens: 51200 # 可用于吞吐/TTFP 权衡调优
+      max_num_batched_tokens: 51200 # tune this for throughput vs first-packet tradeoff
 ```
 
-### 6.5 建议的实验补数顺序（便于后续补图补表）
+### 5) Recommended benchmarking order
 
-1. **Transformers 基线**：固定输入集合与并发，记录 E2E/TTFT/TTFP/RTF。  
-2. **vLLM-Omni 基线**：仅开 batching。  
-3. **+ CUDA Graph**：仅切换 `enforce_eager`。  
-4. **+ Streaming**：先 text streaming，再 text+audio streaming。  
-5. **+ Async Chunk**：最终叠加方案，补齐全指标与对比图。
+1. Transformers baseline
+2. vLLM-Omni + batching
+3. + CUDA Graph
+4. + text/audio streaming
+5. + async chunk (final stacked setup)
 
 ---
 
-## 参考链接
+## References
 
-- 目标风格参考（vLLM blog）：  
+- Style reference blog:  
   <https://blog.vllm.ai/2026/02/13/gb300-deepseek.html>
-- vLLM-Omni 仓库：  
+- vLLM-Omni repository:  
   <https://github.com/vllm-project/vllm-omni>
-- 本文相关 PR / RFC：
-  - #438: <https://github.com/vllm-project/vllm-omni/pull/438>
-  - #420: <https://github.com/vllm-project/vllm-omni/issues/420>
-  - #456: <https://github.com/vllm-project/vllm-omni/pull/456>
-  - #1211: <https://github.com/vllm-project/vllm-omni/issues/1211>
-  - #1246: <https://github.com/vllm-project/vllm-omni/pull/1246>
-  - #523: <https://github.com/vllm-project/vllm-omni/pull/523>
-  - #669: <https://github.com/vllm-project/vllm-omni/pull/669>
-  - #367: <https://github.com/vllm-project/vllm-omni/pull/367>
-  - #727: <https://github.com/vllm-project/vllm-omni/pull/727>
-  - #268: <https://github.com/vllm-project/vllm-omni/issues/268>
