@@ -52,6 +52,26 @@ _OMNI_MODELS = {
         "qwen3_omni_code2wav",
         "Qwen3OmniMoeCode2Wav",
     ),
+    "Qwen3_5OmniForConditionalGeneration": (
+        "qwen3_5_omni",
+        "qwen3_5_omni",
+        "Qwen3_5OmniForConditionalGeneration",
+    ),
+    "Qwen3_5OmniThinkerForConditionalGeneration": (
+        "qwen3_5_omni",
+        "qwen3_5_omni_thinker",
+        "Qwen3_5OmniThinkerForConditionalGeneration",
+    ),
+    "Qwen3_5OmniTalkerForConditionalGeneration": (
+        "qwen3_5_omni",
+        "qwen3_5_omni_talker",
+        "Qwen3_5OmniTalkerForConditionalGeneration",
+    ),
+    "Qwen3_5OmniAudioTokenizerModel": (
+        "qwen3_5_omni",
+        "qwen3_5_omni_audio_tokenizer",
+        "Qwen3_5OmniAudioTokenizerModel",
+    ),
     "CosyVoice3Model": (
         "cosyvoice3",
         "cosyvoice3",

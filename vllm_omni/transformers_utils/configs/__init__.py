@@ -14,6 +14,10 @@ _CLASS_TO_MODULE: dict[str, str] = {
     "Mammothmoda2Qwen2_5_VLConfig": "vllm_omni.transformers_utils.configs.mammoth_moda2",
     "Mammothmoda2Qwen2_5_VLTextConfig": "vllm_omni.transformers_utils.configs.mammoth_moda2",
     "Mammothmoda2Qwen2_5_VLVisionConfig": "vllm_omni.transformers_utils.configs.mammoth_moda2",
+    "Qwen3_5OmniConfig": "vllm_omni.transformers_utils.configs.qwen3_5_omni",
+    "Qwen3_5OmniThinkerConfig": "vllm_omni.transformers_utils.configs.qwen3_5_omni",
+    "Qwen3_5OmniTalkerConfig": "vllm_omni.transformers_utils.configs.qwen3_5_omni",
+    "Qwen3_5OmniAudioTokenizerConfig": "vllm_omni.transformers_utils.configs.qwen3_5_omni",
 }
 
 __all__ = [
@@ -21,6 +25,10 @@ __all__ = [
     "Mammothmoda2Qwen2_5_VLConfig",
     "Mammothmoda2Qwen2_5_VLTextConfig",
     "Mammothmoda2Qwen2_5_VLVisionConfig",
+    "Qwen3_5OmniConfig",
+    "Qwen3_5OmniThinkerConfig",
+    "Qwen3_5OmniTalkerConfig",
+    "Qwen3_5OmniAudioTokenizerConfig",
 ]
 
 
@@ -39,4 +47,7 @@ def __dir__():
 
 # Eagerly import all config modules so their AutoConfig.register() side-effects
 # run as soon as `vllm_omni.transformers_utils.configs` is imported.
+from vllm_omni.transformers_utils.configs import (
+    configuration_qwen3_5_omni as _configuration_qwen3_5_omni,  # noqa: F401, E402
+)
 from vllm_omni.transformers_utils.configs import mammoth_moda2 as _mammoth_moda2  # noqa: F401, E402
