@@ -11,6 +11,14 @@ Qwen3-Omni is a native multimodal model that can understand **text, audio, image
 - **Talker (+ Talker-MTP / code predictor path)**: converts semantic/text representations into codec tokens
 - **Code2Wav**: decodes codec tokens into waveform audio
 
+<p align="center">
+  <img src="../source/performance/qwen3-omni-summary-e2e.png" alt="E2E latency comparison between vLLM-Omni and HF Transformers" width="32%">
+  <img src="../source/performance/qwen3-omni-summary-ttfp.png" alt="TTFP comparison between vLLM-Omni and HF Transformers" width="32%">
+  <img src="../source/performance/qwen3-omni-summary-rtf.png" alt="RTF comparison between vLLM-Omni and HF Transformers" width="32%">
+</p>
+
+<p align="center"><em>Single-request comparison: vLLM-Omni (Batch + CUDA Graph + Async Chunk + streaming) vs HF Transformers (offline).</em></p>
+
 vLLM-Omni now supports running this full Qwen3-Omni pipeline end-to-end, and more importantly, supports stacking multiple latency/throughput optimizations that work together:
 
 1. **Batching** improves GPU utilization stage by stage and increases overall throughput.
@@ -19,11 +27,11 @@ vLLM-Omni now supports running this full Qwen3-Omni pipeline end-to-end, and mor
 4. **Audio streaming output** returns audio chunks earlier, improving TTFP.
 5. **Async chunk** overlaps compute and communication across stages, improving both TTFP and E2E.
 
-Compared with the Transformers baseline, the end-to-end throughput gain is:
+Compared with the Transformers baseline in this setup:
 
-- **Overall throughput improvement**: `[TBD: xx%]`
-- **E2E latency reduction**: `[TBD: xx%]`
-- **TTFP improvement**: `[TBD: xx%]`
+- **E2E latency drops by 92.9%** (336.10s -> 23.78s, **14.1x faster**)
+- **Time-to-first-audio (TTFP) drops by 99.7%** (336.10s -> 0.934s, **359.9x faster first packet**)
+- **RTF drops by 91.5%** (3.776 -> 0.32, **11.8x lower real-time factor**)
 
 This post walks through each optimization in the same order they are typically enabled in practice, then ends with a deployment playbook you can directly apply.
 
