@@ -181,6 +181,21 @@ class OmniMsgpackDecoder:
         result = self.decoder.decode(data)
         return self._post_process(result)
 
+    def decode_chunk(self, data: bytes | bytearray | memoryview) -> Any:
+        """Fast-path decode for chunk payloads.
+
+        Chunk payloads are flat dicts whose values are scalars, lists of
+        primitives, or tensor-marker dicts.  This skips the expensive
+        recursive ``_post_process`` traversal (no nested dicts, no
+        RequestOutput / CompletionOutput pattern matching).
+        """
+        result = self.decoder.decode(data)
+        if isinstance(result, dict):
+            for key, value in result.items():
+                if isinstance(value, dict) and value.get(_TENSOR_MARKER):
+                    result[key] = self._decode_tensor(value)
+        return result
+
     def _post_process(self, obj: Any) -> Any:
         """Recursively restore tensor/ndarray/image/RequestOutput/OmniRequestOutput from their dict representations."""
         if isinstance(obj, dict):
@@ -329,6 +344,10 @@ class OmniSerde:
     def deserialize(self, data: bytes | bytearray | memoryview) -> Any:
         """Deserialize bytes to an object."""
         return self.decoder.decode(data)
+
+    def deserialize_chunk(self, data: bytes | bytearray | memoryview) -> Any:
+        """Deserialize bytes to an object using the fast chunk path."""
+        return self.decoder.decode_chunk(data)
 
 
 # Global instance for simple interface

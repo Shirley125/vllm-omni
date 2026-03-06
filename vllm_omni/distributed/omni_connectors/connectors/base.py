@@ -95,6 +95,13 @@ class OmniConnectorBase(ABC):
         return OmniSerializer.deserialize(data)
 
     @staticmethod
+    def deserialize_chunk_obj(data: bytes) -> Any:
+        """Deserialize bytes using the fast chunk path (flat dict, no recursion)."""
+        from ..utils.serialization import OmniSerializer
+
+        return OmniSerializer.deserialize_chunk(data)
+
+    @staticmethod
     def _make_key(key: str, from_stage: str, to_stage: str, separator: str = "@") -> str:
         """Generate internal key with stage routing info.
 

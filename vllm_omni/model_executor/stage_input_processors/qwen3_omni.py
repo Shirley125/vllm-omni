@@ -113,7 +113,7 @@ def thinker2talker_async_chunk(
             "tts_bos_embed": pooling_output.get("tts_bos_embed").detach().cpu(),
             "tts_eos_embed": pooling_output.get("tts_eos_embed").detach().cpu(),
             "tts_pad_embed": pooling_output.get("tts_pad_embed").detach().cpu(),
-            "finished": torch.tensor(is_finished, dtype=torch.bool),
+            "finished": is_finished,
         }
         if transfer_manager.request_payload.get(request_id) is None:
             if not is_finished:
@@ -138,7 +138,7 @@ def thinker2talker_async_chunk(
         output_token_ids = _ensure_list(output_token_ids)
 
         talker_additional_info = {
-            "finished": torch.tensor(is_finished, dtype=torch.bool),
+            "finished": is_finished,
         }
         if output_token_ids:
             talker_additional_info["override_keys"] = ["thinker_decode_embeddings", "thinker_output_token_ids"]
@@ -215,6 +215,17 @@ def thinker2talker(
 # =========================
 
 
+def _transpose_flatten(rows: list[list[int]]) -> list[int]:
+    """Transpose a list-of-rows matrix and flatten, equivalent to
+    ``torch.tensor(rows).transpose(0, 1).reshape(-1).tolist()``
+    but without creating any tensors.
+    """
+    if not rows:
+        return []
+    n_cols = len(rows[0])
+    return [rows[r][c] for c in range(n_cols) for r in range(len(rows))]
+
+
 def talker2code2wav_async_chunk(
     transfer_manager: Any,
     pooling_output: dict[str, Any],
@@ -237,23 +248,24 @@ def talker2code2wav_async_chunk(
 
     if code_predictor_codes is None:
         return None
-    if isinstance(code_predictor_codes, torch.Tensor):
-        if code_predictor_codes.numel() == 0:
-            return None
-    elif hasattr(code_predictor_codes, "__len__"):
-        if len(code_predictor_codes) == 0:
-            return None
 
+    # Convert to Python list-of-lists once; all subsequent ops are pure Python.
     if isinstance(code_predictor_codes, torch.Tensor):
-        if not code_predictor_codes.any():
+        if code_predictor_codes.numel() == 0 or not code_predictor_codes.any():
             return None
+        # shape [frames, n_codebooks] → [[cb0, cb1, …], …]
+        frames = code_predictor_codes.to(torch.long).cpu().tolist()
     else:
-        code_tensor = torch.tensor(code_predictor_codes, dtype=torch.long)
-        if not code_tensor.any():
+        if hasattr(code_predictor_codes, "__len__") and len(code_predictor_codes) == 0:
+            return None
+        frames = list(code_predictor_codes)
+        if not any(v != 0 for row in frames for v in (row if isinstance(row, list) else [row])):
             return None
 
-    codec_codes = code_predictor_codes.to(torch.long).transpose(0, 1).cpu().to(torch.long).reshape(-1).tolist()
-    if sum(codec_codes) == 0:
+    # Transpose + flatten per-frame codebook vectors, same layout as the
+    # original tensor path: [cb0_f0, cb0_f1, …, cb1_f0, …]
+    codec_codes = _transpose_flatten(frames)
+    if not any(codec_codes):
         return None
 
     request_id = request.external_req_id
@@ -264,23 +276,18 @@ def talker2code2wav_async_chunk(
         return None
 
     context_length = chunk_length if chunk_length != 0 else chunk_size_config
-    # ensure left context does not exceed available length
     left_context_size = max(0, min(length - context_length, left_context_size_config))
     end_index = min(length, left_context_size + context_length)
 
-    codes = (
-        torch.tensor(transfer_manager.code_prompt_token_ids[request_id][-end_index:])
-        .transpose(0, 1)
-        .reshape(-1)
-        .tolist()
+    codes = _transpose_flatten(
+        transfer_manager.code_prompt_token_ids[request_id][-end_index:]
     )
 
-    info = {
+    return {
         "code_predictor_codes": codes,
         "left_context_size": left_context_size,
-        "finished": torch.tensor(is_finished, dtype=torch.bool),
+        "finished": is_finished,
     }
-    return info
 
 
 def talker2code2wav(

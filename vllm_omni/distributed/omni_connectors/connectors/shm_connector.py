@@ -25,6 +25,8 @@ class SharedMemoryConnector(OmniConnectorBase):
         self.stage_id = config.get("stage_id", -1)
         self.device = config.get("device", "cuda:0")
         self.threshold = int(config.get("shm_threshold_bytes", 65536))
+        self.chunk_mode = bool(config.get("chunk_mode", False))
+        self._deserialize = self.deserialize_chunk_obj if self.chunk_mode else self.deserialize_obj
         self._metrics = {
             "puts": 0,
             "gets": 0,
@@ -82,7 +84,7 @@ class SharedMemoryConnector(OmniConnectorBase):
                 fcntl.flock(lockf, fcntl.LOCK_EX)
                 data_bytes = shm_read_bytes(shm_handle)
                 fcntl.flock(lockf, fcntl.LOCK_UN)
-            obj = self.deserialize_obj(data_bytes)
+            obj = self._deserialize(data_bytes)
             return obj, int(shm_handle.get("size", 0))
         except Exception as e:
             logger.error(f"SharedMemoryConnector shm get failed for req : {e}")
@@ -109,7 +111,7 @@ class SharedMemoryConnector(OmniConnectorBase):
 
             if "inline_bytes" in metadata:
                 try:
-                    obj = self.deserialize_obj(metadata["inline_bytes"])
+                    obj = self._deserialize(metadata["inline_bytes"])
                     return obj, int(metadata.get("size", 0))
                 except Exception as e:
                     logger.error(f"SharedMemoryConnector inline get failed for req {get_key}: {e}")

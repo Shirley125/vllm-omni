@@ -70,9 +70,11 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                 "extra": getattr(connector_config, "extra", {}),
             }
 
+        extra = dict(connector_config.get("extra", {}) or {})
+        extra.setdefault("chunk_mode", True)
         connector_specs = ConnectorSpec(
             name=connector_config.get("name", "SharedMemoryConnector"),
-            extra=connector_config.get("extra", {}),
+            extra=extra,
         )
         return OmniConnectorFactory.create_connector(connector_specs)
 
