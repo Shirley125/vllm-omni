@@ -58,6 +58,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self.waiting_for_chunk_waiting_requests: deque[Any] = deque()
         self.waiting_for_chunk_running_requests: deque[Any] = deque()
         self.requests_with_ready_chunks = set()
+        self._wfc_requests: dict[str, tuple[Any, RequestStatus]] = {}
 
     @classmethod
     def create_connector(cls, model_config: Any):
@@ -263,6 +264,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self.get_req_chunk.pop(request_id, None)
         self.requests_with_ready_chunks.discard(request_id)
         self.request_ids_mapping.pop(request_id, None)
+        self._wfc_requests.pop(request_id, None)
 
         remaining = deque(r for r in self._pending_load_reqs if getattr(r, "request_id", None) != request_id)
         self._pending_load_reqs = remaining
@@ -275,6 +277,26 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
     ########################################################################
     # Schedule Helper
     ########################################################################
+
+    def try_promote_ready(self) -> None:
+        """Eagerly promote WAITING_FOR_CHUNK requests whose chunks arrived.
+
+        O(K) where K = len(_finished_load_reqs).  Called from
+        ``update_from_output`` so that by the next ``schedule()`` the
+        requests are already in WAITING/RUNNING status, avoiding a
+        redundant full-queue scan in ``_process_chunk_queue``.
+        """
+        if not self._finished_load_reqs:
+            return
+        for req_id in list(self._finished_load_reqs):
+            entry = self._wfc_requests.get(req_id)
+            if entry is None:
+                continue
+            request, target_status = entry
+            request.status = target_status
+            self._finished_load_reqs.discard(req_id)
+            self.requests_with_ready_chunks.add(req_id)
+            del self._wfc_requests[req_id]
 
     def process_pending_chunks(
         self,
@@ -345,19 +367,27 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         for request in queue_snapshot:
             if request.status != RequestStatus.WAITING_FOR_CHUNK:
                 if request.request_id in self.requests_with_ready_chunks:
-                    # Requests that have loaded chunk from last round
-                    # of schedule, but have not scheduled
                     continue
                 if request.request_id in self.finished_requests:
                     continue
-                # Requests that waiting for chunk
                 self.load_async(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
+                self._wfc_requests[request.request_id] = (request, target_status)
+                # Inline: chunk may already be ready (recv_loop found it
+                # between restore_queues and this check).  Promoting now
+                # saves a full scheduler cycle (~16 ms).
+                if request.request_id in finished_load_reqs:
+                    request.status = target_status
+                    finished_load_reqs.discard(request.request_id)
+                    self.requests_with_ready_chunks.add(request.request_id)
+                    self._wfc_requests.pop(request.request_id, None)
+                    continue
             else:
                 if request.request_id in finished_load_reqs:
                     request.status = target_status
-                    finished_load_reqs.remove(request.request_id)
+                    finished_load_reqs.discard(request.request_id)
                     self.requests_with_ready_chunks.add(request.request_id)
+                    self._wfc_requests.pop(request.request_id, None)
                     continue
             queue.remove(request)
             waiting_for_chunk_list.append(request)

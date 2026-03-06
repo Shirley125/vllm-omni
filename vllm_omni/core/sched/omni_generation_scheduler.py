@@ -551,4 +551,7 @@ class OmniGenerationScheduler(VLLMScheduler):
                 engine_core_outputs[0] = eco = EngineCoreOutputs()
             eco.scheduler_stats = stats
 
+        if self.chunk_transfer_adapter:
+            self.chunk_transfer_adapter.try_promote_ready()
+
         return engine_core_outputs

@@ -123,11 +123,17 @@ def test_save_async(build_adapter):
 
     adapter.custom_process_next_stage_input_func = lambda **kwargs: {"x": [1], "finished": False}
     adapter.save_async(pooling_output=None, request=request)
+    # Empty payload → should NOT be enqueued
     adapter.custom_process_next_stage_input_func = lambda **kwargs: {}
     adapter.save_async(pooling_output=None, request=request)
 
+    assert len(adapter._pending_save_reqs) == 1
     task = adapter._pending_save_reqs.popleft()
-    assert task["is_finished"] is False
+    assert task["payload_data"] == {"x": [1], "finished": False}
+    assert task["connector_put_key"] == "external-1_1_0"
+    assert task["stage_id"] == 1
+    # put_req_chunk should have been incremented by save_async
+    assert adapter.put_req_chunk["external-1"] == 1
 
 
 def test_update_request_payload(build_adapter):

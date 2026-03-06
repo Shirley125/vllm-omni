@@ -352,7 +352,7 @@ class OmniARScheduler(VLLMScheduler):
                         num_nans_in_logits=request.num_nans_in_logits,
                     )
                 )
-                if self.chunk_transfer_adapter is not None:
+                if self.chunk_transfer_adapter is not None and pooler_output is not None:
                     self.chunk_transfer_adapter.save_async(pooler_output, request)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
@@ -472,6 +472,9 @@ class OmniARScheduler(VLLMScheduler):
                         self.waiting_for_transfer_free.remove(req_id)
         except Exception:
             init_logger(__name__).exception("Failed to process finished transfer requests")
+
+        if self.chunk_transfer_adapter:
+            self.chunk_transfer_adapter.try_promote_ready()
 
         return engine_core_outputs
 
