@@ -103,43 +103,21 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         pooling_output: torch.Tensor | None = None,
         request: Request | None = None,
     ):
-        """Build payload in the caller (main) thread and enqueue for
-        asynchronous SHM write only.
+        """Build and enqueue one chunk for asynchronous sending.
 
-        Running ``custom_process_next_stage_input_func`` here instead of
-        in the background save_loop avoids two bottlenecks:
-        1. ~87 ms average queue-wait is eliminated for payload extraction.
-        2. ~73% of calls that produce no payload are never enqueued,
-           reducing save_loop work and GIL contention.
+        Payload extraction happens in ``_send_single_request`` on the
+        background save_loop thread.
+
+        Args:
+            pooling_output: Partial pooling output dictionary
+            request: Request object
         """
-        is_finished = request.is_finished()
-        stage_id = self.connector.stage_id
-        request_id = request.external_req_id
-
-        payload_data = None
-        if self.custom_process_next_stage_input_func:
-            try:
-                payload_data = self.custom_process_next_stage_input_func(
-                    transfer_manager=self,
-                    pooling_output=pooling_output,
-                    request=request,
-                    is_finished=is_finished,
-                )
-            except Exception as e:
-                logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
-
-        if not payload_data:
-            return
-
-        chunk_id = self.put_req_chunk[request_id]
-        connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
-        self.put_req_chunk[request_id] += 1
-
-        self._pending_save_reqs.append({
-            "payload_data": payload_data,
-            "connector_put_key": connector_put_key,
-            "stage_id": stage_id,
-        })
+        task = {
+            "pooling_output": pooling_output,
+            "request": request,
+            "is_finished": request.is_finished(),
+        }
+        self._pending_save_reqs.append(task)
 
     def _poll_single_request(self, request: Request):
         stage_id = self.connector.stage_id
@@ -224,10 +202,30 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         return payload_data
 
     def _send_single_request(self, task: dict):
-        payload_data = task["payload_data"]
-        connector_put_key = task["connector_put_key"]
-        stage_id = task["stage_id"]
+        pooling_output = task["pooling_output"]
+        request = task["request"]
+        is_finished = task["is_finished"]
+        stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
+        request_id = request.external_req_id
+        chunk_id = self.put_req_chunk[request_id]
+        connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
+        # Process payload in save_loop thread
+        payload_data = None
+        if self.custom_process_next_stage_input_func:
+            try:
+                payload_data = self.custom_process_next_stage_input_func(
+                    transfer_manager=self,
+                    pooling_output=pooling_output,
+                    request=request,
+                    is_finished=is_finished,
+                )
+
+            except Exception as e:
+                logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
+
+        if not payload_data:
+            return
 
         success, size, metadata = self.connector.put(
             from_stage=str(stage_id),
@@ -237,6 +235,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         )
 
         if success:
+            self.put_req_chunk[request_id] += 1
             logger.debug(f"[Stage-{stage_id}] Sent {connector_put_key}")
 
     ########################################################################
