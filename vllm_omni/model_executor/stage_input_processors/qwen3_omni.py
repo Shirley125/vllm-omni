@@ -261,17 +261,18 @@ def talker2code2wav_async_chunk(
         if not code_tensor.any():
             return None
 
-    request_id = request.external_req_id
-    length = len(transfer_manager.code_prompt_token_ids[request_id]) + 1
-    chunk_length = length % chunk_size_config
-    if chunk_length != 0 and not is_finished:
-        return None
-
     codec_codes = code_predictor_codes.to(torch.long).transpose(0, 1).cpu().to(torch.long).reshape(-1).tolist()
     if sum(codec_codes) == 0:
         return None
 
+    request_id = request.external_req_id
+    print(f"before length = {len(transfer_manager.code_prompt_token_ids[request_id])}")
     transfer_manager.code_prompt_token_ids[request_id].append(codec_codes)
+    length = len(transfer_manager.code_prompt_token_ids[request_id])
+    print(f"after length = {len(transfer_manager.code_prompt_token_ids[request_id])}")
+    chunk_length = length % chunk_size_config
+    if chunk_length != 0 and not is_finished:
+        return None
 
     context_length = chunk_length if chunk_length != 0 else chunk_size_config
     # ensure left context does not exceed available length
