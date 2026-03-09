@@ -51,8 +51,13 @@ class OmniTransferAdapterBase:
     def recv_loop(self):
         """Loop to poll for incoming data."""
         while not self.stop_event.is_set():
+            if not self._pending_load_reqs:
+                time.sleep(0.001)
+                continue
             batch_start = time.monotonic()
             batch_count = 0
+            poll_count = 0
+            pending_snapshot = len(self._pending_load_reqs)
             while self._pending_load_reqs:
                 request = self._pending_load_reqs.popleft()
                 request_id = request.request_id
@@ -64,6 +69,7 @@ class OmniTransferAdapterBase:
                     t0 = time.monotonic()
                     is_success = self._poll_single_request(request)
                     _perf_recv.record("poll_single_request", (time.monotonic() - t0) * 1000)
+                    poll_count += 1
                     if not is_success:
                         request._perf_load_enqueue_ts = time.monotonic()
                         self._pending_load_reqs.append(request)
@@ -73,18 +79,22 @@ class OmniTransferAdapterBase:
                     request._perf_load_enqueue_ts = time.monotonic()
                     self._pending_load_reqs.append(request)
                     logger.warning(f"Error receiving data for {request_id}: {e}")
-            if batch_count > 0:
-                _perf_recv.record("recv_batch_time", (time.monotonic() - batch_start) * 1000)
-                _perf_recv.record("recv_batch_success_count", batch_count)
-            _perf_recv.record("pending_load_queue_len", len(self._pending_load_reqs))
+            _perf_recv.record("recv_batch_time", (time.monotonic() - batch_start) * 1000)
+            _perf_recv.record("recv_batch_poll_count", poll_count)
+            _perf_recv.record("recv_batch_success_count", batch_count)
+            _perf_recv.record("pending_load_queue_len", pending_snapshot)
 
             time.sleep(0.001)
 
     def save_loop(self):
         """Loop to send outgoing data."""
         while not self.stop_event.is_set():
+            if not self._pending_save_reqs:
+                time.sleep(0.001)
+                continue
             batch_start = time.monotonic()
             batch_count = 0
+            pending_snapshot = len(self._pending_save_reqs)
             while self._pending_save_reqs:
                 task = self._pending_save_reqs.popleft()
                 enqueue_ts = task.get("_perf_save_enqueue_ts")
@@ -97,10 +107,9 @@ class OmniTransferAdapterBase:
                     batch_count += 1
                 except Exception as e:
                     logger.warning(f"Error saving data for {task.get('request_id')}: {e}")
-            if batch_count > 0:
-                _perf_save.record("save_batch_time", (time.monotonic() - batch_start) * 1000)
-                _perf_save.record("save_batch_count", batch_count)
-            _perf_save.record("pending_save_queue_len", len(self._pending_save_reqs))
+            _perf_save.record("save_batch_time", (time.monotonic() - batch_start) * 1000)
+            _perf_save.record("save_batch_count", batch_count)
+            _perf_save.record("pending_save_queue_len", pending_snapshot)
 
             time.sleep(0.001)
 
