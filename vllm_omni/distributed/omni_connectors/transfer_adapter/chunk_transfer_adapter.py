@@ -106,22 +106,20 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         pooling_output: torch.Tensor | None = None,
         request: Request | None = None,
     ):
-        """Build and enqueue one chunk for asynchronous sending.
+        """Execute chunk save synchronously on the caller thread.
 
-        Payload extraction happens in ``_send_single_request`` on the
-        background save_loop thread.
-
-        Args:
-            pooling_output: Partial pooling output dictionary
-            request: Request object
+        Running inline avoids GIL contention that previously caused ~22 ms
+        queue-wait when save_loop competed with the main scheduler thread.
         """
         task = {
             "pooling_output": pooling_output,
             "request": request,
             "is_finished": request.is_finished(),
-            "_perf_save_enqueue_ts": time.monotonic(),
         }
-        self._pending_save_reqs.append(task)
+        try:
+            self._send_single_request(task)
+        except Exception as e:
+            logger.error(f"Error in synchronous save: {e}")
 
     def _poll_single_request(self, request: Request):
         stage_id = self.connector.stage_id

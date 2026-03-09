@@ -12,7 +12,6 @@ from ..utils.perf_logging import PerfTracker
 logger = get_connector_logger(__name__)
 
 _perf_recv = PerfTracker.get("transfer_recv_loop")
-_perf_save = PerfTracker.get("transfer_save_loop")
 
 
 class OmniTransferAdapterBase:
@@ -31,18 +30,10 @@ class OmniTransferAdapterBase:
         # Requests that have successfully retrieved data
         self._finished_load_reqs = set()
 
-        # Requests that are waiting to be saved
-        self._pending_save_reqs = deque()
-        # Requests that have successfully saved data
-        self._finished_save_reqs = set()
-
         self.stop_event = threading.Event()
 
         self.recv_thread = threading.Thread(target=self.recv_loop, daemon=True)
         self.recv_thread.start()
-
-        self.save_thread = threading.Thread(target=self.save_loop, daemon=True)
-        self.save_thread.start()
 
     @classmethod
     def create_connector(cls, model_config: Any):
@@ -83,33 +74,6 @@ class OmniTransferAdapterBase:
             _perf_recv.record("recv_batch_poll_count", poll_count)
             _perf_recv.record("recv_batch_success_count", batch_count)
             _perf_recv.record("pending_load_queue_len", pending_snapshot)
-
-            time.sleep(0.001)
-
-    def save_loop(self):
-        """Loop to send outgoing data."""
-        while not self.stop_event.is_set():
-            if not self._pending_save_reqs:
-                time.sleep(0.001)
-                continue
-            batch_start = time.monotonic()
-            batch_count = 0
-            pending_snapshot = len(self._pending_save_reqs)
-            while self._pending_save_reqs:
-                task = self._pending_save_reqs.popleft()
-                enqueue_ts = task.get("_perf_save_enqueue_ts")
-                if enqueue_ts is not None:
-                    _perf_save.record("save_queue_wait", (time.monotonic() - enqueue_ts) * 1000)
-                try:
-                    t0 = time.monotonic()
-                    self._send_single_request(task)
-                    _perf_save.record("send_single_request", (time.monotonic() - t0) * 1000)
-                    batch_count += 1
-                except Exception as e:
-                    logger.warning(f"Error saving data for {task.get('request_id')}: {e}")
-            _perf_save.record("save_batch_time", (time.monotonic() - batch_start) * 1000)
-            _perf_save.record("save_batch_count", batch_count)
-            _perf_save.record("pending_save_queue_len", pending_snapshot)
 
             time.sleep(0.001)
 
