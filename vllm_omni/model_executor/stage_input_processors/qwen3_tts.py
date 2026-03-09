@@ -1,11 +1,16 @@
 """Stage input processor for Qwen3-TTS: Talker -> Code2Wav."""
 
+import time
 from typing import Any
 
 import torch
 from vllm.logger import init_logger
 
+from vllm_omni.distributed.omni_connectors.utils.perf_logging import PerfTracker
+
 logger = init_logger(__name__)
+
+_perf = PerfTracker.get("stage_input_processors")
 
 
 def talker2code2wav(
@@ -59,6 +64,7 @@ def talker2code2wav_async_chunk(
     request: Any,
     is_finished: bool = False,
 ) -> dict[str, Any] | None:
+    t_start = time.monotonic()
     request_id = request.external_req_id
     finished = bool(is_finished or request.is_finished())
 
@@ -140,8 +146,11 @@ def talker2code2wav_async_chunk(
         window_frames = transfer_manager.code_prompt_token_ids[request_id][-end_index:]
 
     # Pack context + chunk into codebook-major flat codes for adapter.
+    t_pack = time.monotonic()
     code_predictor_codes = torch.tensor(window_frames).transpose(0, 1).reshape(-1).tolist()
+    _perf.record("talker2code2wav_pack_codes(qwen3_tts)", (time.monotonic() - t_pack) * 1000)
 
+    _perf.record("talker2code2wav_async_chunk(qwen3_tts)", (time.monotonic() - t_start) * 1000)
     return {
         "code_predictor_codes": code_predictor_codes,
         "left_context_size": left_context_size,

@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import importlib
+import time
 from collections import defaultdict, deque
 from typing import Any
 
@@ -11,9 +12,12 @@ from vllm.v1.request import Request, RequestStatus
 from ..factory import OmniConnectorFactory
 from ..utils.config import ConnectorSpec
 from ..utils.logging import get_connector_logger
+from ..utils.perf_logging import PerfTracker
 from .base import OmniTransferAdapterBase
 
 logger = get_connector_logger(__name__)
+
+_perf = PerfTracker.get("chunk_transfer")
 
 
 class OmniChunkTransferAdapter(OmniTransferAdapterBase):
@@ -94,6 +98,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             return
         if not hasattr(request, "additional_information"):
             request.additional_information = None
+        request._perf_load_enqueue_ts = time.monotonic()
         self._pending_load_reqs.append(request)
 
     def save_async(
@@ -114,6 +119,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             "pooling_output": pooling_output,
             "request": request,
             "is_finished": request.is_finished(),
+            "_perf_save_enqueue_ts": time.monotonic(),
         }
         self._pending_save_reqs.append(task)
 
@@ -125,13 +131,14 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         external_req_id = self.request_ids_mapping.get(req_id, req_id)
         connector_get_key = f"{external_req_id}_{target_stage_id}_{chunk_id}"
 
-        # Use timeout=0 for non-blocking poll
         try:
+            t_get = time.monotonic()
             result = self.connector.get(
                 str(target_stage_id),
                 str(stage_id),
                 connector_get_key,
             )
+            _perf.record("poll_connector_get", (time.monotonic() - t_get) * 1000)
         except Exception as e:
             logger.error(f"SharedMemoryConnector get failed for req {connector_get_key}: {e}")
             return False
@@ -139,6 +146,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         if result is None:
             return False
         payload_data, size = result
+        _perf.record("poll_chunk_size_bytes", size)
 
         if payload_data:
             # Update connector state
@@ -200,6 +208,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         return payload_data
 
     def _send_single_request(self, task: dict):
+        t_send_start = time.monotonic()
         pooling_output = task["pooling_output"]
         request = task["request"]
         is_finished = task["is_finished"]
@@ -208,32 +217,36 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         request_id = request.external_req_id
         chunk_id = self.put_req_chunk[request_id]
         connector_put_key = f"{request_id}_{stage_id}_{chunk_id}"
-        # Process payload in save_loop thread
         payload_data = None
         if self.custom_process_next_stage_input_func:
             try:
+                t_proc = time.monotonic()
                 payload_data = self.custom_process_next_stage_input_func(
                     transfer_manager=self,
                     pooling_output=pooling_output,
                     request=request,
                     is_finished=is_finished,
                 )
-
+                _perf.record("save_custom_process_func", (time.monotonic() - t_proc) * 1000)
             except Exception as e:
                 logger.error(f"Failed to use custom_process_input_func for payload extraction: {e}")
 
         if not payload_data:
             return
 
+        t_put = time.monotonic()
         success, size, metadata = self.connector.put(
             from_stage=str(stage_id),
             to_stage=str(next_stage_id),
             put_key=connector_put_key,
             data=payload_data,
         )
+        _perf.record("save_connector_put", (time.monotonic() - t_put) * 1000)
 
         if success:
             self.put_req_chunk[request_id] += 1
+            _perf.record("save_chunk_size_bytes", size)
+            _perf.record("save_total", (time.monotonic() - t_send_start) * 1000)
             logger.debug(f"[Stage-{stage_id}] Sent {connector_put_key}")
 
     ########################################################################
@@ -284,6 +297,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         """
         if self.connector.stage_id == 0:
             return
+        t0 = time.monotonic()
         self._process_chunk_queue(
             waiting_queue, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING, self._finished_load_reqs
         )
@@ -293,6 +307,10 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         while len(running_queue) > self.scheduler_max_num_seqs:
             request = running_queue.pop()
             waiting_queue.prepend_requests([request])
+        _perf.record("process_pending_chunks", (time.monotonic() - t0) * 1000)
+        _perf.record("waiting_for_chunk_count",
+                      len(self.waiting_for_chunk_waiting_requests) + len(self.waiting_for_chunk_running_requests))
+        _perf.record("finished_load_reqs_count", len(self._finished_load_reqs))
 
     def restore_queues(self, waiting_queue: Any, running_queue: list[Request]) -> None:
         """

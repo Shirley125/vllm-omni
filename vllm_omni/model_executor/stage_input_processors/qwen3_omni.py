@@ -3,14 +3,18 @@
 # Copyright 2025 The Qwen team.
 """Stage input processor for Qwen3 Omni MoE: Thinker → Talker transition."""
 
+import time
 from typing import Any
 
 import torch
 from vllm.inputs import TextPrompt
 from vllm.platforms import current_platform
 
+from vllm_omni.distributed.omni_connectors.utils.perf_logging import PerfTracker
 from vllm_omni.engine import OmniEngineCoreRequest
 from vllm_omni.inputs.data import OmniTokensPrompt
+
+_perf = PerfTracker.get("stage_input_processors")
 
 
 def _compute_talker_prompt_ids_length(info, device: torch.device | str = "cuda") -> int:
@@ -95,6 +99,7 @@ def thinker2talker_async_chunk(
     2. Split hidden states into: prompt embeddings + generated embeddings
     3. Package for talker with additional information
     """
+    t_start = time.monotonic()
 
     request_id = request.external_req_id
     chunk_id = transfer_manager.put_req_chunk[request_id]
@@ -118,6 +123,7 @@ def thinker2talker_async_chunk(
         if transfer_manager.request_payload.get(request_id) is None:
             if not is_finished:
                 transfer_manager.request_payload[request_id] = talker_additional_info
+                _perf.record("thinker2talker_async_chunk_buffered", (time.monotonic() - t_start) * 1000)
                 return None
         else:
             save_payload = transfer_manager.request_payload.pop(request_id)
@@ -148,6 +154,7 @@ def thinker2talker_async_chunk(
             # When prefilling a chunked thinker, thinker_hidden_states needs to be updated.
             talker_additional_info["thinker_prefill_embeddings"] = pooling_output.get("0").detach().cpu()
             talker_additional_info["thinker_hidden_states"] = pooling_output.get("24").detach().cpu()
+    _perf.record("thinker2talker_async_chunk", (time.monotonic() - t_start) * 1000)
     return talker_additional_info
 
 
@@ -224,6 +231,8 @@ def talker2code2wav_async_chunk(
     """
     Pooling version.
     """
+    t_start = time.monotonic()
+
     if "code_predictor_codes" not in pooling_output:
         return None
 
@@ -280,6 +289,7 @@ def talker2code2wav_async_chunk(
         "left_context_size": left_context_size,
         "finished": torch.tensor(is_finished, dtype=torch.bool),
     }
+    _perf.record("talker2code2wav_async_chunk(qwen3_omni)", (time.monotonic() - t_start) * 1000)
     return info
 
 

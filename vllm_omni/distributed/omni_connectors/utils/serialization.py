@@ -319,16 +319,30 @@ class OmniSerde:
     """Serialization/deserialization handler for Omni IPC."""
 
     def __init__(self):
+        import time
+
         self.encoder = OmniMsgpackEncoder()
         self.decoder = OmniMsgpackDecoder()
+        self._time = time
+        from .perf_logging import PerfTracker
+
+        self._perf = PerfTracker.get("serialization")
 
     def serialize(self, obj: Any) -> bytes:
         """Serialize an object to bytes."""
-        return self.encoder.encode(obj)
+        t0 = self._time.monotonic()
+        result = self.encoder.encode(obj)
+        self._perf.record("serialize", (self._time.monotonic() - t0) * 1000)
+        self._perf.record("serialize_bytes", len(result))
+        return result
 
     def deserialize(self, data: bytes | bytearray | memoryview) -> Any:
         """Deserialize bytes to an object."""
-        return self.decoder.decode(data)
+        t0 = self._time.monotonic()
+        result = self.decoder.decode(data)
+        self._perf.record("deserialize", (self._time.monotonic() - t0) * 1000)
+        self._perf.record("deserialize_bytes", len(data))
+        return result
 
 
 # Global instance for simple interface
