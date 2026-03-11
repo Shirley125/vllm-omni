@@ -11,10 +11,7 @@ from torch import nn
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
-from vllm.model_executor.models.interfaces import SupportsMRoPE, SupportsMultiModal, SupportsPP
-from vllm.model_executor.models.qwen3_omni_moe_thinker import (
-    Qwen3OmniMoeConditionalGenerationMixin,
-)
+from vllm.model_executor.models.interfaces import IsHybrid, SupportsMRoPE, SupportsMultiModal, SupportsPP
 from vllm.model_executor.models.utils import init_vllm_registered_model, maybe_prefix
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import MultiModalFeatureSpec
@@ -25,11 +22,11 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm_omni.model_executor.custom_process_mixin import CustomProcessMixin
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 from vllm_omni.model_executor.models.qwen3_5_omni.qwen3_5_omni_thinker import (
+    Qwen3_5OmniConditionalGenerationMixin,
+    Qwen3_5OmniThinkerDummyInputsBuilder,
+    Qwen3_5OmniThinkerForConditionalGeneration,
+    Qwen3_5OmniThinkerMultiModalProcessor,
     Qwen3_5OmniThinkerProcessingInfo,
-)
-from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni_moe_thinker import (
-    Qwen3OmniMoeThinkerDummyInputsBuilder,
-    Qwen3OmniMoeThinkerMultiModalProcessor,
 )
 from vllm_omni.model_executor.models.utils import add_prefix_to_loaded_weights
 from vllm_omni.transformers_utils.configs.configuration_qwen3_5_omni import (
@@ -43,14 +40,32 @@ logger = init_logger(__name__)
 
 
 @MULTIMODAL_REGISTRY.register_processor(
-    Qwen3OmniMoeThinkerMultiModalProcessor,
+    Qwen3_5OmniThinkerMultiModalProcessor,
     info=Qwen3_5OmniThinkerProcessingInfo,
-    dummy_inputs=Qwen3OmniMoeThinkerDummyInputsBuilder,
+    dummy_inputs=Qwen3_5OmniThinkerDummyInputsBuilder,
 )
 class Qwen3_5OmniForConditionalGeneration(
-    nn.Module, SupportsMultiModal, SupportsPP, Qwen3OmniMoeConditionalGenerationMixin, CustomProcessMixin, SupportsMRoPE
+    nn.Module,
+    SupportsMultiModal,
+    SupportsPP,
+    Qwen3_5OmniConditionalGenerationMixin,
+    CustomProcessMixin,
+    SupportsMRoPE,
+    IsHybrid,
 ):
     config_class = Qwen3_5OmniConfig
+
+    @classmethod
+    def get_mamba_state_dtype_from_config(cls, vllm_config: VllmConfig):
+        return Qwen3_5OmniThinkerForConditionalGeneration.get_mamba_state_dtype_from_config(vllm_config)
+
+    @classmethod
+    def get_mamba_state_shape_from_config(cls, vllm_config: VllmConfig):
+        return Qwen3_5OmniThinkerForConditionalGeneration.get_mamba_state_shape_from_config(vllm_config)
+
+    @classmethod
+    def get_mamba_state_copy_func(cls):
+        return Qwen3_5OmniThinkerForConditionalGeneration.get_mamba_state_copy_func()
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -374,7 +389,7 @@ class Qwen3_5OmniForConditionalGeneration(
                 }
 
             # Run thinker
-            text_hidden_states, captured_layer_dict = self.thinker(
+            thinker_output = self.thinker(
                 input_ids=input_ids,
                 positions=positions,
                 intermediate_tensors=intermediate_tensors,
@@ -382,6 +397,11 @@ class Qwen3_5OmniForConditionalGeneration(
                 **capture_kwargs,
                 **kwargs,
             )
+            if isinstance(thinker_output, tuple):
+                text_hidden_states, captured_layer_dict = thinker_output
+            else:
+                text_hidden_states = thinker_output
+                captured_layer_dict = {}
             return text_hidden_states, captured_layer_dict
         # ========== Stage 2.1: Talker ==========
         elif self.model_stage == "talker":

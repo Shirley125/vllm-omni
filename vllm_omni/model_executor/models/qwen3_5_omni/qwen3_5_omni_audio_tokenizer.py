@@ -40,7 +40,7 @@ from vllm.model_executor.models.utils import (  # type: ignore
     WeightsMapper,
 )
 
-from vllm_omni.model_executor.models.qwen3_5_omni.qwen3_5_omni_thinker import (
+from vllm_omni.model_executor.models.qwen3_5_omni.qwen3_5_omni_talker import (
     apply_rotary_pos_emb,
     repeat_kv,
 )

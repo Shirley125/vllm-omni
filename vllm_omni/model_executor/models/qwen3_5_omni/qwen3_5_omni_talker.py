@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,25 +21,43 @@ from transformers.processing_utils import Unpack
 from transformers.utils.generic import (
     TransformersKwargs,
 )
+from vllm.compilation.decorators import support_torch_compile
+from vllm.config import (
+    VllmConfig,
+)
+from vllm.distributed import (
+    get_pp_group,
+)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.layernorm import (
     GemmaRMSNorm as Qwen3_5OmniRMSNorm,
 )
+from vllm.model_executor.layers.layernorm import (
+    GemmaRMSNorm as Qwen3_5RMSNorm,
+)
+from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.rotary_embedding import get_rope
+from vllm.model_executor.layers.vocab_parallel_embedding import (
+    VocabParallelEmbedding,
+)
 from vllm.model_executor.models.interfaces import (
+    HasInnerState,
     MultiModalEmbeddings,
+    SupportsLoRA,
     SupportsPP,
 )
-from vllm.model_executor.models.qwen3_omni_moe_thinker import (
-    Qwen3OmniMoeConditionalGenerationMixin,
-)
+from vllm.model_executor.models.qwen3_5 import Qwen3_5DecoderLayer, Qwen3_5Model
 from vllm.model_executor.models.qwen3_vl import (
     Qwen3_VisionTransformer,
     Qwen3VLForConditionalGeneration,
 )
 from vllm.model_executor.models.utils import (  # type: ignore
     AutoWeightsLoader,
+    PPMissingLayer,
     WeightsMapper,
+    extract_layer_index,
+    make_empty_intermediate_tensors_factory,
+    make_layers,
     maybe_prefix,
 )
 from vllm.multimodal import MULTIMODAL_REGISTRY
@@ -47,14 +65,10 @@ from vllm.sequence import IntermediateTensors
 
 from vllm_omni.model_executor.models.qwen3_5_omni.qwen3_5_omni_thinker import (
     Qwen3_5OmniAudioEncoder,
-    Qwen3_5OmniForCausalLM,
+    Qwen3_5OmniConditionalGenerationMixin,
+    Qwen3_5OmniThinkerDummyInputsBuilder,
+    Qwen3_5OmniThinkerMultiModalProcessor,
     Qwen3_5OmniThinkerProcessingInfo,
-    apply_rotary_pos_emb,
-    eager_attention_forward,
-)
-from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni_moe_thinker import (
-    Qwen3OmniMoeThinkerDummyInputsBuilder,
-    Qwen3OmniMoeThinkerMultiModalProcessor,
 )
 from vllm_omni.transformers_utils.configs.configuration_qwen3_5_omni import (
     Qwen3_5OmniTalkerCodePredictorConfig,
@@ -68,6 +82,90 @@ except (ImportError, ModuleNotFoundError):
 
 
 logger = init_logger(__name__)
+
+
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+    """
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+
+def eager_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs,
+):
+    key_states = repeat_kv(key, module.num_key_value_groups)
+    value_states = repeat_kv(value, module.num_key_value_groups)
+
+    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    if attention_mask is not None:
+        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_weights = attn_weights + causal_mask
+
+    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
+    attn_output = torch.matmul(attn_weights, value_states)
+    attn_output = attn_output.transpose(1, 2).contiguous()
+
+    return attn_output, attn_weights
+
+
+def rotate_half(x):
+    """Rotates half the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+# Adapted from transformers.models.glm.modular_glm.apply_rotary_pos_emb
+def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
+    """Applies Rotary Position Embedding to the query and key tensors.
+
+    Removes the interleaving of cos and sin from GLM
+
+    Args:
+        q (`torch.Tensor`): The query tensor.
+        k (`torch.Tensor`): The key tensor.
+        cos (`torch.Tensor`): The cosine part of the rotary embedding.
+        sin (`torch.Tensor`): The sine part of the rotary embedding.
+        unsqueeze_dim (`int`, *optional*, defaults to 1):
+            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+    Returns:
+        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
+    """
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+
+    # Keep half or full tensor for later concatenation
+    rotary_dim = cos.shape[-1]
+    q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]
+    k_rot, k_pass = k[..., :rotary_dim], k[..., rotary_dim:]
+
+    # Apply rotary embeddings on the first half or full tensor
+    q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)
+    k_embed = (k_rot * cos) + (rotate_half(k_rot) * sin)
+
+    # Concatenate back to full shape
+    q_embed = torch.cat([q_embed, q_pass], dim=-1)
+    k_embed = torch.cat([k_embed, k_pass], dim=-1)
+    return q_embed, k_embed
 
 
 @dataclass
@@ -325,13 +423,6 @@ class Qwen3_5OmniTalkerCodePredictorModel(nn.Module):
         return self.codec_embedding
 
 
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
-
-
 class Qwen3_5OmniTalkerCodePredictorAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -517,34 +608,142 @@ class Qwen3_5OmniTalkerTextTopKRouter(nn.Module):
         return router_logits, router_scores, router_indices
 
 
-class Qwen3_5OmniModel(Qwen3_5OmniForCausalLM):
-    """
-    Qwen3 Omni MoE Talker language model.
+@support_torch_compile(
+    dynamic_arg_dims={
+        "input_ids": 0,
+        # positions is of shape (3, seq_len) if mrope is enabled for qwen2-vl,
+        # otherwise (seq_len, ).
+        "positions": -1,
+        "intermediate_tensors": 0,
+        "inputs_embeds": 0,
+    }
+)
+class Qwen3_5OmniModel(Qwen3_5Model):
+    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+        nn.Module.__init__(self)
 
-    Extends Qwen3MoeLLMForCausalLM (which already uses SharedFusedMoE with
-    shared-expert support) and replaces the text embedding / LM head with a
-    codec embedding so the talker operates over audio-codec tokens instead
-    of text tokens.
-    """
+        config = vllm_config.model_config.hf_text_config
+        parallel_config = vllm_config.parallel_config
+        eplb_config = parallel_config.eplb_config
+        self.num_redundant_experts = eplb_config.num_redundant_experts
+        self.config = config
+        self.vocab_size = config.vocab_size
+        self.embed_tokens = VocabParallelEmbedding(
+            config.text_vocab_size,
+            config.hidden_size,
+        )
+
+        vllm_config.model_config.hf_text_config.model_type = "qwen3_5_omni_text"
+
+        def get_layer(prefix: str):
+            return Qwen3_5DecoderLayer(
+                vllm_config,
+                layer_type=config.layer_types[extract_layer_index(prefix)],
+                prefix=prefix,
+            )
+
+        self.start_layer, self.end_layer, self.layers = make_layers(
+            config.num_hidden_layers, get_layer, prefix=f"{prefix}.layers"
+        )
+        self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
+            ["hidden_states", "residual"], config.hidden_size
+        )
+
+        if get_pp_group().is_last_rank:
+            self.norm = Qwen3_5RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        else:
+            self.norm = PPMissingLayer()
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        intermediate_tensors: IntermediateTensors | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        capture_layer_indices: Sequence[int] | None = None,
+        return_hidden_states: bool = False,
+        deepstack_input_embeds: IntermediateTensors | None = None,
+    ) -> torch.Tensor | IntermediateTensors:
+        if get_pp_group().is_first_rank:
+            if inputs_embeds is not None:
+                hidden_states = inputs_embeds
+            else:
+                hidden_states = self.embed_input_ids(input_ids)
+            residual = None
+        else:
+            assert intermediate_tensors is not None
+            hidden_states = intermediate_tensors["hidden_states"]
+            residual = intermediate_tensors["residual"]
+        capture_set = set(capture_layer_indices) if capture_layer_indices else None
+        captured_hidden_states: dict[str, torch.Tensor] | None = {} if return_hidden_states else None
+
+        for layer_idx, layer in enumerate(self.layers[self.start_layer : self.end_layer]):
+            layer_idx = layer_idx + self.start_layer
+
+            if captured_hidden_states is not None and capture_set is not None:
+                if layer_idx in capture_set:
+                    captured_hidden_states[str(layer_idx)] = hidden_states.clone().view(-1, hidden_states.shape[-1])
+
+            hidden_states, residual = layer(
+                positions=positions,
+                hidden_states=hidden_states,
+                residual=residual,
+            )
+
+            if deepstack_input_embeds is not None and layer_idx in range(0, len(deepstack_input_embeds)):
+                hidden_states = hidden_states + deepstack_input_embeds[f"deepstack_input_embeds_{layer_idx}"]
+
+        if not get_pp_group().is_last_rank:
+            return IntermediateTensors({"hidden_states": hidden_states, "residual": residual})
+        hidden_states, _ = self.norm(hidden_states, residual)
+        if captured_hidden_states is not None:
+            return hidden_states, captured_hidden_states
+        else:
+            return hidden_states, None
+
+
+class Qwen3_5OmniTalkerModel(
+    nn.Module,
+    HasInnerState,
+    SupportsLoRA,
+    SupportsPP,
+):
+    packed_modules_mapping = {
+        "qkv_proj": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+        ],
+        "gate_up_proj": ["gate_proj", "up_proj"],
+        # GDN fused projections.
+        "in_proj_qkvz": ["in_proj_qkv", "in_proj_z"],
+        "in_proj_ba": ["in_proj_b", "in_proj_a"],
+    }
 
     def __init__(self, vllm_config, prefix: str):
-        # Create a vllm_config for the talker's text model
-        super().__init__(
-            vllm_config=vllm_config,
-            prefix=prefix,
-        )
+        config = vllm_config.model_config.hf_text_config
         self.vllm_config = vllm_config
-        self.config = vllm_config.model_config.hf_config
+        self.model_config = vllm_config.model_config
+        cache_config = vllm_config.cache_config
 
-        # Remove the inherited LM head so the talker only exposes codec outputs.
-        if hasattr(self, "lm_head"):
-            del self.lm_head
+        scheduler_config = vllm_config.scheduler_config
+        if cache_config.mamba_cache_mode == "all":
+            raise NotImplementedError(
+                "Qwen3.5 currently does not support 'all' prefix caching, please use '--mamba-cache-mode=align' instead"
+            )
+        self.quant_config = vllm_config.quant_config
 
+        super().__init__()
+        self.config = config
+        self.scheduler_config = scheduler_config
+        self.model = Qwen3_5OmniModel(vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model"))
         # Codec embedding for RVQ code generation
         self.model.codec_embedding = nn.Embedding(
             self.config.vocab_size,
             self.config.hidden_size,
         )
+        self.logits_processor = LogitsProcessor(config.vocab_size)
+        self.make_empty_intermediate_tensors = self.model.make_empty_intermediate_tensors
 
     def embed_input_ids(
         self,
@@ -553,18 +752,42 @@ class Qwen3_5OmniModel(Qwen3_5OmniForCausalLM):
         """Embed codec input IDs."""
         return self.model.codec_embedding(input_ids)
 
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        intermediate_tensors: IntermediateTensors | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        **kwargs: object,
+    ):
+        hidden_states = self.model(input_ids, positions, intermediate_tensors, inputs_embeds)
+
+        return hidden_states
+
+    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor | None:
+        return self.logits_processor(self.lm_head, hidden_states)
+
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        loader = AutoWeightsLoader(
+            self,
+            skip_prefixes=["mtp."],
+        )
+        return loader.load_weights(weights)
+
 
 @MULTIMODAL_REGISTRY.register_processor(
-    Qwen3OmniMoeThinkerMultiModalProcessor,
+    Qwen3_5OmniThinkerMultiModalProcessor,
     info=Qwen3_5OmniThinkerProcessingInfo,
-    dummy_inputs=Qwen3OmniMoeThinkerDummyInputsBuilder,
+    dummy_inputs=Qwen3_5OmniThinkerDummyInputsBuilder,
 )
 class Qwen3_5OmniTalkerForConditionalGeneration(
     Qwen3VLForConditionalGeneration,
     nn.Module,
-    # SupportsMultiModal,
     SupportsPP,
-    Qwen3OmniMoeConditionalGenerationMixin,
+    Qwen3_5OmniConditionalGenerationMixin,
 ):
     _tied_weights_keys = {"codec_head": "model.codec_embedding.weight"}
     _tp_plan = {"codec_head": "colwise_gather_output"}
@@ -612,8 +835,8 @@ class Qwen3_5OmniTalkerForConditionalGeneration(
         self.code_predictor = Qwen3_5OmniTalkerCodePredictorModelForConditionalGeneration(
             config=config.code_predictor_config
         )
-        self.language_model = Qwen3_5OmniModel(
-            vllm_config=vllm_config.with_hf_config(config.text_config, architectures=["Qwen3_5OmniModel"]),
+        self.language_model = Qwen3_5OmniTalkerModel(
+            vllm_config=vllm_config.with_hf_config(config.text_config, architectures=["Qwen3_5OmniTalkerModel"]),
             prefix=maybe_prefix(prefix, "language_model"),
         )
         self.rope_deltas = None
