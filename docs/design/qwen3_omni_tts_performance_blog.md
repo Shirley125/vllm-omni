@@ -30,10 +30,16 @@ Compared with **HF Transformers** (offline, single request), vLLM-Omni with the 
 **Qwen3-Omni** (A100):
 
 <table><tr>
-<td><img src="figures/omni/E2EL_s_vllm_omni_vs_transformers.png" alt="Omni E2EL: vLLM-Omni vs HF" width="100%"/></td>
-<td><img src="figures/omni/TTFP_s_vllm_omni_vs_transformers.png" alt="Omni TTFP: vLLM-Omni vs HF" width="100%"/></td>
-<td><img src="figures/omni/RTF_vllm_omni_vs_transformers.png" alt="Omni RTF: vLLM-Omni vs HF" width="100%"/></td>
+<td><img src="figures/omni/E2EL_s_vllm_omni_vs_transformers.png" alt="Qwen3-Omni E2EL: vLLM vs HF" width="100%"/></td>
+<td><img src="figures/omni/TTFP_s_vllm_omni_vs_transformers.png" alt="Qwen3-Omni TTFP: vLLM vs HF" width="100%"/></td>
+<td><img src="figures/omni/RTF_vllm_omni_vs_transformers.png" alt="Qwen3-Omni RTF: vLLM vs HF" width="100%"/></td>
 </tr></table>
+
+| Metric | vLLM-Omni | HF Transformers | Improvement |
+| --- | --- | --- | --- |
+| E2E latency (s) | 23.78 | 336.10 | ~93% reduction |
+| TTFP (s) | 0.934 | 336.10 | ~99.7% reduction |
+| RTF | 0.32 | 3.776 | ~91% reduction (~12× faster) |
 
 - **E2E latency**: 23.78 s vs 336.10 s - **~93%** reduction
 - **TTFP**: 0.934 s vs 336.10 s - **~99.7%** reduction
@@ -42,10 +48,16 @@ Compared with **HF Transformers** (offline, single request), vLLM-Omni with the 
 **Qwen3-TTS** (H200, concurrency 1):
 
 <table><tr>
-<td><img src="figures/tts/Mean_E2EL_(ms)_vllm_omni_vs_transformers.png" alt="TTS E2EL: vLLM-Omni vs HF" width="100%"/></td>
-<td><img src="figures/tts/Mean_AUDIO_TTFP_(ms)_vllm_omni_vs_transformers.png" alt="TTS TTFP: vLLM-Omni vs HF" width="100%"/></td>
-<td><img src="figures/tts/Mean_AUDIO_RTF_vllm_omni_vs_transformers.png" alt="TTS RTF: vLLM-Omni vs HF" width="100%"/></td>
+<td><img src="figures/tts/Mean_E2EL_(ms)_vllm_omni_vs_transformers.png" alt="Qwen3-TTS E2EL: vLLM vs HF" width="100%"/></td>
+<td><img src="figures/tts/Mean_AUDIO_TTFP_(ms)_vllm_omni_vs_transformers.png" alt="Qwen3-TTS TTFP: vLLM vs HF" width="100%"/></td>
+<td><img src="figures/tts/Mean_AUDIO_RTF_vllm_omni_vs_transformers.png" alt="Qwen3-TTS RTF: vLLM vs HF" width="100%"/></td>
 </tr></table>
+
+| Metric | vLLM-Omni | HF Transformers | Improvement |
+| --- | --- | --- | --- |
+| E2E latency (s) | 2.08 | 15.51 | ~87% reduction |
+| TTFP (ms) | 97 | 15,513 | ~99.4% reduction (160× faster) |
+| RTF | 0.34 | 2.64 | ~87% reduction (~7.8× faster) |
 
 - **E2E latency**: 2.08 s vs 15.51 s - **~87%** reduction
 - **TTFP**: 97 ms vs 15,513 ms - **~99.4%** reduction (160x faster)
@@ -58,9 +70,9 @@ Each optimization stacks on the previous one. The summary plots below show the c
 **Qwen3-Omni** (A100):
 
 <table><tr>
-<td><img src="figures/omni/Summary_E2EL_ms_vs_features.png" alt="Omni E2EL summary" width="100%"/></td>
-<td><img src="figures/omni/Summary_TTFP_ms_vs_features.png" alt="Omni TTFP summary" width="100%"/></td>
-<td><img src="figures/omni/Summary_RTF_vs_features.png" alt="Omni RTF summary" width="100%"/></td>
+<td><img src="figures/omni/Summary_E2EL_ms_vs_features.png" alt="Qwen3-Omni E2EL: stacked optimization" width="100%"/></td>
+<td><img src="figures/omni/Summary_TTFP_ms_vs_features.png" alt="Qwen3-Omni TTFP: stacked optimization" width="100%"/></td>
+<td><img src="figures/omni/Summary_RTF_vs_features.png" alt="Qwen3-Omni RTF: stacked optimization" width="100%"/></td>
 </tr></table>
 
 - **E2EL reduction**: ~91% at concurrency 10 (1,523,135 ms -> 130,682 ms); ~81% at concurrency 1 (325,865 ms -> 60,436 ms)
@@ -70,9 +82,9 @@ Each optimization stacks on the previous one. The summary plots below show the c
 **Qwen3-TTS** (H200):
 
 <table><tr>
-<td><img src="figures/tts/Summary_mean_e2e_ms_vs_features.png" alt="TTS E2EL summary" width="100%"/></td>
-<td><img src="figures/tts/Summary_mean_ttfp_ms_vs_features.png" alt="TTS TTFP summary" width="100%"/></td>
-<td><img src="figures/tts/Summary_mean_rtf_vs_features.png" alt="TTS RTF summary" width="100%"/></td>
+<td><img src="figures/tts/Summary_mean_e2e_ms_vs_features.png" alt="Qwen3-TTS E2EL: stacked optimization" width="100%"/></td>
+<td><img src="figures/tts/Summary_mean_ttfp_ms_vs_features.png" alt="Qwen3-TTS TTFP: stacked optimization" width="100%"/></td>
+<td><img src="figures/tts/Summary_mean_rtf_vs_features.png" alt="Qwen3-TTS RTF: stacked optimization" width="100%"/></td>
 </tr></table>
 
 - **E2EL reduction**: ~89% at concurrency 10 (44,543 ms -> 4,971 ms); ~56% at concurrency 1 (4,714 ms -> 2,082 ms)
@@ -86,7 +98,7 @@ Each optimization stacks on the previous one. The summary plots below show the c
 | **GPU** | A100 | H200 |
 | **Model** | Qwen3-Omni-30B-A3B-Instruct | Qwen3-TTS-12Hz-1.7B-CustomVoice |
 | **vLLM** | v0.16.0 | v0.16.0 |
-| **vllm-omni** | commit 070ea0dd | commit TODO |
+| **vllm-omni** | commit 070ea0dd | commit 3bc89de0 |
 | **CUDA** | 12.8 | 12.8 |
 
 This post walks through each optimization in the same order they are typically enabled in practice, then ends with deployment playbooks for both models.
@@ -112,30 +124,42 @@ Batching alone greatly reduces E2EL and RTF across all concurrencies. The bigges
 **Qwen3-Omni** (A100):
 
 <table><tr>
-<td><img src="figures/omni/Mean_E2EL_ms_Baseline_vs_Batch.png" alt="Omni E2EL: Baseline vs Batch" width="100%"/></td>
-<td><img src="figures/omni/Mean_AUDIO_TTFP_ms_Baseline_vs_Batch.png" alt="Omni TTFP: Baseline vs Batch" width="100%"/></td>
-<td><img src="figures/omni/Mean_AUDIO_RTF_Baseline_vs_Batch.png" alt="Omni RTF: Baseline vs Batch" width="100%"/></td>
+<td><img src="figures/omni/Mean_E2EL_ms_Baseline_vs_Batch.png" alt="Qwen3-Omni E2EL: Baseline vs Batch" width="100%"/></td>
+<td><img src="figures/omni/Mean_AUDIO_TTFP_ms_Baseline_vs_Batch.png" alt="Qwen3-Omni TTFP: Baseline vs Batch" width="100%"/></td>
+<td><img src="figures/omni/Mean_AUDIO_RTF_Baseline_vs_Batch.png" alt="Qwen3-Omni RTF: Baseline vs Batch" width="100%"/></td>
 </tr></table>
+
+| Metric | Concurrency | Baseline | + Batch | Improvement |
+| --- | --- | --- | --- | --- |
+| E2EL (ms) | 1 | 325,865 | 238,556 | 1.4× |
+| E2EL (ms) | 4 | 988,039 | 259,586 | 3.8× |
+| E2EL (ms) | 10 | 1,523,135 | 262,400 | 5.8× |
+| TTFP (ms) | 1 | 325,517 | 238,257 | 1.4× |
+| TTFP (ms) | 4 | 987,669 | 259,286 | 3.8× |
+| TTFP (ms) | 10 | 1,522,792 | 262,086 | 5.8× |
+| RTF | 1 | 3.78 | 0.32 | ~12× |
+| RTF | 4 | 3.78 | 0.46 | ~8× |
+| RTF | 10 | 3.78 | 0.88 | ~4× |
 
 At concurrency 10, E2EL drops from ~1,523 s to ~262 s; at concurrency 1, from ~326 s to ~239 s.
 
 **Qwen3-TTS** (H200):
 
 <table><tr>
-<td><img src="figures/tts/Mean_mean_e2e_ms_baseline_vs_batch.png" alt="TTS E2EL: Baseline vs Batch" width="100%"/></td>
-<td><img src="figures/tts/Mean_mean_ttfp_ms_baseline_vs_batch.png" alt="TTS TTFP: Baseline vs Batch" width="100%"/></td>
-<td><img src="figures/tts/Mean_mean_rtf_baseline_vs_batch.png" alt="TTS RTF: Baseline vs Batch" width="100%"/></td>
+<td><img src="figures/tts/Mean_mean_e2e_ms_baseline_vs_batch.png" alt="Qwen3-TTS E2EL: Baseline vs Batch" width="100%"/></td>
+<td><img src="figures/tts/Mean_mean_ttfp_ms_baseline_vs_batch.png" alt="Qwen3-TTS TTFP: Baseline vs Batch" width="100%"/></td>
+<td><img src="figures/tts/Mean_mean_rtf_baseline_vs_batch.png" alt="Qwen3-TTS RTF: Baseline vs Batch" width="100%"/></td>
 </tr></table>
 
 | Metric | Concurrency | Baseline | + Batch | Improvement |
 | --- | --- | --- | --- | --- |
-| E2EL (ms) | 1 | 4,714 | 2,531 | 1.9x |
-| E2EL (ms) | 4 | 18,258 | 2,847 | 6.4x |
-| E2EL (ms) | 10 | 44,543 | 4,920 | 9.1x |
-| RTF | 1 | 0.851 | 0.434 | 2.0x |
-| RTF | 4 | 3.205 | 0.492 | 6.5x |
-| RTF | 10 | 8.152 | 0.871 | 9.4x |
-| Throughput | 10 | 1.25x | 10.35x | 8.3x |
+| E2EL (ms) | 1 | 4,714 | 2,531 | 1.9× |
+| E2EL (ms) | 4 | 18,258 | 2,847 | 6.4× |
+| E2EL (ms) | 10 | 44,543 | 4,920 | 9.1× |
+| RTF | 1 | 0.851 | 0.434 | 2.0× |
+| RTF | 4 | 3.205 | 0.492 | 6.5× |
+| RTF | 10 | 8.152 | 0.871 | 9.4× |
+| Throughput | 10 | 1.25× | 10.35× | 8.3× |
 
 At concurrency 10, batching alone brings Qwen3-TTS RTF from 8.15 (far from realtime) down to 0.87 (faster than realtime), and throughput from 1.25x to 10.35x.
 
@@ -154,10 +178,22 @@ In stage configs, this is represented by `enforce_eager: false` for stages where
 **Qwen3-Omni** (A100):
 
 <table><tr>
-<td><img src="figures/omni/Mean_E2EL_ms_Batch_vs_Batch_CUDA_Graph.png" alt="Omni E2EL: Batch vs +CG" width="100%"/></td>
-<td><img src="figures/omni/Mean_AUDIO_TTFP_ms_Batch_vs_Batch_CUDA_Graph.png" alt="Omni TTFP: Batch vs +CG" width="100%"/></td>
-<td><img src="figures/omni/Mean_AUDIO_RTF_Batch_vs_Batch_CUDA_Graph.png" alt="Omni RTF: Batch vs +CG" width="100%"/></td>
+<td><img src="figures/omni/Mean_E2EL_ms_Batch_vs_Batch_CUDA_Graph.png" alt="Qwen3-Omni E2EL: Batch vs CUDA Graph" width="100%"/></td>
+<td><img src="figures/omni/Mean_AUDIO_TTFP_ms_Batch_vs_Batch_CUDA_Graph.png" alt="Qwen3-Omni TTFP: Batch vs CUDA Graph" width="100%"/></td>
+<td><img src="figures/omni/Mean_AUDIO_RTF_Batch_vs_Batch_CUDA_Graph.png" alt="Qwen3-Omni RTF: Batch vs CUDA Graph" width="100%"/></td>
 </tr></table>
+
+| Metric | Concurrency | Batch | + CUDA Graph | Improvement |
+| --- | --- | --- | --- | --- |
+| E2EL (ms) | 1 | 238,556 | 67,381 | 3.5× |
+| E2EL (ms) | 4 | 259,586 | 98,981 | 2.6× |
+| E2EL (ms) | 10 | 262,400 | 153,352 | 1.7× |
+| TTFP (ms) | 1 | 238,257 | 67,121 | 3.5× |
+| TTFP (ms) | 4 | 259,286 | 98,679 | 2.6× |
+| TTFP (ms) | 10 | 262,086 | 152,792 | 1.7× |
+| RTF | 1 | 0.32 | 0.43 | — |
+| RTF | 4 | 0.46 | 0.46 | — |
+| RTF | 10 | 0.88 | 0.88 | — |
 
 For the larger Qwen3-Omni model (30B-A3B), CUDA Graph provides a significant improvement. At concurrency 1, E2EL drops from ~239 s to ~67 s; at concurrency 10, from ~262 s to ~153 s.
 
@@ -187,30 +223,42 @@ So in practice: streaming output defines *how* bytes are sent to the client; asy
 **Qwen3-Omni** (A100):
 
 <table><tr>
-<td><img src="figures/omni/Mean_E2EL_ms_Batch_CUDA_Graph_vs_Async_Chunk.png" alt="Omni E2EL: +CG vs +Async" width="100%"/></td>
-<td><img src="figures/omni/Mean_AUDIO_TTFP_ms_Batch_CUDA_Graph_vs_Async_Chunk.png" alt="Omni TTFP: +CG vs +Async" width="100%"/></td>
-<td><img src="figures/omni/Mean_AUDIO_RTF_Batch_CUDA_Graph_vs_Async_Chunk.png" alt="Omni RTF: +CG vs +Async" width="100%"/></td>
+<td><img src="figures/omni/Mean_E2EL_ms_Batch_CUDA_Graph_vs_Async_Chunk.png" alt="Qwen3-Omni E2EL: CG vs Async Chunk" width="100%"/></td>
+<td><img src="figures/omni/Mean_AUDIO_TTFP_ms_Batch_CUDA_Graph_vs_Async_Chunk.png" alt="Qwen3-Omni TTFP: CG vs Async Chunk" width="100%"/></td>
+<td><img src="figures/omni/Mean_AUDIO_RTF_Batch_CUDA_Graph_vs_Async_Chunk.png" alt="Qwen3-Omni RTF: CG vs Async Chunk" width="100%"/></td>
 </tr></table>
+
+| Metric | Concurrency | Batch + CG | + Async Chunk | Improvement |
+| --- | --- | --- | --- | --- |
+| E2EL (ms) | 1 | 67,381 | 60,435 | 1.1× |
+| E2EL (ms) | 4 | 98,981 | 90,969 | 1.1× |
+| E2EL (ms) | 10 | 153,352 | 130,682 | 1.2× |
+| TTFP (ms) | 1 | 67,121 | 1,263 | 53× |
+| TTFP (ms) | 4 | 98,679 | 3,175 | 31× |
+| TTFP (ms) | 10 | 152,792 | 12,262 | 12× |
+| RTF | 1 | 0.43 | 0.33 | 1.3× |
+| RTF | 4 | 0.46 | 0.43 | 1.1× |
+| RTF | 10 | 0.88 | 0.74 | 1.2× |
 
 Enabling both brings TTFP down sharply (concurrency 1: 67,121 ms -> 1,263 ms, **~98% reduction**; concurrency 4: 98,679 ms -> 3,175 ms, **~97% reduction**). E2EL and RTF also improve at every concurrency.
 
 **Qwen3-TTS** (H200):
 
 <table><tr>
-<td><img src="figures/tts/Mean_mean_e2e_ms_cuda_graph_vs_async_chunk.png" alt="TTS E2EL: +CG vs +Async" width="100%"/></td>
-<td><img src="figures/tts/Mean_mean_ttfp_ms_cuda_graph_vs_async_chunk.png" alt="TTS TTFP: +CG vs +Async" width="100%"/></td>
-<td><img src="figures/tts/Mean_mean_rtf_cuda_graph_vs_async_chunk.png" alt="TTS RTF: +CG vs +Async" width="100%"/></td>
+<td><img src="figures/tts/Mean_mean_e2e_ms_cuda_graph_vs_async_chunk.png" alt="Qwen3-TTS E2EL: CG vs Async Chunk" width="100%"/></td>
+<td><img src="figures/tts/Mean_mean_ttfp_ms_cuda_graph_vs_async_chunk.png" alt="Qwen3-TTS TTFP: CG vs Async Chunk" width="100%"/></td>
+<td><img src="figures/tts/Mean_mean_rtf_cuda_graph_vs_async_chunk.png" alt="Qwen3-TTS RTF: CG vs Async Chunk" width="100%"/></td>
 </tr></table>
 
 | Metric | Concurrency | Batch + CG | + Async Chunk | Improvement |
 | --- | --- | --- | --- | --- |
-| TTFP (ms) | 1 | 2,335 | **97** | **24.1x** |
-| TTFP (ms) | 4 | 3,975 | **254** | **15.7x** |
-| TTFP (ms) | 10 | 7,743 | **1,383** | **5.6x** |
-| E2EL (ms) | 1 | 2,335 | 2,082 | 1.1x |
-| E2EL (ms) | 10 | 7,743 | 4,971 | 1.6x |
-| RTF | 1 | 0.407 | 0.340 | 1.2x |
-| RTF | 10 | 1.403 | 0.898 | 1.6x |
+| TTFP (ms) | 1 | 2,335 | **97** | **24.1×** |
+| TTFP (ms) | 4 | 3,975 | **254** | **15.7×** |
+| TTFP (ms) | 10 | 7,743 | **1,383** | **5.6×** |
+| E2EL (ms) | 1 | 2,335 | 2,082 | 1.1× |
+| E2EL (ms) | 10 | 7,743 | 4,971 | 1.6× |
+| RTF | 1 | 0.407 | 0.340 | 1.2× |
+| RTF | 10 | 1.403 | 0.898 | 1.6× |
 
 The TTFP improvement is the headline result for both models. For Qwen3-TTS at concurrency 1, users hear the first audio in **97 ms** instead of 2,335 ms - a **24x reduction**. For Qwen3-Omni at concurrency 1, TTFP drops from 67 s to 1.3 s - a **53x reduction**.
 
