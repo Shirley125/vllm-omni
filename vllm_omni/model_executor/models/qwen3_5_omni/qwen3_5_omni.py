@@ -897,27 +897,29 @@ class Qwen3_5OmniForConditionalGeneration(
         self, codes: torch.Tensor, chunk_size: int = 300, left_context_size: int = 25,
             seq_token_counts: list[int] | None = None,
     ) -> list[torch.Tensor]:
-        # TODO: same as chunked_decode in qwen3_omni_code2wav
-        wavs = []
+        batch_size = codes.shape[0]
+        per_request_wavs: list[list[torch.Tensor]] = [[] for _ in range(batch_size)]
         start_index = 0
         while start_index < codes.shape[-1]:
             end_index = min(start_index + chunk_size, codes.shape[-1])
             context_size = left_context_size if start_index - left_context_size > 0 else start_index
             codes_chunk = codes[..., start_index - context_size : end_index]
-            wav_chunk = self.audio_tokenizer.decode(codes_chunk.transpose(-1, -2)).audio_values[0]
-            wavs.append(wav_chunk[..., context_size * self.audio_tokenizer.decode_upsample_rate :])
+            audio_values = self.audio_tokenizer.decode(codes_chunk.transpose(-1, -2)).audio_values
+            for i, wav in enumerate(audio_values):
+                per_request_wavs[i].append(
+                    wav[..., context_size * self.audio_tokenizer.decode_upsample_rate:]
+                )
             start_index = end_index
 
         if seq_token_counts is not None:
             code_seq_lens = [seq_len // self.config.num_quantizers for seq_len in seq_token_counts]
         else:
-            code_seq_lens = [codes.shape[-1]] * codes.shape[0]
-        batch_wav = torch.cat(wavs, dim=-1)
-        wavs = []
-        for idx, code_seq_len in enumerate(code_seq_lens):
-            wav_chunk = batch_wav[idx, :, : code_seq_len * self.total_upsample]
-            wavs.append(wav_chunk)
-        return wavs
+            code_seq_lens = [codes.shape[-1]] * batch_size
+        result = []
+        for i in range(batch_size):
+            full_wav = torch.cat(per_request_wavs[i], dim=-1)
+            result.append(full_wav[: code_seq_lens[i] * self.audio_tokenizer.decode_upsample_rate])
+        return result
 
     def _warn_talker_sampling_temperature(self, sampling_metadata: SamplingMetadata):
         warning_parts = []
