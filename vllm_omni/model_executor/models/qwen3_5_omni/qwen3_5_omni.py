@@ -458,7 +458,7 @@ class Qwen3_5OmniForConditionalGeneration(
                     ]
                 )
                 codes = input_ids_flatten.reshape(1, 16, -1)
-            wav = self.generate_wav_from_codes(codes=codes)
+            wav = self.generate_wav_from_codes(codes=codes, seq_token_counts=seq_token_counts)
             return wav
 
     def _get_tts_embed(self, thinker_embed, tts_bos_thinker, tts_eos_thinker, tts_pad_thinker):
@@ -894,8 +894,10 @@ class Qwen3_5OmniForConditionalGeneration(
 
     @torch.inference_mode()
     def generate_wav_from_codes(
-        self, codes: torch.Tensor, chunk_size: int = 300, left_context_size: int = 25
-    ) -> torch.Tensor:
+        self, codes: torch.Tensor, chunk_size: int = 300, left_context_size: int = 25,
+            seq_token_counts: list[int] | None = None,
+    ) -> list[torch.Tensor]:
+        # TODO: same as chunked_decode in qwen3_omni_code2wav
         wavs = []
         start_index = 0
         while start_index < codes.shape[-1]:
@@ -905,7 +907,17 @@ class Qwen3_5OmniForConditionalGeneration(
             wav_chunk = self.audio_tokenizer.decode(codes_chunk.transpose(-1, -2)).audio_values[0]
             wavs.append(wav_chunk[..., context_size * self.audio_tokenizer.decode_upsample_rate :])
             start_index = end_index
-        return torch.cat(wavs, dim=-1)
+
+        if seq_token_counts is not None:
+            code_seq_lens = [seq_len // self.config.num_quantizers for seq_len in seq_token_counts]
+        else:
+            code_seq_lens = [codes.shape[-1]] * codes.shape[0]
+        batch_wav = torch.cat(wavs, dim=-1)
+        wavs = []
+        for idx, code_seq_len in enumerate(code_seq_lens):
+            wav_chunk = batch_wav[idx, :, : code_seq_len * self.total_upsample]
+            wavs.append(wav_chunk)
+        return wavs
 
     def _warn_talker_sampling_temperature(self, sampling_metadata: SamplingMetadata):
         warning_parts = []
