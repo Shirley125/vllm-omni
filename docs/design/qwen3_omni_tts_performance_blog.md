@@ -129,17 +129,17 @@ Batching alone greatly reduces E2EL and RTF across all concurrencies. The bigges
 <td><img src="figures/omni/Mean_AUDIO_RTF_Baseline_vs_Batch.png" alt="Qwen3-Omni RTF: Baseline vs Batch" width="100%"/></td>
 </tr></table>
 
-| Metric | Concurrency | Baseline | + Batch | Improvement |
-| --- | --- | --- | --- | --- |
-| E2EL (ms) | 1 | 325,865 | 238,556 | 1.4× |
-| E2EL (ms) | 4 | 988,039 | 259,586 | 3.8× |
+| Metric | Concurrency | Baseline  | + Batch | Improvement |
+| --- | --- |-----------|---------| --- |
+| E2EL (ms) | 1 | 325,865   | 238,556 | 1.4× |
+| E2EL (ms) | 4 | 988,039   | 259,586 | 3.8× |
 | E2EL (ms) | 10 | 1,523,135 | 262,400 | 5.8× |
-| TTFP (ms) | 1 | 325,517 | 238,257 | 1.4× |
-| TTFP (ms) | 4 | 987,669 | 259,286 | 3.8× |
-| TTFP (ms) | 10 | 1,522,792 | 262,086 | 5.8× |
-| RTF | 1 | 3.78 | 0.32 | ~12× |
-| RTF | 4 | 3.78 | 0.46 | ~8× |
-| RTF | 10 | 3.78 | 0.88 | ~4× |
+| TTFP (ms) | 1 | 325,517   | 238,257 | 1.4× |
+| TTFP (ms) | 4 | 987,708   | 259,343 | 3.8× |
+| TTFP (ms) | 10 | 1,522,803 | 262,157 | 5.8× |
+| RTF | 1 | 1.52      | 1.48    | 1.0× |
+| RTF | 4 | 6.66      | 1.62    | 4.1× |
+| RTF | 10 | 6.94      | 2.18    | 3.2× |
 
 At concurrency 10, E2EL drops from ~1,523 s to ~262 s; at concurrency 1, from ~326 s to ~239 s.
 
@@ -183,19 +183,19 @@ In stage configs, this is represented by `enforce_eager: false` for stages where
 <td><img src="figures/omni/Mean_AUDIO_RTF_Batch_vs_Batch_CUDA_Graph.png" alt="Qwen3-Omni RTF: Batch vs CUDA Graph" width="100%"/></td>
 </tr></table>
 
-| Metric | Concurrency | Batch | + CUDA Graph | Improvement |
-| --- | --- | --- | --- | --- |
-| E2EL (ms) | 1 | 238,556 | 67,381 | 3.5× |
-| E2EL (ms) | 4 | 259,586 | 98,981 | 2.6× |
-| E2EL (ms) | 10 | 262,400 | 153,352 | 1.7× |
-| TTFP (ms) | 1 | 238,257 | 67,121 | 3.5× |
-| TTFP (ms) | 4 | 259,286 | 98,679 | 2.6× |
-| TTFP (ms) | 10 | 262,086 | 152,792 | 1.7× |
-| RTF | 1 | 0.32 | 0.43 | — |
-| RTF | 4 | 0.46 | 0.46 | — |
-| RTF | 10 | 0.88 | 0.88 | — |
+| Metric | Concurrency | Batch   | + CUDA Graph | Improvement |
+| --- | --- |---------|--------------| --- |
+| E2EL (ms) | 1 | 238,556 | 67,381       | 3.5× |
+| E2EL (ms) | 4 | 259,586 | 98,981       | 2.6× |
+| E2EL (ms) | 10 | 262,400 | 153,352      | 1.7× |
+| TTFP (ms) | 1 | 238,257 | 67,121       | 3.5× |
+| TTFP (ms) | 4 | 259,343 | 98,679       | 2.6× |
+| TTFP (ms) | 10 | 262,158 | 152,792      | 1.7× |
+| RTF | 1 | 1.48    | 0.43         | 3.4× |
+| RTF | 4 | 1.62    | 0.46         | 3.5× |
+| RTF | 10 | 2.18    | 0.88         | 2.5× |
 
-For the larger Qwen3-Omni model (30B-A3B), CUDA Graph provides a significant improvement. At concurrency 1, E2EL drops from ~239 s to ~67 s; at concurrency 10, from ~262 s to ~153 s.
+For the larger Qwen3-Omni model (30B-A3B), CUDA Graph provides a significant improvement in E2EL, TTFP, and RTF. At concurrency 1, E2EL drops from ~239 s to ~67 s; at concurrency 10, from ~262 s to ~153 s.
 
 **Qwen3-TTS** (H200):
 
