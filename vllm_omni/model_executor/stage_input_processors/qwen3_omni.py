@@ -113,7 +113,7 @@ def thinker2talker_async_chunk(
             "tts_bos_embed": pooling_output.get("tts_bos_embed").detach().cpu(),
             "tts_eos_embed": pooling_output.get("tts_eos_embed").detach().cpu(),
             "tts_pad_embed": pooling_output.get("tts_pad_embed").detach().cpu(),
-            "finished": torch.tensor(is_finished, dtype=torch.bool),
+            "finished": is_finished,
         }
         if transfer_manager.request_payload.get(request_id) is None:
             if not is_finished:
@@ -138,7 +138,7 @@ def thinker2talker_async_chunk(
         output_token_ids = _ensure_list(output_token_ids)
 
         talker_additional_info = {
-            "finished": torch.tensor(is_finished, dtype=torch.bool),
+            "finished": is_finished,
         }
         if output_token_ids:
             talker_additional_info["override_keys"] = ["thinker_decode_embeddings", "thinker_output_token_ids"]
@@ -252,7 +252,7 @@ def talker2code2wav_async_chunk(
         if not code_tensor.any():
             return None
 
-    codec_codes = code_predictor_codes.to(torch.long).transpose(0, 1).cpu().to(torch.long).reshape(-1).tolist()
+    codec_codes = code_predictor_codes.to(torch.long).cpu().transpose(0, 1).reshape(-1).tolist()
     if sum(codec_codes) == 0:
         return None
 
@@ -268,17 +268,15 @@ def talker2code2wav_async_chunk(
     left_context_size = max(0, min(length - context_length, left_context_size_config))
     end_index = min(length, left_context_size + context_length)
 
-    codes = (
-        torch.tensor(transfer_manager.code_prompt_token_ids[request_id][-end_index:])
-        .transpose(0, 1)
-        .reshape(-1)
-        .tolist()
-    )
+    window_frames = transfer_manager.code_prompt_token_ids[request_id][-end_index:]
+    num_quantizers = len(window_frames[0])
+    num_frames = len(window_frames)
+    codes = [window_frames[f][q] for q in range(num_quantizers) for f in range(num_frames)]
 
     info = {
         "code_predictor_codes": codes,
         "left_context_size": left_context_size,
-        "finished": torch.tensor(is_finished, dtype=torch.bool),
+        "finished": is_finished,
     }
     return info
 
