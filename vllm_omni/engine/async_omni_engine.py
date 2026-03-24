@@ -607,6 +607,7 @@ class AsyncOmniEngine:
         self,
         request_id: str,
         prompt: EngineCoreRequest | PromptType,
+        prompt_text: str | None = None,
         sampling_params_list: Sequence[Any] | None = None,
         final_stage_id: int = 0,
         arrival_time: float | None = None,
@@ -661,9 +662,15 @@ class AsyncOmniEngine:
             request.external_req_id = request_id
 
             # Register with stage 0's output processor.
+            output_prompt_text = prompt_text
+            if output_prompt_text is None:
+                if isinstance(prompt, str):
+                    output_prompt_text = prompt
+                elif isinstance(prompt, dict) and isinstance(prompt.get("prompt"), str):
+                    output_prompt_text = prompt["prompt"]
             self.output_processors[0].add_request(
                 request=request,
-                prompt=prompt,
+                prompt=output_prompt_text,
                 parent_req=None,
                 request_index=0,
                 queue=None,
@@ -915,6 +922,7 @@ class AsyncOmniEngine:
         self,
         request_id: str,
         prompt: EngineCoreRequest | PromptType,
+        prompt_text: str | None = None,
         sampling_params_list: Sequence[Any] | None = None,
         final_stage_id: int = 0,
         arrival_time: float | None = None,
@@ -931,11 +939,13 @@ class AsyncOmniEngine:
         msg = self._build_add_request_message(
             request_id=request_id,
             prompt=prompt,
+            prompt_text=prompt_text,
             sampling_params_list=sampling_params_list,
             final_stage_id=final_stage_id,
             arrival_time=arrival_time,
             resumable=resumable,
         )
+        logger.info(f"cwj Adding request: {msg}")
         if self.request_queue is None:
             raise RuntimeError("request_queue is not initialized")
         self.request_queue.sync_q.put_nowait(msg)
@@ -953,6 +963,7 @@ class AsyncOmniEngine:
         self,
         request_id: str,
         prompt: EngineCoreRequest | PromptType,
+        prompt_text: str | None = None,
         sampling_params_list: Sequence[Any] | None = None,
         final_stage_id: int = 0,
         arrival_time: float | None = None,
@@ -963,6 +974,7 @@ class AsyncOmniEngine:
         self.add_request(
             request_id=request_id,
             prompt=prompt,
+            prompt_text=prompt_text,
             sampling_params_list=sampling_params_list,
             final_stage_id=final_stage_id,
             arrival_time=arrival_time,
@@ -973,6 +985,7 @@ class AsyncOmniEngine:
         self,
         request_id: str,
         prompt: EngineCoreRequest | PromptType,
+        prompt_text: str | None = None,
         sampling_params_list: Sequence[Any] | None = None,
         final_stage_id: int = 0,
         arrival_time: float | None = None,
@@ -983,12 +996,14 @@ class AsyncOmniEngine:
         msg = self._build_add_request_message(
             request_id=request_id,
             prompt=prompt,
+            prompt_text=prompt_text,
             sampling_params_list=sampling_params_list,
             final_stage_id=final_stage_id,
             arrival_time=arrival_time,
             resumable=resumable,
             message_type="streaming_update",
         )
+        logger.info(f"cwj update request: {msg}")
         if self.request_queue is None:
             raise RuntimeError("request_queue is not initialized")
         self.request_queue.sync_q.put_nowait(msg)
@@ -997,6 +1012,7 @@ class AsyncOmniEngine:
         self,
         request_id: str,
         prompt: EngineCoreRequest | PromptType,
+        prompt_text: str | None = None,
         sampling_params_list: Sequence[Any] | None = None,
         final_stage_id: int = 0,
         arrival_time: float | None = None,
@@ -1007,6 +1023,7 @@ class AsyncOmniEngine:
         self.add_streaming_update(
             request_id=request_id,
             prompt=prompt,
+            prompt_text=prompt_text,
             sampling_params_list=sampling_params_list,
             final_stage_id=final_stage_id,
             arrival_time=arrival_time,

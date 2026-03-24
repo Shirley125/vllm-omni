@@ -20,6 +20,7 @@ from vllm.lora.request import LoRARequest
 from vllm.outputs import PoolingRequestOutput
 from vllm.plugins.io_processors import get_io_processor
 from vllm.pooling_params import PoolingParams
+from vllm.renderers.inputs.preprocess import extract_prompt_components
 from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.tasks import SupportedTask
 from vllm.v1.engine.exceptions import EngineDeadError
@@ -282,11 +283,15 @@ class AsyncOmni(EngineClient, OmniBase):
                     chunk_sampling_params_list = list(sampling_params_list)
                     chunk_sampling_params_list[0] = chunk_params
                     chunk_prompt = chunk.prompt
+                    prompt_text, _, _ = extract_prompt_components(
+                        self.model_config, chunk_prompt
+                    )
 
                     if not has_submitted_first_chunk:
                         await self.engine.add_request_async(
                             request_id=request_id,
                             prompt=chunk_prompt,
+                            prompt_text=prompt_text,
                             sampling_params_list=chunk_sampling_params_list,
                             final_stage_id=final_stage_id,
                             resumable=True,
@@ -296,6 +301,7 @@ class AsyncOmni(EngineClient, OmniBase):
                         await self.engine.add_streaming_update_async(
                             request_id=request_id,
                             prompt=chunk_prompt,
+                            prompt_text=prompt_text,
                             sampling_params_list=chunk_sampling_params_list,
                             final_stage_id=final_stage_id,
                             resumable=True,
@@ -316,6 +322,7 @@ class AsyncOmni(EngineClient, OmniBase):
                         await self.engine.add_streaming_update_async(
                             request_id=request_id,
                             prompt=final_prompt,
+                            prompt_text=None,
                             sampling_params_list=final_sampling_params_list,
                             final_stage_id=final_stage_id,
                             resumable=False,
@@ -324,6 +331,7 @@ class AsyncOmni(EngineClient, OmniBase):
                         await self.engine.add_request_async(
                             request_id=request_id,
                             prompt=final_prompt,
+                            prompt_text=None,
                             sampling_params_list=final_sampling_params_list,
                             final_stage_id=final_stage_id,
                             resumable=False,

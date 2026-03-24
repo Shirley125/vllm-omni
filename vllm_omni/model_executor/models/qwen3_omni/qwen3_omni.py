@@ -39,6 +39,7 @@ from vllm_omni.model_executor.custom_process_mixin import CustomProcessMixin
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni_moe_thinker import (
     Qwen3OmniMoeThinkerDummyInputsBuilder,
+    Qwen3OmniMoeThinkerForConditionalGeneration,
     Qwen3OmniMoeThinkerMultiModalProcessor,
     Qwen3OmniMoeThinkerProcessingInfo,
 )
@@ -216,7 +217,9 @@ class Qwen3OmniMoeForConditionalGeneration(
             segment_duration_s=segment_duration_s,
         )
 
-        audio_placeholder = cls.get_placeholder_str("audio", 0)
+        audio_placeholder = Qwen3OmniMoeThinkerForConditionalGeneration.get_placeholder_str(
+            "audio", 0
+        )
         prompt_template = (
             f"<|im_start|>user\n{audio_placeholder}<|im_end|>\n<|im_start|>assistant\n"
         )
