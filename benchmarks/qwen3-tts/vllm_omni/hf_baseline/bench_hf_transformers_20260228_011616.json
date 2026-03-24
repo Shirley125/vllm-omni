@@ -1,0 +1,381 @@
+[
+  {
+    "config_name": "hf_transformers",
+    "concurrency": 1,
+    "num_prompts": 50,
+    "completed": 50,
+    "failed": 0,
+    "duration_s": 775.6442281361669,
+    "mean_ttfp_ms": 15512.863172031939,
+    "median_ttfp_ms": 15075.150252319872,
+    "std_ttfp_ms": 3452.6406588005816,
+    "p90_ttfp_ms": 20416.342769004405,
+    "p95_ttfp_ms": 20964.645276311785,
+    "p99_ttfp_ms": 23252.42712436243,
+    "mean_e2e_ms": 15512.863172031939,
+    "median_e2e_ms": 15075.150252319872,
+    "std_e2e_ms": 3452.6406588005816,
+    "p90_e2e_ms": 20416.342769004405,
+    "p95_e2e_ms": 20964.645276311785,
+    "p99_e2e_ms": 23252.42712436243,
+    "mean_rtf": 2.638038530566178,
+    "median_rtf": 2.6392125143073963,
+    "std_rtf": 0.02431209204621465,
+    "mean_audio_duration_s": 5.884075,
+    "total_audio_duration_s": 294.20375,
+    "audio_throughput": 0.3793024421866149,
+    "request_throughput": 0.0644625437620382,
+    "per_request": [
+      {
+        "e2e_ms": 11397.151974961162,
+        "ttfp_ms": 11397.151974961162,
+        "rtf": 2.6524280959909614,
+        "audio_duration_s": 4.296875,
+        "prompt": "Hello, welcome to the voice synthesis benchmark test."
+      },
+      {
+        "e2e_ms": 14964.927894994617,
+        "ttfp_ms": 14964.927894994617,
+        "rtf": 2.645440794607379,
+        "audio_duration_s": 5.656875,
+        "prompt": "She said she would be here by noon, but nobody showed up."
+      },
+      {
+        "e2e_ms": 11842.78187341988,
+        "ttfp_ms": 11842.78187341988,
+        "rtf": 2.6571940818218773,
+        "audio_duration_s": 4.456875,
+        "prompt": "The quick brown fox jumps over the lazy dog near the riverbank."
+      },
+      {
+        "e2e_ms": 15167.964981868863,
+        "ttfp_ms": 15167.964981868863,
+        "rtf": 2.643942038456278,
+        "audio_duration_s": 5.736875,
+        "prompt": "I can't believe how beautiful the sunset looks from up here on the mountain."
+      },
+      {
+        "e2e_ms": 17474.577317014337,
+        "ttfp_ms": 17474.577317014337,
+        "rtf": 2.64091090084282,
+        "audio_duration_s": 6.616875,
+        "prompt": "Please remember to bring your identification documents to the appointment tomorrow morning."
+      },
+      {
+        "e2e_ms": 16688.33548016846,
+        "ttfp_ms": 16688.33548016846,
+        "rtf": 2.650256751193006,
+        "audio_duration_s": 6.296875,
+        "prompt": "Have you ever wondered what it would be like to travel through time and visit ancient civilizations?"
+      },
+      {
+        "e2e_ms": 18895.469054579735,
+        "ttfp_ms": 18895.469054579735,
+        "rtf": 2.632826829863936,
+        "audio_duration_s": 7.176875,
+        "prompt": "The restaurant on the corner serves the best pasta I have ever tasted in my entire life."
+      },
+      {
+        "e2e_ms": 14738.799847662449,
+        "ttfp_ms": 14738.799847662449,
+        "rtf": 2.6813052593814573,
+        "audio_duration_s": 5.496875,
+        "prompt": "After the meeting, we should discuss the quarterly results and plan for the next phase."
+      },
+      {
+        "e2e_ms": 17669.87014003098,
+        "ttfp_ms": 17669.87014003098,
+        "rtf": 2.670425259662753,
+        "audio_duration_s": 6.616875,
+        "prompt": "Learning a new language takes patience, practice, and a genuine curiosity about other cultures."
+      },
+      {
+        "e2e_ms": 18909.768637269735,
+        "ttfp_ms": 18909.768637269735,
+        "rtf": 2.6645204596769334,
+        "audio_duration_s": 7.096875,
+        "prompt": "The train leaves at half past seven, so we need to arrive at the station before then."
+      },
+      {
+        "e2e_ms": 15698.408020660281,
+        "ttfp_ms": 15698.408020660281,
+        "rtf": 2.662157163016052,
+        "audio_duration_s": 5.896875,
+        "prompt": "Could you please turn down the music a little bit, I'm trying to concentrate on my work."
+      },
+      {
+        "e2e_ms": 18924.041643738747,
+        "ttfp_ms": 18924.041643738747,
+        "rtf": 2.666531627475297,
+        "audio_duration_s": 7.096875,
+        "prompt": "It was a dark and stormy night when the old lighthouse keeper heard a knock at the door."
+      },
+      {
+        "e2e_ms": 13395.415637642145,
+        "ttfp_ms": 13395.415637642145,
+        "rtf": 2.670071635757747,
+        "audio_duration_s": 5.016875,
+        "prompt": "Hello, welcome to the voice synthesis benchmark test."
+      },
+      {
+        "e2e_ms": 14207.881135866046,
+        "ttfp_ms": 14207.881135866046,
+        "rtf": 2.6622098392535043,
+        "audio_duration_s": 5.336875,
+        "prompt": "She said she would be here by noon, but nobody showed up."
+      },
+      {
+        "e2e_ms": 12246.356632560492,
+        "ttfp_ms": 12246.356632560492,
+        "rtf": 2.652520727236603,
+        "audio_duration_s": 4.616875,
+        "prompt": "The quick brown fox jumps over the lazy dog near the riverbank."
+      },
+      {
+        "e2e_ms": 13074.102483689785,
+        "ttfp_ms": 13074.102483689785,
+        "rtf": 2.6482547124830558,
+        "audio_duration_s": 4.936875,
+        "prompt": "I can't believe how beautiful the sunset looks from up here on the mountain."
+      },
+      {
+        "e2e_ms": 18944.436663761735,
+        "ttfp_ms": 18944.436663761735,
+        "rtf": 2.6396498007505684,
+        "audio_duration_s": 7.176875,
+        "prompt": "Please remember to bring your identification documents to the appointment tomorrow morning."
+      },
+      {
+        "e2e_ms": 19426.390221342444,
+        "ttfp_ms": 19426.390221342444,
+        "rtf": 2.6477744572917548,
+        "audio_duration_s": 7.336875,
+        "prompt": "Have you ever wondered what it would be like to travel through time and visit ancient civilizations?"
+      },
+      {
+        "e2e_ms": 16278.222169727087,
+        "ttfp_ms": 16278.222169727087,
+        "rtf": 2.6183930302164815,
+        "audio_duration_s": 6.216875,
+        "prompt": "The restaurant on the corner serves the best pasta I have ever tasted in my entire life."
+      },
+      {
+        "e2e_ms": 13567.733345553279,
+        "ttfp_ms": 13567.733345553279,
+        "rtf": 2.6619709813470567,
+        "audio_duration_s": 5.096875,
+        "prompt": "After the meeting, we should discuss the quarterly results and plan for the next phase."
+      },
+      {
+        "e2e_ms": 25272.509407252073,
+        "ttfp_ms": 25272.509407252073,
+        "rtf": 2.638909812151884,
+        "audio_duration_s": 9.576875,
+        "prompt": "Learning a new language takes patience, practice, and a genuine curiosity about other cultures."
+      },
+      {
+        "e2e_ms": 15362.402684986591,
+        "ttfp_ms": 15362.402684986591,
+        "rtf": 2.6778346547530827,
+        "audio_duration_s": 5.736875,
+        "prompt": "The train leaves at half past seven, so we need to arrive at the station before then."
+      },
+      {
+        "e2e_ms": 11958.74653570354,
+        "ttfp_ms": 11958.74653570354,
+        "rtf": 2.635899498157551,
+        "audio_duration_s": 4.536875,
+        "prompt": "Could you please turn down the music a little bit, I'm trying to concentrate on my work."
+      },
+      {
+        "e2e_ms": 15386.002203449607,
+        "ttfp_ms": 15386.002203449607,
+        "rtf": 2.6091789640190113,
+        "audio_duration_s": 5.896875,
+        "prompt": "It was a dark and stormy night when the old lighthouse keeper heard a knock at the door."
+      },
+      {
+        "e2e_ms": 9839.326277375221,
+        "ttfp_ms": 9839.326277375221,
+        "rtf": 2.6906378471714842,
+        "audio_duration_s": 3.656875,
+        "prompt": "Hello, welcome to the voice synthesis benchmark test."
+      },
+      {
+        "e2e_ms": 10190.986027941108,
+        "ttfp_ms": 10190.986027941108,
+        "rtf": 2.6699816022115233,
+        "audio_duration_s": 3.816875,
+        "prompt": "She said she would be here by noon, but nobody showed up."
+      },
+      {
+        "e2e_ms": 12426.15475319326,
+        "ttfp_ms": 12426.15475319326,
+        "rtf": 2.6456217704736145,
+        "audio_duration_s": 4.696875,
+        "prompt": "The quick brown fox jumps over the lazy dog near the riverbank."
+      },
+      {
+        "e2e_ms": 16649.452382698655,
+        "ttfp_ms": 16649.452382698655,
+        "rtf": 2.644081767971995,
+        "audio_duration_s": 6.296875,
+        "prompt": "I can't believe how beautiful the sunset looks from up here on the mountain."
+      },
+      {
+        "e2e_ms": 17688.301963731647,
+        "ttfp_ms": 17688.301963731647,
+        "rtf": 2.641277008116718,
+        "audio_duration_s": 6.696875,
+        "prompt": "Please remember to bring your identification documents to the appointment tomorrow morning."
+      },
+      {
+        "e2e_ms": 20424.729485064745,
+        "ttfp_ms": 20424.729485064745,
+        "rtf": 2.612902148884912,
+        "audio_duration_s": 7.816875,
+        "prompt": "Have you ever wondered what it would be like to travel through time and visit ancient civilizations?"
+      },
+      {
+        "e2e_ms": 18098.825899884105,
+        "ttfp_ms": 18098.825899884105,
+        "rtf": 2.6395152164629083,
+        "audio_duration_s": 6.856875,
+        "prompt": "The restaurant on the corner serves the best pasta I have ever tasted in my entire life."
+      },
+      {
+        "e2e_ms": 14879.612592980266,
+        "ttfp_ms": 14879.612592980266,
+        "rtf": 2.630359092781839,
+        "audio_duration_s": 5.656875,
+        "prompt": "After the meeting, we should discuss the quarterly results and plan for the next phase."
+      },
+      {
+        "e2e_ms": 20835.72542667389,
+        "ttfp_ms": 20835.72542667389,
+        "rtf": 2.5860802639576623,
+        "audio_duration_s": 8.056875,
+        "prompt": "Learning a new language takes patience, practice, and a genuine curiosity about other cultures."
+      },
+      {
+        "e2e_ms": 14611.797763034701,
+        "ttfp_ms": 14611.797763034701,
+        "rtf": 2.5830158458574215,
+        "audio_duration_s": 5.656875,
+        "prompt": "The train leaves at half past seven, so we need to arrive at the station before then."
+      },
+      {
+        "e2e_ms": 14223.25929813087,
+        "ttfp_ms": 14223.25929813087,
+        "rtf": 2.6257314961358476,
+        "audio_duration_s": 5.416875,
+        "prompt": "Could you please turn down the music a little bit, I'm trying to concentrate on my work."
+      },
+      {
+        "e2e_ms": 16588.422540575266,
+        "ttfp_ms": 16588.422540575266,
+        "rtf": 2.6343896838630694,
+        "audio_duration_s": 6.296875,
+        "prompt": "It was a dark and stormy night when the old lighthouse keeper heard a knock at the door."
+      },
+      {
+        "e2e_ms": 9609.614375978708,
+        "ttfp_ms": 9609.614375978708,
+        "rtf": 2.6278213983192504,
+        "audio_duration_s": 3.656875,
+        "prompt": "Hello, welcome to the voice synthesis benchmark test."
+      },
+      {
+        "e2e_ms": 10274.487720802426,
+        "ttfp_ms": 10274.487720802426,
+        "rtf": 2.6365966885780083,
+        "audio_duration_s": 3.896875,
+        "prompt": "She said she would be here by noon, but nobody showed up."
+      },
+      {
+        "e2e_ms": 11869.06306259334,
+        "ttfp_ms": 11869.06306259334,
+        "rtf": 2.616131822585665,
+        "audio_duration_s": 4.536875,
+        "prompt": "The quick brown fox jumps over the lazy dog near the riverbank."
+      },
+      {
+        "e2e_ms": 15227.67055593431,
+        "ttfp_ms": 15227.67055593431,
+        "rtf": 2.6178438690764905,
+        "audio_duration_s": 5.816875,
+        "prompt": "I can't believe how beautiful the sunset looks from up here on the mountain."
+      },
+      {
+        "e2e_ms": 14296.202588826418,
+        "ttfp_ms": 14296.202588826418,
+        "rtf": 2.600787281651196,
+        "audio_duration_s": 5.496875,
+        "prompt": "Please remember to bring your identification documents to the appointment tomorrow morning."
+      },
+      {
+        "e2e_ms": 14982.335522770882,
+        "ttfp_ms": 14982.335522770882,
+        "rtf": 2.611584795340822,
+        "audio_duration_s": 5.736875,
+        "prompt": "Have you ever wondered what it would be like to travel through time and visit ancient civilizations?"
+      },
+      {
+        "e2e_ms": 14810.641760006547,
+        "ttfp_ms": 14810.641760006547,
+        "rtf": 2.618166701581093,
+        "audio_duration_s": 5.656875,
+        "prompt": "The restaurant on the corner serves the best pasta I have ever tasted in my entire life."
+      },
+      {
+        "e2e_ms": 18199.468296021223,
+        "ttfp_ms": 18199.468296021223,
+        "rtf": 2.6235831402499286,
+        "audio_duration_s": 6.936875,
+        "prompt": "After the meeting, we should discuss the quarterly results and plan for the next phase."
+      },
+      {
+        "e2e_ms": 21070.125153288245,
+        "ttfp_ms": 21070.125153288245,
+        "rtf": 2.5894615750258234,
+        "audio_duration_s": 8.136875,
+        "prompt": "Learning a new language takes patience, practice, and a genuine curiosity about other cultures."
+      },
+      {
+        "e2e_ms": 21149.892503395677,
+        "ttfp_ms": 21149.892503395677,
+        "rtf": 2.599264767296496,
+        "audio_duration_s": 8.136875,
+        "prompt": "The train leaves at half past seven, so we need to arrive at the station before then."
+      },
+      {
+        "e2e_ms": 14253.459457308054,
+        "ttfp_ms": 14253.459457308054,
+        "rtf": 2.6313066957070363,
+        "audio_duration_s": 5.416875,
+        "prompt": "Could you please turn down the music a little bit, I'm trying to concentrate on my work."
+      },
+      {
+        "e2e_ms": 20415.410911664367,
+        "ttfp_ms": 20415.410911664367,
+        "rtf": 2.6387153613913066,
+        "audio_duration_s": 7.736875,
+        "prompt": "It was a dark and stormy night when the old lighthouse keeper heard a knock at the door."
+      },
+      {
+        "e2e_ms": 11097.52732142806,
+        "ttfp_ms": 11097.52732142806,
+        "rtf": 2.63169463676966,
+        "audio_duration_s": 4.216875,
+        "prompt": "Hello, welcome to the voice synthesis benchmark test."
+      },
+      {
+        "e2e_ms": 10438.36897239089,
+        "ttfp_ms": 10438.36897239089,
+        "rtf": 2.6247666754401107,
+        "audio_duration_s": 3.976875,
+        "prompt": "She said she would be here by noon, but nobody showed up."
+      }
+    ]
+  }
+]
