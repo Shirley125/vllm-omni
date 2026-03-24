@@ -610,6 +610,9 @@ class AsyncOmniEngine:
         sampling_params_list: Sequence[Any] | None = None,
         final_stage_id: int = 0,
         arrival_time: float | None = None,
+        *,
+        resumable: bool = False,
+        message_type: str = "add_request",
     ) -> dict[str, Any]:
         """Build an add_request message after stage-0 preprocessing."""
         effective_sampling_params_list = (
@@ -635,13 +638,16 @@ class AsyncOmniEngine:
                     _inject_global_id(item, request_id)
 
             # Full input processing (tokenization, multimodal, etc.)
-            request = self.input_processor.process_inputs(
-                request_id=request_id,
-                prompt=prompt,
-                params=params,
-                supported_tasks=self.supported_tasks,
-                arrival_time=arrival_time,
-            )
+            process_kwargs: dict[str, Any] = {
+                "request_id": request_id,
+                "prompt": prompt,
+                "params": params,
+                "supported_tasks": self.supported_tasks,
+                "arrival_time": arrival_time,
+            }
+            if resumable:
+                process_kwargs["resumable"] = True
+            request = self.input_processor.process_inputs(**process_kwargs)
             # TODO (Peiqi): add this for Qwen3-TTS only. Other models don't have
             # additional_information field in the prompt.
             request = _upgrade_to_omni_request(request, prompt)
@@ -665,7 +671,7 @@ class AsyncOmniEngine:
             prompt = request
 
         return {
-            "type": "add_request",
+            "type": message_type,
             "request_id": request_id,
             "prompt": prompt,
             "original_prompt": original_prompt,
@@ -912,6 +918,8 @@ class AsyncOmniEngine:
         sampling_params_list: Sequence[Any] | None = None,
         final_stage_id: int = 0,
         arrival_time: float | None = None,
+        *,
+        resumable: bool = False,
     ) -> None:
         """Process stage-0 input locally, then send to the Orchestrator.
 
@@ -926,6 +934,7 @@ class AsyncOmniEngine:
             sampling_params_list=sampling_params_list,
             final_stage_id=final_stage_id,
             arrival_time=arrival_time,
+            resumable=resumable,
         )
         if self.request_queue is None:
             raise RuntimeError("request_queue is not initialized")
@@ -933,7 +942,7 @@ class AsyncOmniEngine:
 
         # CFG companion expansion: create and enqueue companion requests
         # so the AR stage also generates their KV caches.
-        if self.prompt_expand_func is not None and final_stage_id > 0:
+        if self.prompt_expand_func is not None and final_stage_id > 0 and not resumable:
             original_prompt = msg.get("original_prompt", prompt)
             effective_spl = msg.get("sampling_params_list", [])
             stage0_params = effective_spl[0] if effective_spl else None
@@ -947,6 +956,8 @@ class AsyncOmniEngine:
         sampling_params_list: Sequence[Any] | None = None,
         final_stage_id: int = 0,
         arrival_time: float | None = None,
+        *,
+        resumable: bool = False,
     ) -> None:
         """Async add_request API."""
         self.add_request(
@@ -955,6 +966,51 @@ class AsyncOmniEngine:
             sampling_params_list=sampling_params_list,
             final_stage_id=final_stage_id,
             arrival_time=arrival_time,
+            resumable=resumable,
+        )
+
+    def add_streaming_update(
+        self,
+        request_id: str,
+        prompt: EngineCoreRequest | PromptType,
+        sampling_params_list: Sequence[Any] | None = None,
+        final_stage_id: int = 0,
+        arrival_time: float | None = None,
+        *,
+        resumable: bool = True,
+    ) -> None:
+        """Send an incremental streaming update for an existing request."""
+        msg = self._build_add_request_message(
+            request_id=request_id,
+            prompt=prompt,
+            sampling_params_list=sampling_params_list,
+            final_stage_id=final_stage_id,
+            arrival_time=arrival_time,
+            resumable=resumable,
+            message_type="streaming_update",
+        )
+        if self.request_queue is None:
+            raise RuntimeError("request_queue is not initialized")
+        self.request_queue.sync_q.put_nowait(msg)
+
+    async def add_streaming_update_async(
+        self,
+        request_id: str,
+        prompt: EngineCoreRequest | PromptType,
+        sampling_params_list: Sequence[Any] | None = None,
+        final_stage_id: int = 0,
+        arrival_time: float | None = None,
+        *,
+        resumable: bool = True,
+    ) -> None:
+        """Async wrapper for add_streaming_update()."""
+        self.add_streaming_update(
+            request_id=request_id,
+            prompt=prompt,
+            sampling_params_list=sampling_params_list,
+            final_stage_id=final_stage_id,
+            arrival_time=arrival_time,
+            resumable=resumable,
         )
 
     def try_get_output(self, timeout: float = 0.001) -> dict[str, Any] | None:
