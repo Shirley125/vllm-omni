@@ -41,6 +41,7 @@ def build_engine_core_request_from_tokens(
     params: SamplingParams | PoolingParams,
     arrival_time: float | None = None,
     model_config: ModelConfig | None = None,
+    resumable: bool = False,
 ) -> OmniEngineCoreRequest:
     """Build an OmniEngineCoreRequest directly from an OmniTokensPrompt.
 
@@ -83,6 +84,7 @@ def build_engine_core_request_from_tokens(
         cache_salt=None,
         data_parallel_rank=None,
         prompt_embeds=prompt_embeds,
+        resumable=resumable,
         additional_information=additional_info_payload,
     )
 
@@ -103,6 +105,10 @@ class OrchestratorRequestState:
 
     # Metrics: timestamp when request was submitted to each stage
     stage_submit_ts: dict[int, float] = field(default_factory=dict)
+
+    # Streaming session state (for non-async_chunk mode).
+    is_streaming_session: bool = False
+    streaming_final_received: bool = False
 
 
 class Orchestrator:
@@ -360,9 +366,20 @@ class Orchestrator:
                 }
             )
 
-        if finished and stage_id < req_state.final_stage_id and not self.async_chunk:
+        should_forward = False
+        if stage_id < req_state.final_stage_id and not self.async_chunk:
+            # Non-streaming requests forward on stage completion.
+            # Streaming sessions forward each incremental output so downstream
+            # stages can consume updates in-order and retain history.
+            should_forward = finished or req_state.is_streaming_session
+
+        if should_forward:
             # If this parent has CFG companions, defer forwarding until all done
-            if req_id in self._companion_map and not self._all_companions_done(req_id):
+            if (
+                finished
+                and req_id in self._companion_map
+                and not self._all_companions_done(req_id)
+            ):
                 self._deferred_parents[req_id] = {
                     "stage_id": stage_id,
                     "output": output,
@@ -372,11 +389,21 @@ class Orchestrator:
                     req_id,
                 )
             else:
-                await self._forward_to_next_stage(req_id, stage_id, output, req_state)
+                await self._forward_to_next_stage(
+                    req_id,
+                    stage_id,
+                    output,
+                    req_state,
+                    is_streaming_update=req_state.is_streaming_session,
+                    is_final_update=finished and req_state.streaming_final_received,
+                )
 
         if finished and stage_id == req_state.final_stage_id:
-            self._cleanup_companion_state(req_id)
-            self.request_states.pop(req_id, None)
+            # For streaming sessions, only clean up after the final update is
+            # observed at the final stage.
+            if not req_state.is_streaming_session or req_state.streaming_final_received:
+                self._cleanup_companion_state(req_id)
+                self.request_states.pop(req_id, None)
 
     def _cleanup_companion_state(self, parent_id: str) -> None:
         """Remove all companion tracking state for a completed parent."""
@@ -448,6 +475,9 @@ class Orchestrator:
         stage_id: int,
         output: Any,
         req_state: OrchestratorRequestState,
+        *,
+        is_streaming_update: bool = False,
+        is_final_update: bool = False,
     ) -> None:
         """Forward output from current stage to the next stage.
 
@@ -457,6 +487,7 @@ class Orchestrator:
         next_stage_id = stage_id + 1
         next_client = self.stage_clients[next_stage_id]
         params = req_state.sampling_params_list[next_stage_id]
+        next_stage_resumable = is_streaming_update and not is_final_update
 
         if next_client.stage_type == "diffusion":
             self.stage_clients[stage_id].set_engine_outputs([output])
@@ -514,6 +545,7 @@ class Orchestrator:
                 prompt=next_input,
                 params=params,
                 model_config=self.stage_vllm_configs[next_stage_id].model_config,
+                resumable=next_stage_resumable,
             )
 
             # TODO: Here we directly use the req id to assign.
@@ -590,11 +622,15 @@ class Orchestrator:
 
         # Track request state - use original_prompt so downstream stages
         # (e.g. thinker2talker) can access the raw dict with multi_modal_data.
+        request = prompt
+        is_streaming = bool(getattr(request, "resumable", False))
         req_state = OrchestratorRequestState(
             request_id=request_id,
             prompt=original_prompt,
             sampling_params_list=sampling_params_list,
             final_stage_id=final_stage_id,
+            is_streaming_session=is_streaming,
+            streaming_final_received=False,
         )
         req_state.stage_submit_ts[stage_id] = _time.time()
         self.request_states[request_id] = req_state
@@ -602,7 +638,6 @@ class Orchestrator:
         # Stage-0 prompt is already a fully-formed OmniEngineCoreRequest
         # (pre-processed by AsyncOmniEngine.add_request, output processor
         # already registered there) - submit directly.
-        request = prompt
         stage_client = self.stage_clients[stage_id]
         if stage_client.stage_type == "diffusion":
             await stage_client.add_request_async(request_id, prompt, params)
@@ -632,6 +667,9 @@ class Orchestrator:
 
         if "sampling_params_list" in msg and msg["sampling_params_list"]:
             req_state.sampling_params_list = msg["sampling_params_list"]
+        req_state.is_streaming_session = True
+        if not bool(getattr(request, "resumable", True)):
+            req_state.streaming_final_received = True
 
         req_state.stage_submit_ts[stage_id] = _time.time()
         stage_client = self.stage_clients[stage_id]
