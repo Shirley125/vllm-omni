@@ -106,9 +106,10 @@ class OrchestratorRequestState:
     # Metrics: timestamp when request was submitted to each stage
     stage_submit_ts: dict[int, float] = field(default_factory=dict)
 
-    # Streaming session state (for non-async_chunk mode).
+    # Streaming session state
     is_streaming_session: bool = False
     streaming_final_received: bool = False
+    final_stage_finished: bool = False
 
 
 class Orchestrator:
@@ -399,11 +400,24 @@ class Orchestrator:
                 )
 
         if finished and stage_id == req_state.final_stage_id:
-            # For streaming sessions, only clean up after the final update is
-            # observed at the final stage.
-            if not req_state.is_streaming_session or req_state.streaming_final_received:
-                self._cleanup_companion_state(req_id)
-                self.request_states.pop(req_id, None)
+            req_state.final_stage_finished = True
+            self._maybe_cleanup_request(req_id, req_state)
+
+    def _maybe_cleanup_request(
+        self,
+        req_id: str,
+        req_state: OrchestratorRequestState,
+    ) -> None:
+        """Cleanup request state when lifecycle conditions are satisfied."""
+        if req_state.is_streaming_session:
+            # For streaming sessions, cleanup only after we have both:
+            # 1) final-stage completion, and
+            # 2) explicit final update from input stream.
+            if not (req_state.final_stage_finished and req_state.streaming_final_received):
+                return
+
+        self._cleanup_companion_state(req_id)
+        self.request_states.pop(req_id, None)
 
     def _cleanup_companion_state(self, parent_id: str) -> None:
         """Remove all companion tracking state for a completed parent."""
@@ -670,6 +684,8 @@ class Orchestrator:
         req_state.is_streaming_session = True
         if not bool(getattr(request, "resumable", True)):
             req_state.streaming_final_received = True
+            # If final stage has already completed, perform delayed cleanup now.
+            self._maybe_cleanup_request(request_id, req_state)
 
         req_state.stage_submit_ts[stage_id] = _time.time()
         stage_client = self.stage_clients[stage_id]
