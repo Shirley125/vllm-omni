@@ -945,7 +945,6 @@ class AsyncOmniEngine:
             arrival_time=arrival_time,
             resumable=resumable,
         )
-        logger.info(f"cwj Adding request: {msg}")
         if self.request_queue is None:
             raise RuntimeError("request_queue is not initialized")
         self.request_queue.sync_q.put_nowait(msg)
@@ -1003,7 +1002,6 @@ class AsyncOmniEngine:
             resumable=resumable,
             message_type="streaming_update",
         )
-        logger.info(f"cwj update request: {msg}")
         if self.request_queue is None:
             raise RuntimeError("request_queue is not initialized")
         self.request_queue.sync_q.put_nowait(msg)

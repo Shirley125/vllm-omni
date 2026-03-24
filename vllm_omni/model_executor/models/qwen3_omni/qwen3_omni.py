@@ -955,6 +955,8 @@ class Qwen3OmniMoeForConditionalGeneration(
         """
         cached_thinker_decode_embeds = info_dict.get("cached_thinker_decode_embeddings", None)
         thinker_decode_embed = info_dict.get("thinker_decode_embeddings", None)
+        if thinker_decode_embed is None:
+            print("cwj thinker_decode_embed is None")
         start_index = info_dict.get("num_processed_tokens", 0)
         thinker_output_token_ids = info_dict.get("thinker_output_token_ids", [])
         if start_index >= len(thinker_output_token_ids) - 1:

@@ -145,6 +145,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         payload_data, size = result
 
         if payload_data:
+            logger.info(f"cwj get chunk key = {connector_get_key}, payload_data = {payload_data}")
             # Update connector state
             self.get_req_chunk[req_id] += 1
 
