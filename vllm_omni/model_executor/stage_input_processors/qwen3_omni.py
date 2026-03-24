@@ -148,6 +148,19 @@ def thinker2talker_async_chunk(
             # When prefilling a chunked thinker, thinker_hidden_states needs to be updated.
             talker_additional_info["thinker_prefill_embeddings"] = pooling_output.get("0").detach().cpu()
             talker_additional_info["thinker_hidden_states"] = pooling_output.get("24").detach().cpu()
+            # new streaming input req needs following info
+            all_token_ids = request.all_token_ids  # prefill + decode
+            prompt_token_ids = request.prompt_token_ids
+            # Convert ConstantList to regular list for OmniSerializer serialization
+            all_token_ids = _ensure_list(all_token_ids)
+            prompt_token_ids = _ensure_list(prompt_token_ids)
+            talker_additional_info["thinker_sequences"] = all_token_ids
+            talker_additional_info["thinker_input_ids"] = prompt_token_ids
+            talker_additional_info["tts_bos_embed"] = pooling_output.get("tts_bos_embed").detach().cpu()
+            talker_additional_info["tts_eos_embed"] = pooling_output.get("tts_eos_embed").detach().cpu()
+            talker_additional_info["tts_pad_embed"] = pooling_output.get("tts_pad_embed").detach().cpu()
+            talker_additional_info["finished"] = torch.tensor(is_finished, dtype=torch.bool)
+
     return talker_additional_info
 
 
