@@ -52,14 +52,9 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self.get_req_chunk: dict[str, int] = defaultdict(int)
         self.finished_requests: set[str] = set()
         # Segment-level finished: upstream segment is done but the streaming
-        # session may continue.  Prevents polling between segments.
+        # session may continue.  Prevents polling between segments until a
+        # new chunk arrives with data for the next segment.
         self.segment_finished_requests: set[str] = set()
-        # Requests that need a KV-cache free + re-prefill because a new
-        # streaming input segment arrived from upstream.
-        self.restart_requests: set[str] = set()
-        # Flag passed from recv side to send side: the next outgoing chunk
-        # for this request should carry ``new_segment=True``.
-        self.new_segment_sending: set[str] = set()
         self.request_payload = {}
         self.code_prompt_token_ids: dict[str, list[torch.Tensor]] = defaultdict(list)
         self.request_ids_mapping: dict[str, str] = {}
@@ -163,18 +158,13 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             # Update connector state
             self.get_req_chunk[req_id] += 1
 
-            is_new_segment = bool(payload_data.get("new_segment"))
             is_segment_finished = bool(payload_data.get("segment_finished"))
             is_session_finished = bool(payload_data.get("finished"))
 
-            if is_new_segment:
-                self.restart_requests.add(req_id)
+            # Any new data arriving clears the segment_finished pause so the
+            # request can be scheduled again.
+            if req_id in self.segment_finished_requests and not is_segment_finished:
                 self.segment_finished_requests.discard(req_id)
-                logger.info(
-                    "[Stage-%s] New streaming segment for req %s",
-                    stage_id,
-                    req_id,
-                )
 
             if self.model_mode == "ar":
                 self._update_request_payload(external_req_id, payload_data)
@@ -264,10 +254,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         if not payload_data:
             return
 
-        # Inject streaming segment markers for downstream stages.
-        if request_id in self.new_segment_sending:
-            payload_data["new_segment"] = True
-            self.new_segment_sending.discard(request_id)
+        # Inject segment_finished marker so downstream stages can pause
+        # chunk polling between streaming segments.
         if is_segment_finished and not is_finished:
             payload_data["segment_finished"] = True
 
@@ -287,30 +275,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             cached_ic = getattr(self, "_cached_ic", None)
             if cached_ic is not None:
                 cached_ic.pop(request_id, None)
-
-    ########################################################################
-    # Streaming segment helpers
-    ########################################################################
-
-    def mark_new_segment(self, request_id: str) -> None:
-        """Signal that the next outgoing chunk carries a ``new_segment`` flag.
-
-        Called by the scheduler / orchestrator when the thinker (stage 0)
-        starts processing a new streaming input segment so that the chunk
-        sent to stage 1 will tell it to free KV cache and re-prefill.
-        """
-        self.new_segment_sending.add(request_id)
-
-    def take_restart_requests(self) -> set[str]:
-        """Return and clear the set of requests needing KV-cache restart.
-
-        Used by the scheduler on the receiving side (stage 1/2) to free
-        KV blocks and reset ``num_computed_tokens`` so the next chunk
-        triggers a prefill instead of a decode.
-        """
-        reqs = self.restart_requests
-        self.restart_requests = set()
-        return reqs
 
     ########################################################################
     # Cleanup
@@ -335,8 +299,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
 
         self.finished_requests.discard(request_id)
         self.segment_finished_requests.discard(request_id)
-        self.restart_requests.discard(request_id)
-        self.new_segment_sending.discard(request_id)
         self.get_req_chunk.pop(request_id, None)
         self.requests_with_ready_chunks.discard(request_id)
         self.request_ids_mapping.pop(request_id, None)

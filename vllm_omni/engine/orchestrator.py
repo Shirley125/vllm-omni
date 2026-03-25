@@ -695,48 +695,6 @@ class Orchestrator:
         else:
             await stage_client.add_request_async(request)
 
-        # In async_chunk mode, re-prewarm downstream stages when a new
-        # streaming segment (not the final signal) arrives.  The previous
-        # segment's requests on stages 1+ may have already finished and
-        # been freed, so we re-create them.
-        if self.async_chunk and not is_final and req_state.final_stage_id > 0:
-            await self._reprewarm_async_chunk_stages(request_id, request, req_state)
-
-    async def _reprewarm_async_chunk_stages(
-        self,
-        request_id: str,
-        stage0_request: Any,
-        req_state: OrchestratorRequestState,
-    ) -> None:
-        """Re-arm downstream stages for a new streaming input segment.
-
-        When a streaming_update arrives in async_chunk mode, the previous
-        segment's requests on stages 1+ may have already finished and been
-        freed by their schedulers.  This method aborts any still-running
-        remnants and re-submits fresh placeholder requests so the new
-        segment's chunks can be consumed.
-        """
-        if req_state.final_stage_id <= 0:
-            return
-
-        # Abort stale requests on downstream stages (idempotent if already finished).
-        for next_stage_id in range(1, req_state.final_stage_id + 1):
-            try:
-                await self.stage_clients[next_stage_id].abort_requests_async([request_id])
-            except Exception:
-                logger.debug(
-                    "[Orchestrator] Abort on stage-%s for req=%s (may already be finished)",
-                    next_stage_id,
-                    request_id,
-                )
-
-        logger.info(
-            "[Orchestrator] Re-prewarming stages 1..%s for req=%s (new streaming segment)",
-            req_state.final_stage_id,
-            request_id,
-        )
-        await self._prewarm_async_chunk_stages(request_id, stage0_request, req_state)
-
     async def _prewarm_async_chunk_stages(
         self,
         request_id: str,
@@ -783,11 +741,17 @@ class Orchestrator:
                 req_state.stage_submit_ts[next_stage_id] = _time.time()
                 continue
 
+            # For streaming sessions, mark downstream requests as resumable
+            # so they survive stop/finish cycles and can keep consuming
+            # incremental chunks without being freed.
+            downstream_resumable = req_state.is_streaming_session
+
             request = build_engine_core_request_from_tokens(
                 request_id=request_id,
                 prompt=base_input,
                 params=params,
                 model_config=self.stage_vllm_configs[next_stage_id].model_config,
+                resumable=downstream_resumable,
             )
             request.external_req_id = request.request_id
 

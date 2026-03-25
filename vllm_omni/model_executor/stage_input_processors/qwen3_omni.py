@@ -145,10 +145,9 @@ def thinker2talker_async_chunk(
             talker_additional_info["thinker_decode_embeddings"] = pooling_output.get("0").detach().cpu()
             talker_additional_info["thinker_output_token_ids"] = output_token_ids
         else:
-            # New streaming segment: thinker is re-prefilling after a previous
-            # decode cycle.  Mark this chunk so downstream stages can free
-            # their KV cache and re-prefill.
-            talker_additional_info["new_segment"] = True
+            # Streaming segment continuation: thinker is re-prefilling after
+            # receiving new input.  Downstream stages keep their KV cache and
+            # accumulate the new embeddings incrementally.
             talker_additional_info["thinker_prefill_embeddings"] = pooling_output.get("0").detach().cpu()
             talker_additional_info["thinker_hidden_states"] = pooling_output.get("24").detach().cpu()
             all_token_ids = request.all_token_ids  # prefill + decode

@@ -62,7 +62,6 @@ class OmniGenerationScheduler(VLLMScheduler):
         skipped_waiting_requests = create_request_queue(self.policy)
         req_index = 0
         if self.chunk_transfer_adapter:
-            self._handle_restart_requests()
             self.chunk_transfer_adapter.process_pending_chunks(self.waiting, self.running)
 
         # OMNI: Track requests that are already finished (e.g., marked by connector)
@@ -325,32 +324,6 @@ class OmniGenerationScheduler(VLLMScheduler):
 
         return scheduler_output
 
-    def _handle_restart_requests(self) -> None:
-        """Free KV cache and reset state for requests starting a new segment.
-
-        Called before ``process_pending_chunks`` so that restarted requests
-        receive a fresh prefill when the next chunk is loaded.
-        """
-        if self.chunk_transfer_adapter is None:
-            return
-        restart_ids = self.chunk_transfer_adapter.take_restart_requests()
-        if not restart_ids:
-            return
-        for req_id in restart_ids:
-            request = self.requests.get(req_id)
-            if request is None:
-                continue
-            logger.info(
-                "[OmniGenerationScheduler] Restarting req %s for new streaming "
-                "segment (num_computed=%d -> 0)",
-                req_id,
-                request.num_computed_tokens,
-            )
-            self.kv_cache_manager.free(request)
-            request.num_computed_tokens = 0
-            request.num_cached_tokens = -1
-            request.status = RequestStatus.WAITING
-
     def update_from_output(
         self,
         scheduler_output: SchedulerOutput,
@@ -441,22 +414,14 @@ class OmniGenerationScheduler(VLLMScheduler):
             routed_experts = None
 
             # Diffusion request: completes in one step; mark finished and free resources
-            is_session_finished = (
-                self.chunk_transfer_adapter is not None
-                and request.request_id in self.chunk_transfer_adapter.finished_requests
-                and request.num_computed_tokens >= len(request.prompt_token_ids)
-            )
-            is_segment_finished = (
-                not is_session_finished
-                and self.chunk_transfer_adapter is not None
-                and request.request_id in self.chunk_transfer_adapter.segment_finished_requests
-                and request.num_computed_tokens >= len(request.prompt_token_ids)
-            )
             if (
                 request.status == RequestStatus.FINISHED_STOPPED
                 or (self.chunk_transfer_adapter is None and request.num_computed_tokens >= request.num_prompt_tokens)
-                or is_session_finished
-                or is_segment_finished
+                or (
+                    self.chunk_transfer_adapter is not None
+                    and request.request_id in self.chunk_transfer_adapter.finished_requests
+                    and request.num_computed_tokens >= len(request.prompt_token_ids)
+                )
             ):
                 request.status = RequestStatus.FINISHED_STOPPED
                 request.stop_reason = request.stop_reason
@@ -465,28 +430,19 @@ class OmniGenerationScheduler(VLLMScheduler):
             if stopped:
                 routed_experts = self._get_routed_experts(request)
                 finish_reason = request.get_finished_reason()
-                if is_segment_finished:
-                    # Segment done but session continues: free KV blocks but
-                    # keep the request alive so the next segment can re-prefill.
-                    self.kv_cache_manager.free(request)
-                    request.num_computed_tokens = 0
-                    request.num_cached_tokens = -1
-                    request.status = RequestStatus.WAITING
+                finished = self._handle_stopped_request(request)
+                if finished:
+                    kv_transfer_params = self._free_request(request)
+                    if self.chunk_transfer_adapter is not None:
+                        self.chunk_transfer_adapter.cleanup(
+                            request.request_id,
+                            getattr(request, "external_req_id", None),
+                        )
+                if status_before_stop == RequestStatus.WAITING_FOR_CHUNK:
                     stopped_running_reqs.add(request)
+                    stopped_preempted_reqs.add(request)
                 else:
-                    finished = self._handle_stopped_request(request)
-                    if finished:
-                        kv_transfer_params = self._free_request(request)
-                        if self.chunk_transfer_adapter is not None:
-                            self.chunk_transfer_adapter.cleanup(
-                                request.request_id,
-                                getattr(request, "external_req_id", None),
-                            )
-                    if status_before_stop == RequestStatus.WAITING_FOR_CHUNK:
-                        stopped_running_reqs.add(request)
-                        stopped_preempted_reqs.add(request)
-                    else:
-                        stopped_running_reqs.add(request)
+                    stopped_running_reqs.add(request)
 
             # Extract sample logprobs if needed.
             if request.sampling_params is not None and request.sampling_params.logprobs is not None and logprobs:
