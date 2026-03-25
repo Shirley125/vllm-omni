@@ -695,6 +695,51 @@ class Orchestrator:
         else:
             await stage_client.add_request_async(request)
 
+        # In async_chunk mode, wake up downstream stages that are in
+        # WAITING_FOR_STREAMING_REQ state.  Sending a resumable request
+        # with the same request_id triggers Scheduler.add_request's
+        # streaming-update path which calls _update_request_as_session
+        # and moves the request back to WAITING.  The actual data arrives
+        # later via SharedMemoryConnector chunks.
+        if self.async_chunk and not is_final and req_state.final_stage_id > 0:
+            await self._notify_downstream_streaming_update(
+                request_id, req_state,
+            )
+
+    async def _notify_downstream_streaming_update(
+        self,
+        request_id: str,
+        req_state: OrchestratorRequestState,
+    ) -> None:
+        """Send a lightweight resumable request to downstream stages.
+
+        This wakes requests from WAITING_FOR_STREAMING_REQ back to WAITING
+        so that _process_chunk_queue can start polling for new chunks.
+        The prompt_token_ids are intentionally empty — the real prompt
+        extension happens in _poll_single_request when the chunk arrives
+        with ``downstream_prompt_len``.
+        """
+        for next_stage_id in range(1, req_state.final_stage_id + 1):
+            next_client = self.stage_clients[next_stage_id]
+            if next_client.stage_type == "diffusion":
+                continue
+            params = req_state.sampling_params_list[next_stage_id]
+
+            wakeup_request = build_engine_core_request_from_tokens(
+                request_id=request_id,
+                prompt={"prompt_token_ids": []},
+                params=params,
+                model_config=self.stage_vllm_configs[next_stage_id].model_config,
+                resumable=True,
+            )
+            wakeup_request.external_req_id = request_id
+            await next_client.add_request_async(wakeup_request)
+            logger.info(
+                "[Orchestrator] Sent streaming wakeup to stage-%s for req=%s",
+                next_stage_id,
+                request_id,
+            )
+
     async def _prewarm_async_chunk_stages(
         self,
         request_id: str,

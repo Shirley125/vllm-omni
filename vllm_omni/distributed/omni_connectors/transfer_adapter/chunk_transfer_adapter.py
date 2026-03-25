@@ -154,6 +154,23 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                 request.additional_information = payload_data
                 if payload_data.get("finished"):
                     self.finished_requests.add(req_id)
+
+                # When the upstream stage starts a new streaming segment,
+                # the chunk carries downstream_prompt_len — the target
+                # prompt length after absorbing the new segment.  Extend
+                # prompt_token_ids so the scheduler sees uncomputed tokens
+                # and schedules a prefill instead of a decode.
+                target_len = payload_data.get("downstream_prompt_len")
+                if target_len is not None:
+                    current_len = len(request.prompt_token_ids)
+                    if target_len > current_len:
+                        extend_count = target_len - current_len
+                        request.prompt_token_ids.extend([0] * extend_count)
+                        try:
+                            request._all_token_ids.extend([0] * extend_count)
+                        except Exception:
+                            pass
+                        request.num_prompt_tokens = len(request.prompt_token_ids)
             else:
                 if payload_data.get("finished"):
                     self.finished_requests.add(req_id)

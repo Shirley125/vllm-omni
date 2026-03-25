@@ -152,7 +152,6 @@ def thinker2talker_async_chunk(
             talker_additional_info["thinker_hidden_states"] = pooling_output.get("24").detach().cpu()
             all_token_ids = request.all_token_ids  # prefill + decode
             prompt_token_ids = request.prompt_token_ids
-            # Convert ConstantList to regular list for OmniSerializer serialization
             all_token_ids = _ensure_list(all_token_ids)
             prompt_token_ids = _ensure_list(prompt_token_ids)
             talker_additional_info["thinker_sequences"] = all_token_ids
@@ -161,6 +160,20 @@ def thinker2talker_async_chunk(
             talker_additional_info["tts_eos_embed"] = pooling_output.get("tts_eos_embed").detach().cpu()
             talker_additional_info["tts_pad_embed"] = pooling_output.get("tts_pad_embed").detach().cpu()
             talker_additional_info["finished"] = torch.tensor(is_finished, dtype=torch.bool)
+            # Tell the downstream chunk_transfer_adapter how long the talker
+            # prompt_token_ids should be after this segment.  The adapter
+            # will extend prompt_token_ids to this length so the scheduler
+            # sees new tokens and schedules a prefill.
+            try:
+                info_for_len = {
+                    "thinker_sequences": all_token_ids,
+                    "thinker_input_ids": prompt_token_ids,
+                }
+                talker_additional_info["downstream_prompt_len"] = (
+                    _compute_talker_prompt_ids_length(info_for_len, device="cpu")
+                )
+            except Exception:
+                pass
 
     return talker_additional_info
 
