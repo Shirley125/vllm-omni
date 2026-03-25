@@ -137,6 +137,7 @@ class OmniARScheduler(VLLMScheduler):
 
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if self.chunk_transfer_adapter:
+            self._handle_restart_requests()
             self.chunk_transfer_adapter.process_pending_chunks(self.waiting, self.running)
 
         try:
@@ -353,7 +354,12 @@ class OmniARScheduler(VLLMScheduler):
                     )
                 )
                 if self.chunk_transfer_adapter is not None:
-                    self.chunk_transfer_adapter.save_async(pooler_output, request)
+                    is_seg_finished = stopped and getattr(request, "resumable", False)
+                    self.chunk_transfer_adapter.save_async(
+                        pooler_output,
+                        request,
+                        is_segment_finished=is_seg_finished,
+                    )
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
@@ -609,6 +615,33 @@ class OmniARScheduler(VLLMScheduler):
             else:
                 need_send = getattr(omni_kv_config, "need_send_cache", False)
         return need_send
+
+    def _handle_restart_requests(self) -> None:
+        """Free KV cache and reset state for requests starting a new segment.
+
+        Called before ``process_pending_chunks`` so that restarted requests
+        are treated as if they just arrived and will receive a fresh prefill
+        when the next chunk is loaded.
+        """
+        if self.chunk_transfer_adapter is None:
+            return
+        restart_ids = self.chunk_transfer_adapter.take_restart_requests()
+        if not restart_ids:
+            return
+        for req_id in restart_ids:
+            request = self.requests.get(req_id)
+            if request is None:
+                continue
+            logger.info(
+                "[OmniARScheduler] Restarting req %s for new streaming segment "
+                "(num_computed=%d -> 0)",
+                req_id,
+                request.num_computed_tokens,
+            )
+            self.kv_cache_manager.free(request)
+            request.num_computed_tokens = 0
+            request.num_cached_tokens = -1
+            request.status = RequestStatus.WAITING
 
     def has_requests(self) -> bool:
         """Check if there are any requests to process, including KV transfers."""

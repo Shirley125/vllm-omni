@@ -682,9 +682,9 @@ class Orchestrator:
         if "sampling_params_list" in msg and msg["sampling_params_list"]:
             req_state.sampling_params_list = msg["sampling_params_list"]
         req_state.is_streaming_session = True
-        if not bool(getattr(request, "resumable", True)):
+        is_final = not bool(getattr(request, "resumable", True))
+        if is_final:
             req_state.streaming_final_received = True
-            # If final stage has already completed, perform delayed cleanup now.
             self._maybe_cleanup_request(request_id, req_state)
 
         req_state.stage_submit_ts[stage_id] = _time.time()
@@ -694,6 +694,48 @@ class Orchestrator:
             await stage_client.add_request_async(request_id, request, params)
         else:
             await stage_client.add_request_async(request)
+
+        # In async_chunk mode, re-prewarm downstream stages when a new
+        # streaming segment (not the final signal) arrives.  The previous
+        # segment's requests on stages 1+ may have already finished and
+        # been freed, so we re-create them.
+        if self.async_chunk and not is_final and req_state.final_stage_id > 0:
+            await self._reprewarm_async_chunk_stages(request_id, request, req_state)
+
+    async def _reprewarm_async_chunk_stages(
+        self,
+        request_id: str,
+        stage0_request: Any,
+        req_state: OrchestratorRequestState,
+    ) -> None:
+        """Re-arm downstream stages for a new streaming input segment.
+
+        When a streaming_update arrives in async_chunk mode, the previous
+        segment's requests on stages 1+ may have already finished and been
+        freed by their schedulers.  This method aborts any still-running
+        remnants and re-submits fresh placeholder requests so the new
+        segment's chunks can be consumed.
+        """
+        if req_state.final_stage_id <= 0:
+            return
+
+        # Abort stale requests on downstream stages (idempotent if already finished).
+        for next_stage_id in range(1, req_state.final_stage_id + 1):
+            try:
+                await self.stage_clients[next_stage_id].abort_requests_async([request_id])
+            except Exception:
+                logger.debug(
+                    "[Orchestrator] Abort on stage-%s for req=%s (may already be finished)",
+                    next_stage_id,
+                    request_id,
+                )
+
+        logger.info(
+            "[Orchestrator] Re-prewarming stages 1..%s for req=%s (new streaming segment)",
+            req_state.final_stage_id,
+            request_id,
+        )
+        await self._prewarm_async_chunk_stages(request_id, stage0_request, req_state)
 
     async def _prewarm_async_chunk_stages(
         self,
