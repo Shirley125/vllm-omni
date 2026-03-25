@@ -353,12 +353,7 @@ class OmniARScheduler(VLLMScheduler):
                     )
                 )
                 if self.chunk_transfer_adapter is not None:
-                    is_seg_finished = stopped and getattr(request, "resumable", False)
-                    self.chunk_transfer_adapter.save_async(
-                        pooler_output,
-                        request,
-                        is_segment_finished=is_seg_finished,
-                    )
+                    self.chunk_transfer_adapter.save_async(pooler_output, request)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors

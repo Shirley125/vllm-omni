@@ -51,10 +51,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self.put_req_chunk: dict[str, int] = defaultdict(int)
         self.get_req_chunk: dict[str, int] = defaultdict(int)
         self.finished_requests: set[str] = set()
-        # Segment-level finished: upstream segment is done but the streaming
-        # session may continue.  Prevents polling between segments until a
-        # new chunk arrives with data for the next segment.
-        self.segment_finished_requests: set[str] = set()
         self.request_payload = {}
         self.code_prompt_token_ids: dict[str, list[torch.Tensor]] = defaultdict(list)
         self.request_ids_mapping: dict[str, str] = {}
@@ -106,8 +102,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self,
         pooling_output: torch.Tensor | None = None,
         request: Request | None = None,
-        *,
-        is_segment_finished: bool = False,
     ):
         """Build and enqueue one chunk for asynchronous sending.
 
@@ -117,14 +111,11 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         Args:
             pooling_output: Partial pooling output dictionary
             request: Request object
-            is_segment_finished: True when the upstream streaming segment is
-                done but the session continues (more segments expected).
         """
         task = {
             "pooling_output": pooling_output,
             "request": request,
             "is_finished": request.is_finished(),
-            "is_segment_finished": is_segment_finished,
         }
         self._pending_save_reqs.append(task)
         with self._save_cond:
@@ -158,28 +149,14 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             # Update connector state
             self.get_req_chunk[req_id] += 1
 
-            is_segment_finished = bool(payload_data.get("segment_finished"))
-            is_session_finished = bool(payload_data.get("finished"))
-
-            # Any new data arriving clears the segment_finished pause so the
-            # request can be scheduled again.
-            if req_id in self.segment_finished_requests and not is_segment_finished:
-                self.segment_finished_requests.discard(req_id)
-
             if self.model_mode == "ar":
                 self._update_request_payload(external_req_id, payload_data)
                 request.additional_information = payload_data
-                if is_session_finished:
+                if payload_data.get("finished"):
                     self.finished_requests.add(req_id)
-                    self.segment_finished_requests.discard(req_id)
-                elif is_segment_finished:
-                    self.segment_finished_requests.add(req_id)
             else:
-                if is_session_finished:
+                if payload_data.get("finished"):
                     self.finished_requests.add(req_id)
-                    self.segment_finished_requests.discard(req_id)
-                elif is_segment_finished:
-                    self.segment_finished_requests.add(req_id)
 
                 new_ids = payload_data.get("code_predictor_codes", [])
                 request.prompt_token_ids = new_ids
@@ -191,7 +168,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                 request.num_computed_tokens = 0
 
                 # Empty chunk with more data expected: keep polling.
-                if not new_ids and not is_session_finished and not is_segment_finished:
+                if not new_ids and not payload_data.get("finished"):
                     return True
 
             # Mark as finished for consumption
@@ -231,7 +208,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         pooling_output = task["pooling_output"]
         request = task["request"]
         is_finished = task["is_finished"]
-        is_segment_finished = task.get("is_segment_finished", False)
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
         request_id = request.external_req_id
@@ -253,11 +229,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
 
         if not payload_data:
             return
-
-        # Inject segment_finished marker so downstream stages can pause
-        # chunk polling between streaming segments.
-        if is_segment_finished and not is_finished:
-            payload_data["segment_finished"] = True
 
         success, size, metadata = self.connector.put(
             from_stage=str(stage_id),
@@ -298,7 +269,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             external_req_id = self.request_ids_mapping.get(request_id, request_id)
 
         self.finished_requests.discard(request_id)
-        self.segment_finished_requests.discard(request_id)
         self.get_req_chunk.pop(request_id, None)
         self.requests_with_ready_chunks.discard(request_id)
         self.request_ids_mapping.pop(request_id, None)
@@ -391,11 +361,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                 if request.request_id in self.requests_with_ready_chunks:
                     continue
                 if request.request_id in self.finished_requests:
-                    continue
-                # Segment-level pause: upstream segment is done but session
-                # continues.  Don't poll for more chunks until the next
-                # segment starts (signalled by ``new_segment`` flag).
-                if request.request_id in self.segment_finished_requests:
                     continue
                 self.load_async(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
