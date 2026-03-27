@@ -368,7 +368,7 @@ The WebSocket protocol uses `audio.start` / binary PCM chunks / `audio.done` fra
 {"type":"session.done","total_sentences":2}
 ```
 
-<iframe width="560" height="315" src="https://www.youtube.com/embed/rB_MgPUx46U" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/O3IVniwwKNA" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
 
 ---
 
