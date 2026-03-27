@@ -9,12 +9,10 @@ to DiffusionModelRunner.
 """
 
 import gc
-import json
 import multiprocessing as mp
 import os
 from collections.abc import Iterable
 from contextlib import AbstractContextManager, nullcontext
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -38,24 +36,16 @@ from vllm_omni.diffusion.distributed.parallel_state import (
 from vllm_omni.diffusion.forward_context import set_forward_context
 from vllm_omni.diffusion.ipc import pack_diffusion_output_shm
 from vllm_omni.diffusion.lora.manager import DiffusionLoRAManager
-from vllm_omni.diffusion.profiler import CurrentProfiler
 from vllm_omni.diffusion.request import OmniDiffusionRequest
+from vllm_omni.diffusion.sched.interface import DiffusionSchedulerOutput
 from vllm_omni.diffusion.worker.diffusion_model_runner import DiffusionModelRunner
+from vllm_omni.diffusion.worker.utils import RunnerOutput
 from vllm_omni.lora.request import LoRARequest
 from vllm_omni.platforms import current_omni_platform
+from vllm_omni.profiler import OmniTorchProfilerWrapper, create_omni_profiler
 from vllm_omni.worker.gpu_memory_utils import get_process_gpu_memory
 
 logger = init_logger(__name__)
-
-MODEL_PARAM_COUNTS = {
-    "bagel": 13.5e9,  # BAGEL-7B-MoT
-    "flux": 12.0e9,  # FLUX.1-dev
-    "default": 10.0e9,
-}
-
-# 2.5 GiB is the empirical peak activation footprint (intermediate tensors +
-# attention workspace) for models like Bagel-7B/Flux at 1024x1024 resolution.
-ACTIVATION_MEMORY_MULTIPLIER = 2.5
 
 
 class DiffusionWorker:
@@ -70,60 +60,6 @@ class DiffusionWorker:
     All model-related operations (loading, compilation, execution) are
     delegated to DiffusionModelRunner.
     """
-
-    @staticmethod
-    def predict_resource_usage(od_config: OmniDiffusionConfig) -> dict[str, float]:
-        from vllm.utils.mem_utils import GiB_bytes
-
-        total_params = 0
-        estimate_source = "fallback"
-        try:
-            model_path = Path(getattr(od_config, "model", ""))
-            index_file = model_path / "model.safetensors.index.json"
-            if index_file.exists():
-                with open(index_file) as f:
-                    data = json.load(f)
-                    # metadata.total_size
-                    total_params = int(data.get("metadata", {}).get("total_size", 0))
-                    if total_params > 0:
-                        estimate_source = "safetensors index"
-        except Exception as e:
-            logger.debug(f"Failed to parse safetensors metadata: {e}")
-        if total_params == 0:
-            m_name = str(getattr(od_config, "model", "")).lower()
-            if "bagel" in m_name:
-                total_params = MODEL_PARAM_COUNTS["bagel"]
-                estimate_source = "bagel"
-            elif "flux" in m_name:
-                total_params = MODEL_PARAM_COUNTS["flux"]
-                estimate_source = "flux"
-            else:
-                total_params = MODEL_PARAM_COUNTS["default"]
-                estimate_source = "default"
-        logger.info(f"VRAM Quota: Estimated {total_params / 1e9:.2f}B params using {estimate_source} logic")
-
-        dtype = getattr(od_config, "dtype", torch.bfloat16)
-        dtype_str = str(dtype).lower()
-        # Calculate the number of bytes per parameter
-        # based on different levels of precision.
-        if "int4" in dtype_str:
-            bytes_per_param = 0.5
-        elif any(kw in dtype_str for kw in ["float8", "int8"]):
-            bytes_per_param = 1
-        elif any(kw in dtype_str for kw in ["float16", "bfloat16", "half"]):
-            bytes_per_param = 2
-        elif any(kw in dtype_str for kw in ["float32", "int32"]):
-            bytes_per_param = 4
-        else:
-            bytes_per_param = 4
-        static_gb = (total_params * bytes_per_param) / GiB_bytes
-        h, w = getattr(od_config, "height", 1024), getattr(od_config, "width", 1024)
-        dynamic_gb = ACTIVATION_MEMORY_MULTIPLIER * (h * w / (1024 * 1024))
-        return {
-            "static_gb": round(static_gb, 2),
-            "dynamic_gb": round(dynamic_gb, 2),
-            "total_gb": round(static_gb + dynamic_gb, 2),
-        }
 
     def __init__(
         self,
@@ -147,6 +83,15 @@ class DiffusionWorker:
             od_config=self.od_config,
             device=self.device,
         )
+        # Initialize profiler if configured
+        self.profiler: OmniTorchProfilerWrapper | None = None
+        profiler_config = self.od_config.profiler_config
+        if profiler_config and profiler_config.profiler == "torch":
+            self.profiler = create_omni_profiler(
+                profiler_config=profiler_config,
+                worker_name=f"diffusion_worker_{self.rank}",
+                local_rank=self.local_rank,
+            )
         if not skip_load_model:
             self.load_model(load_format=self.od_config.diffusion_load_format)
             self.init_lora_manager()
@@ -238,15 +183,32 @@ class DiffusionWorker:
         """Generate output for the given requests."""
         return self.execute_model(request, self.od_config)
 
-    @classmethod
-    def start_profile(cls, trace_path_template: str) -> str:
-        """Start profiling for this GPU worker."""
-        return CurrentProfiler.start(trace_path_template)
+    def profile(self, is_start: bool = True, profile_prefix: str | None = None) -> None:
+        """Start or stop profiling for this GPU worker.
 
-    @classmethod
-    def stop_profile(cls) -> dict | None:
-        """Stop profiling and return the result dictionary."""
-        return CurrentProfiler.stop()
+        Args:
+            is_start: True to start profiling, False to stop.
+            profile_prefix: Optional prefix for trace filename (vLLM compat).
+
+        Note:
+            Matches vLLM's worker.profile() signature for consistency.
+            Traces are saved automatically via on_trace_ready callback.
+        """
+        if self.profiler is None:
+            logger.warning("Profiler not initialized, skipping profile(%s)", is_start)
+            return
+
+        if is_start:
+            from vllm_omni.profiler import OmniTorchProfilerWrapper
+
+            if isinstance(self.profiler, OmniTorchProfilerWrapper):
+                import time
+
+                filename = profile_prefix or f"diffusion_{int(time.time())}"
+                self.profiler.set_trace_filename(filename)
+            self.profiler.start()
+        else:
+            self.profiler.stop()
 
     def execute_model(self, req: OmniDiffusionRequest, od_config: OmniDiffusionConfig) -> DiffusionOutput:
         """Execute a forward pass by delegating to the model runner."""
@@ -259,6 +221,19 @@ class DiffusionWorker:
                     raise
                 logger.warning("LoRA activation skipped: %s", exc)
         return self.model_runner.execute_model(req)
+
+    def execute_stepwise(self, scheduler_output: DiffusionSchedulerOutput) -> RunnerOutput:
+        """Execute one diffusion step by delegating to the model runner."""
+        assert self.model_runner is not None, "Model runner not initialized"
+        if self.lora_manager is not None:
+            # Step mode does not support LoRA yet. Clear any previously active
+            # adapter first so worker-local LoRA state cannot leak in.
+            self.lora_manager.set_active_adapter(None)
+
+        if any(new_req.req.sampling_params.lora_request is not None for new_req in scheduler_output.scheduled_new_reqs):
+            raise ValueError("Step mode does not support LoRA yet.")
+
+        return self.model_runner.execute_stepwise(scheduler_output)
 
     def load_weights(self, weights) -> set[str]:
         """Load weights by delegating to the model runner."""
@@ -442,7 +417,7 @@ class WorkerProc:
         )
         return wrapper
 
-    def return_result(self, output: DiffusionOutput):
+    def return_result(self, output: object):
         """Reply to client, only on rank 0."""
         if self.result_mq is not None:
             try:
@@ -688,6 +663,10 @@ class WorkerWrapperBase:
             DiffusionOutput with generated results
         """
         return self.worker.execute_model(reqs, od_config)
+
+    def execute_stepwise(self, scheduler_output: DiffusionSchedulerOutput) -> RunnerOutput:
+        """Execute one diffusion step."""
+        return self.worker.execute_stepwise(scheduler_output)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         """
