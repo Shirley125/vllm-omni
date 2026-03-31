@@ -2,8 +2,9 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Copyright 2025 The Qwen team.
 """Inference-only Qwen3-Omni-Moe unified model (thinker + talker + code2wav)."""
+
 import asyncio
-from collections.abc import Iterable, AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from functools import cached_property
 from typing import Any
 
@@ -39,6 +40,7 @@ from vllm_omni.model_executor.custom_process_mixin import CustomProcessMixin
 from vllm_omni.model_executor.models.output_templates import OmniOutput
 from vllm_omni.model_executor.models.qwen3_omni.qwen3_omni_moe_thinker import (
     Qwen3OmniMoeThinkerDummyInputsBuilder,
+    Qwen3OmniMoeThinkerForConditionalGeneration,
     Qwen3OmniMoeThinkerMultiModalProcessor,
     Qwen3OmniMoeThinkerProcessingInfo,
 )
@@ -88,6 +90,7 @@ class Qwen3OmniMoeForConditionalGeneration(
     Usage:
         Set `model_stage` in vllm_config to one of: "thinker", "talker", "code2wav"
     """
+
     realtime_max_tokens = 64
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
@@ -199,10 +202,10 @@ class Qwen3OmniMoeForConditionalGeneration(
 
     @classmethod
     async def buffer_realtime_audio(
-            cls,
-            audio_stream: AsyncGenerator[np.ndarray, None],
-            input_stream: asyncio.Queue[list[int]],
-            model_config: ModelConfig,
+        cls,
+        audio_stream: AsyncGenerator[np.ndarray, None],
+        input_stream: asyncio.Queue[list[int]],
+        model_config: ModelConfig,
     ) -> AsyncGenerator[PromptType, None]:
         processor = cached_processor_from_config(model_config)
         feature_extractor = processor.feature_extractor
@@ -216,10 +219,8 @@ class Qwen3OmniMoeForConditionalGeneration(
             segment_duration_s=segment_duration_s,
         )
 
-        audio_placeholder = cls.get_placeholder_str("audio", 0)
-        prompt_template = (
-            f"<|im_start|>user\n{audio_placeholder}<|im_end|>\n<|im_start|>assistant\n"
-        )
+        audio_placeholder = Qwen3OmniMoeThinkerForConditionalGeneration.get_placeholder_str("audio", 0)
+        prompt_template = f"<|im_start|>user\n{audio_placeholder}<|im_end|>\n<|im_start|>assistant\n"
 
         prompt_token_ids = tokenizer.encode(prompt_template)
 
