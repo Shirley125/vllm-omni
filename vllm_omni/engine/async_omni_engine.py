@@ -667,16 +667,14 @@ class AsyncOmniEngine:
                     _inject_global_id(item, request_id)
 
             # Full input processing (tokenization, multimodal, etc.)
-            process_kwargs: dict[str, Any] = {
-                "request_id": request_id,
-                "prompt": prompt,
-                "params": params,
-                "supported_tasks": self.supported_tasks,
-                "arrival_time": arrival_time,
-            }
-            if resumable:
-                process_kwargs["resumable"] = True
-            request = self.input_processor.process_inputs(**process_kwargs)
+            request = self.input_processor.process_inputs(
+                request_id=request_id,
+                prompt=prompt,
+                params=params,
+                supported_tasks=self.supported_tasks,
+                arrival_time=arrival_time,
+                resumable=resumable,
+            )
             # TODO (Peiqi): add this for Qwen3-TTS only. Other models don't have
             # additional_information field in the prompt.
             request = _upgrade_to_omni_request(request, prompt)
