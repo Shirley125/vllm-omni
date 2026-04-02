@@ -265,7 +265,7 @@ class AsyncOmni(EngineClient, OmniBase):
         except Exception as e:
             await self.abort(request_id)
             logger.info(f"[AsyncOmni] Request {request_id} failed (input error): {e}")
-            raise e.cause from e
+            raise
 
     async def _add_streaming_input_request(
         self,
