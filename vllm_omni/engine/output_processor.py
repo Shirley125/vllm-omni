@@ -355,3 +355,38 @@ class MultimodalOutputProcessor(VLLMOutputProcessor):
             engine_core_timestamp=engine_core_timestamp,
             iteration_stats=iteration_stats,
         )
+
+    def _update_streaming_request_state(
+        self, req_state: RequestState, request: EngineCoreRequest, prompt: str | None
+    ) -> None:
+        """Queue a streaming update instead of immediately applying it."""
+        if not request.resumable:
+            # Final request - just mark completion, don't add its dummy tokens.
+            if req_state.input_chunk_queue is None:
+                # Engine already finished - emit final output and clean up.
+                # self._finish_request(req_state)
+                req_state.streaming_input = False
+                if req_state.queue is not None:
+                    # Emit a final output with finished=True
+                    # to unblock the generate() loop.
+                    req_state.queue.put(STREAM_FINISHED)
+            elif req_state.input_chunk_queue:
+                req_state.input_chunk_queue[-1].final = True
+            else:
+                req_state.streaming_input = False
+            return
+
+        update = StreamingUpdate(
+            prompt=prompt,
+            prompt_token_ids=request.prompt_token_ids,
+            arrival_time=request.arrival_time,
+        )
+
+        # Apply request updates now if the last input already completed.
+        if req_state.input_chunk_queue is None:
+            req_state.apply_streaming_update(update)
+            req_state.input_chunk_queue = deque()
+        else:
+            # Queue the streaming update otherwise.
+            req_state.input_chunk_queue.append(update)
+

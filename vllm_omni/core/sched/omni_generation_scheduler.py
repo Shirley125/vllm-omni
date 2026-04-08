@@ -576,8 +576,17 @@ class OmniGenerationScheduler(VLLMScheduler):
                 # Set finished request set in EngineCoreOutputs for this client.
                 if (eco := engine_core_outputs.get(client_index)) is not None:
                     eco.finished_requests = finished_set
+                    outputs = [
+                        EngineCoreOutput(req_id, [], finish_reason=FinishReason.STOP)
+                        for req_id in finished_set
+                    ]
+                    eco.outputs = outputs
                 else:
-                    engine_core_outputs[client_index] = EngineCoreOutput
+                    outputs = [
+                        EngineCoreOutput(req_id, [],finish_reason=FinishReason.STOP)
+                        for req_id in finished_set
+                    ]
+                    engine_core_outputs[client_index] = EngineCoreOutputs(finished_requests=finished_set, outputs=outputs)
             finished_req_ids.clear()
 
         if (stats := self.make_stats(spec_decoding_stats, kv_connector_stats, cudagraph_stats, perf_stats)) is not None:
