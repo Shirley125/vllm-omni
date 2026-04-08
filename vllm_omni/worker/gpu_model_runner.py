@@ -1399,12 +1399,11 @@ class OmniGPUModelRunner(GPUModelRunner):
 
     def _update_streaming_input_additional_info(self, new_req_data, req_id):
         # For streaming input prefill case only. Update buffer from last segment input
+        # TODO: define streaming input buffer key in qwen3_omni.py
         cached_additional_info = self.model_intermediate_buffer.get(req_id, {})
         if cached_additional_info:
-            print(f"cwj gpu model runner cached_additional_info = {cached_additional_info}")
             payload_info = getattr(new_req_data, "additional_information", None)
             inc_info = deserialize_additional_information(payload_info)
-            print(f"cwj gpu model runner inc_info = {inc_info}")
             if isinstance(inc_info, dict) and inc_info:
                 merged_info = dict(cached_additional_info)
                 for key, value in inc_info.items():
@@ -1423,5 +1422,4 @@ class OmniGPUModelRunner(GPUModelRunner):
                     merged_info[key] = value
 
                 self.model_intermediate_buffer[req_id] = merged_info
-                print(f"cwj gpu model runner merged_info = {merged_info}")
                 setattr(self.requests[req_id], "additional_information_cpu", merged_info)

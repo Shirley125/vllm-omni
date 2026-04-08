@@ -412,10 +412,6 @@ class GPUARModelRunner(OmniGPUModelRunner):
                         kv_connector_output,
                     )
 
-                print("===== logits_indices stats =====")
-                print(f"cwj indics min: {logits_indices.min().item()}")
-                print(f"cwj indics max: {logits_indices.max().item()}")
-                print(f"cwj hidden_states.size(0): {hidden_states.size(0)}")
                 sample_hidden_states = hidden_states[logits_indices]
                 # Try with sampling_metadata first; fall back to without for models that don't support it
                 try:

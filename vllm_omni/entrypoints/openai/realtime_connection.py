@@ -49,10 +49,6 @@ class RealtimeConnection(VllmRealtimeConnection):
             return [], 24000
 
         sr = mm.get("sr") or mm.get("sample_rate") or mm.get("audio_sample_rate") or 24000
-        stage_id = getattr(output, "stage_id", None)
-        final_output_type = getattr(output, "final_output_type", None)
-        if stage_id == 2 or final_output_type == "audio":
-            logger.info(f"cwj realtime connection multimodal_output = {mm}")
         key = "audio" if "audio" in mm else ("model_outputs" if "model_outputs" in mm else None)
         if key is None:
             return [], int(sr)
