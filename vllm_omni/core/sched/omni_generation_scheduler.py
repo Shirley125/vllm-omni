@@ -17,7 +17,6 @@ from vllm.v1.engine import (
     EngineCoreEventType,
     EngineCoreOutput,
     EngineCoreOutputs,
-    FinishReason,
 )
 from vllm.v1.metrics.perf import PerfStats
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
@@ -36,7 +35,6 @@ class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         model_config = self.vllm_config.model_config
-        self.finished_req_ids_dict: dict[int, set[str]] | None = defaultdict(set)
         self.chunk_transfer_adapter = None
         if getattr(model_config, "async_chunk", False):
             self.chunk_transfer_adapter = OmniChunkTransferAdapter(self.vllm_config)
@@ -577,7 +575,7 @@ class OmniGenerationScheduler(VLLMScheduler):
                 if (eco := engine_core_outputs.get(client_index)) is not None:
                     eco.finished_requests = finished_set
                 else:
-                    engine_core_outputs[client_index] = EngineCoreOutput
+                    engine_core_outputs[client_index] = EngineCoreOutputs(finished_requests=finished_set)
             finished_req_ids.clear()
 
         if (stats := self.make_stats(spec_decoding_stats, kv_connector_stats, cudagraph_stats, perf_stats)) is not None:
@@ -590,10 +588,7 @@ class OmniGenerationScheduler(VLLMScheduler):
 
         return engine_core_outputs
 
-
-    def _update_request_as_session(
-            self, session: Request, update: StreamingUpdate
-    ) -> None:
+    def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         """
         Override: replace the waiting session with the next streaming update.
 

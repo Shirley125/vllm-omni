@@ -310,7 +310,7 @@ class StageEngineCoreClientBase:
                 prompt,
                 self.requires_multimodal_data,
                 new_prompt_len_snapshot,
-                is_streaming_session
+                is_streaming_session,
             )
 
         if not self.engine_input_source:

@@ -1,4 +1,3 @@
-from collections import deque
 from typing import Any
 
 import numpy as np
@@ -10,11 +9,9 @@ from vllm.tokenizers import TokenizerLike
 from vllm.v1.engine import EngineCoreOutput, EngineCoreRequest, FinishReason
 from vllm.v1.engine.output_processor import OutputProcessor as VLLMOutputProcessor
 from vllm.v1.engine.output_processor import (
-    STREAM_FINISHED,
     OutputProcessorOutput,
     RequestOutputCollector,
     RequestState,
-    StreamingUpdate,
 )
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.metrics.stats import IterationStats
@@ -222,6 +219,7 @@ class OmniRequestState(RequestState):
             if not outputs:
                 return None
             external_req_id = self.parent_req.external_req_id
+
         return self._new_request_output(external_req_id, outputs, finished, kv_transfer_params)
 
     def _new_completion_output(

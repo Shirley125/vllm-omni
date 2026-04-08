@@ -1391,7 +1391,7 @@ class OmniGPUModelRunner(GPUModelRunner):
                 merged_info = dict(cached_additional_info)
                 for key, value in inc_info.items():
                     if key in ("thinker_prefill_embeddings", "thinker_hidden_states") and isinstance(
-                            value, torch.Tensor
+                        value, torch.Tensor
                     ):
                         inc_tensor = value.detach().to("cpu").contiguous()
                         old_tensor = merged_info.get(key)
