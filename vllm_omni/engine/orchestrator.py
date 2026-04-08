@@ -20,7 +20,7 @@ from vllm.config import ModelConfig
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.pooling_params import PoolingParams
-from vllm.sampling_params import SamplingParams
+from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.v1.engine import EngineCoreOutputs
 
 from vllm_omni.distributed.omni_connectors.adapter import compute_talker_prompt_ids_length
@@ -41,6 +41,7 @@ def build_engine_core_request_from_tokens(
     params: SamplingParams | PoolingParams,
     arrival_time: float | None = None,
     model_config: ModelConfig | None = None,
+    resumable: bool = False,
 ) -> OmniEngineCoreRequest:
     """Build an OmniEngineCoreRequest directly from an OmniTokensPrompt.
 
@@ -83,6 +84,7 @@ def build_engine_core_request_from_tokens(
         cache_salt=None,
         data_parallel_rank=None,
         prompt_embeds=prompt_embeds,
+        resumable=resumable,
         additional_information=additional_info_payload,
     )
 
@@ -103,6 +105,13 @@ class OrchestratorRequestState:
 
     # Metrics: timestamp when request was submitted to each stage
     stage_submit_ts: dict[int, float] = field(default_factory=dict)
+
+    # Streaming input Request
+    is_streaming_session: bool = False
+    # Request of streaming input finished
+    final_stage_finished: bool = False
+    segment_finished: bool = False
+    new_prompt_len_snapshot: Any = None
 
 
 class Orchestrator:
@@ -345,23 +354,66 @@ class Orchestrator:
                 }
             )
 
-        if (
-            finished
-            and stage_id < req_state.final_stage_id
+        should_forward = False
+        if (stage_id < req_state.final_stage_id
             and not self.async_chunk
-            and not self._next_stage_already_submitted(stage_id, req_state)
+            and (not self._next_stage_already_submitted(stage_id, req_state) or req_state.is_streaming_session)
         ):
-            if req_id in self._companion_map and not self._all_companions_done(req_id):
+            # Non-streaming requests forward on stage completion.
+            # Streaming sessions forward each segment output so downstream
+            # stages can consume updates in-order and retain history.
+            should_forward = finished or (req_state.is_streaming_session and req_state.segment_finished)
+
+        if should_forward:
+            # If this parent has CFG companions, defer forwarding until all done
+            if (
+                finished
+                and req_id in self._companion_map
+                and not self._all_companions_done(req_id)
+            ):
                 self._deferred_parents[req_id] = {
                     "stage_id": stage_id,
                     "output": output,
                 }
             else:
-                await self._forward_to_next_stage(req_id, stage_id, output, req_state)
+                await self._forward_to_next_stage(
+                    req_id,
+                    stage_id,
+                    output,
+                    req_state,
+                    is_streaming_session=req_state.is_streaming_session,
+                    is_final_update=False,
+                )
+                if req_state.is_streaming_session and finished:
+                    # For streaming sessions, send the terminal (resumable=False) update only on a finish
+                    await self._forward_to_next_stage(
+                        req_id,
+                        stage_id,
+                        output,
+                        req_state,
+                        is_streaming_session=True,
+                        is_final_update=True,
+                    )
 
         if finished and stage_id == req_state.final_stage_id:
-            self._cleanup_companion_state(req_id)
-            self.request_states.pop(req_id, None)
+            req_state.final_stage_finished = True
+            self._maybe_cleanup_request(req_id, req_state)
+
+    def _maybe_cleanup_request(
+        self,
+        req_id: str,
+        req_state: OrchestratorRequestState,
+    ) -> None:
+        """Cleanup request state when lifecycle conditions are satisfied."""
+        if req_state.is_streaming_session:
+            # For streaming sessions, cleanup only after we have both:
+            # 1) final-stage completion, and
+            # 2) explicit final update from input stream.
+            if not req_state.final_stage_finished:
+                return
+
+        self._cleanup_companion_state(req_id)
+        self.request_states.pop(req_id, None)
 
     def _cleanup_companion_state(self, parent_id: str) -> None:
         """Remove all companion tracking state for a completed parent."""
@@ -483,6 +535,9 @@ class Orchestrator:
         stage_id: int,
         output: Any,
         req_state: OrchestratorRequestState,
+        *,
+        is_streaming_session: bool = False,
+        is_final_update: bool = False,
     ) -> None:
         """Forward output from current stage to the next stage.
 
@@ -492,6 +547,8 @@ class Orchestrator:
         next_stage_id = stage_id + 1
         next_client = self.stage_clients[next_stage_id]
         params = req_state.sampling_params_list[next_stage_id]
+        #params.output_kind=RequestOutputKind.DELTA
+        next_stage_resumable = is_streaming_session and not is_final_update
 
         if next_client.stage_type == "diffusion":
             self.stage_clients[stage_id].set_engine_outputs([output])
@@ -540,6 +597,8 @@ class Orchestrator:
             next_inputs = next_client.process_engine_inputs(
                 stage_list=self.stage_clients,
                 prompt=req_state.prompt,
+                new_prompt_len_snapshot=req_state.new_prompt_len_snapshot,
+                is_streaming_session=req_state.is_streaming_session,
             )
         except Exception:
             logger.exception(
@@ -556,6 +615,7 @@ class Orchestrator:
                 prompt=next_input,
                 params=params,
                 model_config=self.stage_vllm_configs[next_stage_id].model_config,
+                resumable=next_stage_resumable,
             )
 
             # TODO: Here we directly use the req id to assign.
@@ -597,6 +657,12 @@ class Orchestrator:
             raw_outputs.timestamp,
             None,
         )
+        # todo:perf
+        for eco in raw_outputs.outputs:
+            req_state = self.request_states.get(eco.request_id)
+            if req_state:
+                req_state.segment_finished = eco.is_segment_finished
+                req_state.new_prompt_len_snapshot = eco.new_prompt_len_snapshot
 
         if processed.reqs_to_abort:
             await self.stage_clients[stage_id].abort_requests_async(processed.reqs_to_abort)
@@ -632,11 +698,14 @@ class Orchestrator:
 
         # Track request state - use original_prompt so downstream stages
         # (e.g. thinker2talker) can access the raw dict with multi_modal_data.
+        request = prompt
+        is_streaming = bool(getattr(request, "resumable", False))
         req_state = OrchestratorRequestState(
             request_id=request_id,
             prompt=original_prompt,
             sampling_params_list=sampling_params_list,
             final_stage_id=final_stage_id,
+            is_streaming_session=is_streaming,
         )
         req_state.stage_submit_ts[stage_id] = _time.time()
         self.request_states[request_id] = req_state
@@ -644,7 +713,6 @@ class Orchestrator:
         # Stage-0 prompt is already a fully-formed OmniEngineCoreRequest
         # (pre-processed by AsyncOmniEngine.add_request, output processor
         # already registered there) - submit directly.
-        request = prompt
         stage_client = self.stage_clients[stage_id]
         if stage_client.stage_type == "diffusion":
             if isinstance(prompt, list):
@@ -670,7 +738,8 @@ class Orchestrator:
         req_state = self.request_states.get(request_id)
         if req_state is None:
             logger.warning(
-                "[Orchestrator] streaming_update for unknown req=%s, falling back to add_request",
+                "[Orchestrator] streaming_update for unknown req=%s, "
+                "falling back to add_request",
                 request_id,
             )
             fallback_msg = dict(msg)
@@ -680,6 +749,10 @@ class Orchestrator:
 
         if "sampling_params_list" in msg and msg["sampling_params_list"]:
             req_state.sampling_params_list = msg["sampling_params_list"]
+        req_state.is_streaming_session = True
+        if not bool(getattr(request, "resumable", True)):
+            # If final stage has already completed, perform delayed cleanup now.
+            self._maybe_cleanup_request(request_id, req_state)
 
         req_state.stage_submit_ts[stage_id] = _time.time()
         stage_client = self.stage_clients[stage_id]
