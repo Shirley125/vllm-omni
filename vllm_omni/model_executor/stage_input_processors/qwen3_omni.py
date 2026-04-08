@@ -56,6 +56,7 @@ def _compute_talker_prompt_ids_length(info, device: torch.device | str = "cuda")
             assistant_len += 9  # 3 + 4 + 1 + 1
         else:
             pass
+    print(f"cwj thinker sum_user_len = {sum_user_len}, assistant_len = {assistant_len}")
     return sum_user_len + assistant_len
 
 
@@ -288,6 +289,10 @@ def thinker2talker(
     for i, thinker_output in enumerate(thinker_outputs):
         output = thinker_output.outputs[0]
         req_id = str(getattr(thinker_output, "request_id", f"idx-{i}"))
+        # todo: The next streaming segment is already concatenated to the prompt,
+        #  so it should be truncated, except last segment
+        print(f"cwj thinker2talker input ids = {thinker_output.prompt_token_ids}, new_prompt_len_snapshot = {new_prompt_len_snapshot}")
+        print(f"cwj thinker2talker output ids = {output.token_ids}")
         prompt_token_ids = thinker_output.prompt_token_ids
         output_ids = output.token_ids
         if is_streaming_session:
@@ -326,7 +331,16 @@ def thinker2talker(
         language = extract_language_from_prompt(prompt, index=i)
         if language is not None:
             info["language"] = language
+
+        # print(f"cwj input process len(thinker_sequences) = {len(info.get('thinker_sequences'))}")
+        print(f"cwj input process len(thinker_sequences) = {len(thinker_sequences)}")
+        print(f"cwj input process len(thinker_input_ids) = {len(thinker_input_ids)}")
+        print(f"cwj input process thinker_hidden.shape[0] = {info.get('thinker_hidden_states').shape[0]}")
+        print(f"cwj input process thinker_prefill_embeddings.shape[0] = {info.get('thinker_prefill_embeddings').shape[0]}")
+
         prompt_len = _compute_talker_prompt_ids_length(info, device=device)
+        print(f"cwj thinker prompt len: {len(thinker_input_ids)}, sequences len: {len(thinker_sequences)}, "
+              f"talker prompt len: {prompt_len}")
         talker_inputs.append(
             OmniTokensPrompt(
                 prompt_token_ids=[0] * prompt_len,
@@ -445,12 +459,13 @@ def talker2code2wav(
     for talker_output in talker_outputs:
         output = talker_output.outputs[0]
         seq_len = len(output.token_ids) - 1
+        print(f"cwj talker2code2wav output = {output}, seq_len = {seq_len}")
         # Extract codec codes from talker output
         # Expected shape: [8, seq_len] (8-layer RVQ codes)
         code_rows = output.multimodal_output["code_predictor_codes"][-seq_len:].to(torch.long)
         code_rows = _trim_leading_zero_rows(code_rows)
         codec_codes = code_rows.transpose(0, 1).cpu().reshape(-1).tolist()  # 16, seq_len_eff
-
+        print(f"cwj talker2code2wav codec_codes: {codec_codes}")
         code2wav_inputs.append(
             OmniTokensPrompt(
                 prompt_token_ids=codec_codes,
