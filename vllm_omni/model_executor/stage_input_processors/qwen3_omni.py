@@ -3,7 +3,6 @@
 # Copyright 2025 The Qwen team.
 """Stage input processor for Qwen3 Omni MoE: Thinker → Talker transition."""
 
-import os
 from typing import Any
 
 import torch
@@ -255,6 +254,7 @@ def thinker2talker_async_chunk(
 
     return talker_additional_info
 
+
 def thinker2talker(
     stage_list: list[Any],
     engine_input_source: list[int],
@@ -291,7 +291,11 @@ def thinker2talker(
         req_id = str(getattr(thinker_output, "request_id", f"idx-{i}"))
         # todo: The next streaming segment is already concatenated to the prompt,
         #  so it should be truncated, except last segment
-        print(f"cwj thinker2talker input ids = {thinker_output.prompt_token_ids}, new_prompt_len_snapshot = {new_prompt_len_snapshot}")
+        print(
+            "cwj thinker2talker input ids = "
+            f"{thinker_output.prompt_token_ids}, "
+            f"new_prompt_len_snapshot = {new_prompt_len_snapshot}"
+        )
         print(f"cwj thinker2talker output ids = {output.token_ids}")
         prompt_token_ids = thinker_output.prompt_token_ids
         output_ids = output.token_ids
@@ -316,8 +320,12 @@ def thinker2talker(
         incremental_cached_token_length = len(prompt_token_ids + output_ids) - 1
 
         info = {
-            "thinker_prefill_embeddings": output.multimodal_output["0"].detach().to(device=device, dtype=torch.float)[-incremental_cached_token_length:],
-            "thinker_hidden_states": output.multimodal_output["24"].detach().to(device=device, dtype=torch.float)[-incremental_cached_token_length:],
+            "thinker_prefill_embeddings": output.multimodal_output["0"]
+            .detach()
+            .to(device=device, dtype=torch.float)[-incremental_cached_token_length:],
+            "thinker_hidden_states": output.multimodal_output["24"]
+            .detach()
+            .to(device=device, dtype=torch.float)[-incremental_cached_token_length:],
             "thinker_sequences": thinker_sequences,
             "thinker_input_ids": thinker_input_ids,
             # Provide thinker-side TTS token embeddings for talker projection
@@ -336,11 +344,15 @@ def thinker2talker(
         print(f"cwj input process len(thinker_sequences) = {len(thinker_sequences)}")
         print(f"cwj input process len(thinker_input_ids) = {len(thinker_input_ids)}")
         print(f"cwj input process thinker_hidden.shape[0] = {info.get('thinker_hidden_states').shape[0]}")
-        print(f"cwj input process thinker_prefill_embeddings.shape[0] = {info.get('thinker_prefill_embeddings').shape[0]}")
+        print(
+            f"cwj input process thinker_prefill_embeddings.shape[0] = {info.get('thinker_prefill_embeddings').shape[0]}"
+        )
 
         prompt_len = _compute_talker_prompt_ids_length(info, device=device)
-        print(f"cwj thinker prompt len: {len(thinker_input_ids)}, sequences len: {len(thinker_sequences)}, "
-              f"talker prompt len: {prompt_len}")
+        print(
+            f"cwj thinker prompt len: {len(thinker_input_ids)}, sequences len: {len(thinker_sequences)}, "
+            f"talker prompt len: {prompt_len}"
+        )
         talker_inputs.append(
             OmniTokensPrompt(
                 prompt_token_ids=[0] * prompt_len,

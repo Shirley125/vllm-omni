@@ -102,7 +102,6 @@ class RealtimeConnection(VllmRealtimeConnection):
             )
 
             async for output in result_gen:
-
                 if output.outputs and len(output.outputs) > 0:
                     token_ids = list(output.outputs[0].token_ids)
                     if token_ids:

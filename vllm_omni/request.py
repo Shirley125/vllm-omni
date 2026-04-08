@@ -4,14 +4,15 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
-from vllm.v1.request import Request
 from vllm.multimodal.inputs import MultiModalFeatureSpec
 from vllm.sampling_params import SamplingParams
+from vllm.v1.request import Request
 
 if TYPE_CHECKING:
     from vllm.v1.core.kv_cache_utils import BlockHash
 
 from vllm_omni.engine import AdditionalInformationPayload, OmniEngineCoreRequest, PromptEmbedsPayload
+
 
 class OmniRequest(Request):
     """Request class for omni models, extending the base Request.
@@ -95,6 +96,7 @@ class OmniRequest(Request):
             reasoning_ended=request.reasoning_ended,
         )
 
+
 @dataclass
 class OmniStreamingUpdate:
     """
@@ -124,5 +126,3 @@ class OmniStreamingUpdate:
             sampling_params=request.sampling_params,
             additional_information=request.additional_information,
         )
-
-

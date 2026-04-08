@@ -20,7 +20,7 @@ from vllm.config import ModelConfig
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.pooling_params import PoolingParams
-from vllm.sampling_params import RequestOutputKind, SamplingParams
+from vllm.sampling_params import SamplingParams
 from vllm.v1.engine import EngineCoreOutputs
 
 from vllm_omni.distributed.omni_connectors.adapter import compute_talker_prompt_ids_length
@@ -355,7 +355,8 @@ class Orchestrator:
             )
 
         should_forward = False
-        if (stage_id < req_state.final_stage_id
+        if (
+            stage_id < req_state.final_stage_id
             and not self.async_chunk
             and (not self._next_stage_already_submitted(stage_id, req_state) or req_state.is_streaming_session)
         ):
@@ -366,11 +367,7 @@ class Orchestrator:
 
         if should_forward:
             # If this parent has CFG companions, defer forwarding until all done
-            if (
-                finished
-                and req_id in self._companion_map
-                and not self._all_companions_done(req_id)
-            ):
+            if finished and req_id in self._companion_map and not self._all_companions_done(req_id):
                 self._deferred_parents[req_id] = {
                     "stage_id": stage_id,
                     "output": output,
@@ -547,7 +544,7 @@ class Orchestrator:
         next_stage_id = stage_id + 1
         next_client = self.stage_clients[next_stage_id]
         params = req_state.sampling_params_list[next_stage_id]
-        #params.output_kind=RequestOutputKind.DELTA
+        # params.output_kind=RequestOutputKind.DELTA
         next_stage_resumable = is_streaming_session and not is_final_update
 
         if next_client.stage_type == "diffusion":
@@ -738,8 +735,7 @@ class Orchestrator:
         req_state = self.request_states.get(request_id)
         if req_state is None:
             logger.warning(
-                "[Orchestrator] streaming_update for unknown req=%s, "
-                "falling back to add_request",
+                "[Orchestrator] streaming_update for unknown req=%s, falling back to add_request",
                 request_id,
             )
             fallback_msg = dict(msg)

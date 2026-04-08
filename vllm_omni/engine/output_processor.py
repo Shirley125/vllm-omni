@@ -8,7 +8,6 @@ from vllm.outputs import PoolingRequestOutput
 from vllm.sampling_params import RequestOutputKind
 from vllm.tokenizers import TokenizerLike
 from vllm.v1.engine import EngineCoreOutput, EngineCoreRequest, FinishReason
-from vllm.v1.engine.output_processor import OutputProcessor as VLLMOutputProcessor
 from vllm.v1.engine.output_processor import (
     STREAM_FINISHED,
     OutputProcessorOutput,
@@ -16,6 +15,7 @@ from vllm.v1.engine.output_processor import (
     RequestState,
     StreamingUpdate,
 )
+from vllm.v1.engine.output_processor import OutputProcessor as VLLMOutputProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.metrics.stats import IterationStats
 
@@ -389,4 +389,3 @@ class MultimodalOutputProcessor(VLLMOutputProcessor):
         else:
             # Queue the streaming update otherwise.
             req_state.input_chunk_queue.append(update)
-

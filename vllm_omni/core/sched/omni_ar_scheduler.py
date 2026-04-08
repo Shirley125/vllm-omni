@@ -12,7 +12,7 @@ from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler as VLLMScheduler
 from vllm.v1.core.sched.utils import remove_all
-from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
+from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.metrics.perf import PerfStats
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
@@ -227,7 +227,7 @@ class OmniARScheduler(VLLMScheduler):
         # Wrap in omni scheduler output to carry transfer metadata.
         base_fields = SchedulerOutput.__dataclass_fields__.keys()
         base_data = {name: getattr(scheduler_output, name) for name in base_fields}
-        res =  OmniSchedulerOutput(
+        res = OmniSchedulerOutput(
             **base_data,
             finished_requests_needing_kv_transfer=finished_reqs,
         )
@@ -541,9 +541,7 @@ class OmniARScheduler(VLLMScheduler):
             init_logger(__name__).exception("Failed to process finished transfer requests")
         return engine_core_outputs
 
-    def _update_request_as_session(
-            self, session: Request, update: StreamingUpdate
-    ) -> None:
+    def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         """
         Override: Only update session at stage 0
         Updates the waiting session with the next streaming update.
