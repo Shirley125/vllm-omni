@@ -104,6 +104,7 @@ def _get_streaming_talker_tokens(
     request_id: str,
     prompt_token_ids: list[int],
     output_token_ids: list[int],
+    new_prompt_len_snapshot: Any | None = None,
     *,
     clear_state: bool = False,
 ) -> tuple[list[int], list[int], list[int], list[int]]:
@@ -120,7 +121,8 @@ def _get_streaming_talker_tokens(
     state = _THINKER2TALKER_STREAMING_STATE.get(request_id)
     if state is None:
         state = _Thinker2TalkerStreamingState()
-
+    if new_prompt_len_snapshot:
+        prompt_token_ids = prompt_token_ids[:-new_prompt_len_snapshot]
     cur_prompt_len = len(prompt_token_ids)
     cur_output_len = len(output_token_ids)
 
@@ -168,7 +170,6 @@ def thinker2talker_async_chunk(
     pooling_output: dict[str, Any],
     request: OmniEngineCoreRequest,
     is_finished: bool = False,
-    is_segment_finished: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Process thinker outputs to create talker inputs.
@@ -195,7 +196,6 @@ def thinker2talker_async_chunk(
             "tts_eos_embed": pooling_output.get("tts_eos_embed").detach().cpu(),
             "tts_pad_embed": pooling_output.get("tts_pad_embed").detach().cpu(),
             "finished": torch.tensor(is_finished, dtype=torch.bool),
-            "is_segment_finished": torch.tensor(is_segment_finished, dtype=torch.bool),
         }
         speaker = extract_speaker_from_request(request)
         if speaker is not None:
@@ -227,7 +227,6 @@ def thinker2talker_async_chunk(
 
         talker_additional_info = {
             "finished": torch.tensor(is_finished, dtype=torch.bool),
-            "is_segment_finished": torch.tensor(is_segment_finished, dtype=torch.bool),
         }
         speaker = extract_speaker_from_request(request)
         if speaker is not None:
@@ -285,12 +284,11 @@ def thinker2talker(
         prompt_token_ids = _ensure_list(thinker_output.prompt_token_ids)
         output_ids = _ensure_list(output.token_ids)
         if is_streaming_session:
-            if new_prompt_len_snapshot:
-                prompt_token_ids = prompt_token_ids[:-new_prompt_len_snapshot]
             prompt_token_ids, output_ids, thinker_sequences, thinker_input_ids = _get_streaming_talker_tokens(
                 req_id,
                 prompt_token_ids,
                 output_ids,
+                new_prompt_len_snapshot,
                 clear_state=bool(getattr(thinker_output, "finished", False)),
             )
         else:
@@ -343,7 +341,6 @@ def talker2code2wav_async_chunk(
     pooling_output: dict[str, Any],
     request: OmniEngineCoreRequest,
     is_finished: bool = False,
-    is_segment_finished: bool = False,
 ):
     """
     Pooling version.
@@ -403,7 +400,6 @@ def talker2code2wav_async_chunk(
         "code_predictor_codes": codes,
         "left_context_size": left_context_size,
         "finished": torch.tensor(is_finished, dtype=torch.bool),
-        "is_segment_finished": torch.tensor(is_segment_finished, dtype=torch.bool),
     }
     return info
 
@@ -445,8 +441,15 @@ def talker2code2wav(
             seq_len = _get_streaming_codec_delta_len(cur_seq_len, req_id, talker_output)
         # Extract codec codes from talker output
         # Expected shape: [8, seq_len] (8-layer RVQ codes)
-        code_rows = output.multimodal_output["code_predictor_codes"][-seq_len:].to(torch.long)
-        codec_codes = code_rows.transpose(0, 1).cpu().reshape(-1).tolist()
+        codec_codes = (
+            output.multimodal_output["code_predictor_codes"][-seq_len:]
+            .to(torch.long)
+            .transpose(0, 1)
+            .cpu()
+            .to(torch.long)
+            .reshape(-1)
+            .tolist()
+        )  # 16, seq_len
 
         code2wav_inputs.append(
             OmniTokensPrompt(

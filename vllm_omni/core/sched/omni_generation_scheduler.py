@@ -590,9 +590,9 @@ class OmniGenerationScheduler(VLLMScheduler):
 
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         """
-        Override: replace the waiting session with the next streaming update.
+        Override: Just replace the existing session with the next streaming update.
 
-        Discards the last sampled output token from the prior input chunk.
+        Do not expend prompt id using update.
         """
         # Current streaming input behavior for stage id > 0:
         # replace current prompt by updated prompt

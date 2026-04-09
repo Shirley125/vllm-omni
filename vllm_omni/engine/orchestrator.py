@@ -108,9 +108,9 @@ class OrchestratorRequestState:
 
     # Streaming input Request
     is_streaming_session: bool = False
-    # Request of streaming input finished
-    final_stage_finished: bool = False
+    # Flag of segment of streaming input finished
     segment_finished: bool = False
+    # Streaming update prompt length
     new_prompt_len_snapshot: Any = None
 
 
@@ -393,24 +393,8 @@ class Orchestrator:
                     )
 
         if finished and stage_id == req_state.final_stage_id:
-            req_state.final_stage_finished = True
-            self._maybe_cleanup_request(req_id, req_state)
-
-    def _maybe_cleanup_request(
-        self,
-        req_id: str,
-        req_state: OrchestratorRequestState,
-    ) -> None:
-        """Cleanup request state when lifecycle conditions are satisfied."""
-        if req_state.is_streaming_session:
-            # For streaming sessions, cleanup only after we have both:
-            # 1) final-stage completion, and
-            # 2) explicit final update from input stream.
-            if not req_state.final_stage_finished:
-                return
-
-        self._cleanup_companion_state(req_id)
-        self.request_states.pop(req_id, None)
+            self._cleanup_companion_state(req_id)
+            self.request_states.pop(req_id, None)
 
     def _cleanup_companion_state(self, parent_id: str) -> None:
         """Remove all companion tracking state for a completed parent."""
@@ -778,9 +762,6 @@ class Orchestrator:
         if "sampling_params_list" in msg and msg["sampling_params_list"]:
             req_state.sampling_params_list = msg["sampling_params_list"]
         req_state.is_streaming_session = True
-        if not bool(getattr(request, "resumable", True)):
-            # If final stage has already completed, perform delayed cleanup now.
-            self._maybe_cleanup_request(request_id, req_state)
 
         req_state.stage_submit_ts[stage_id] = _time.time()
         stage_client = self.stage_clients[stage_id]

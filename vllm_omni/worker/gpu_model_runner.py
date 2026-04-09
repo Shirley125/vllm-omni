@@ -1382,7 +1382,7 @@ class OmniGPUModelRunner(GPUModelRunner):
 
     def _update_streaming_input_additional_info(self, new_req_data, req_id):
         # For streaming input prefill case only. Update buffer from last segment input
-        # TODO: define streaming input buffer key in qwen3_omni.py
+        # TODO: update additional buffer in qwen3_omni.py, avoid gpu->cpu
         cached_additional_info = self.model_intermediate_buffer.get(req_id, {})
         if cached_additional_info:
             payload_info = getattr(new_req_data, "additional_information", None)
