@@ -7,7 +7,9 @@ from collections.abc import AsyncGenerator
 from uuid import uuid4
 
 import numpy as np
+from vllm.entrypoints.openai.engine.protocol import UsageInfo
 from vllm.entrypoints.openai.realtime.connection import RealtimeConnection as VllmRealtimeConnection
+from vllm.entrypoints.openai.realtime.protocol import TranscriptionDelta, TranscriptionDone
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -79,15 +81,22 @@ class RealtimeConnection(VllmRealtimeConnection):
     ):
         request_id = f"rt-{self.connection_id}-{uuid4()}"
         sent_audio = False
-        done_sent = False
+        audio_done_sent = False
+        full_text = ""
+        sent_text_len = 0
+        prompt_token_ids_len = 0
+        completion_tokens_len = 0
 
         try:
-            from vllm.sampling_params import RequestOutputKind, SamplingParams
+            from vllm.sampling_params import SamplingParams
 
             sampling_params = SamplingParams.from_optional(
                 temperature=0.0,
                 max_tokens=self.serving.model_cls.realtime_max_tokens,
-                output_kind=RequestOutputKind.DELTA,
+                # FIX ME: We cannot enable output_kind=DELTA right now.
+                # Enabling SamplingParams.output_kind=DELTA causes missing token IDs
+                # during thinker2talker transfer. We temporarily keep cumulative
+                # text output and deduplicate here by slicing with sent_text_len.
                 skip_clone=True,
             )
 
@@ -99,9 +108,26 @@ class RealtimeConnection(VllmRealtimeConnection):
 
             async for output in result_gen:
                 if output.outputs and len(output.outputs) > 0:
-                    token_ids = list(output.outputs[0].token_ids)
+                    output0 = output.outputs[0]
+                    token_ids = list(output0.token_ids)
                     if token_ids:
                         input_stream.put_nowait(token_ids)
+                        completion_tokens_len += len(token_ids)
+                    if not prompt_token_ids_len and output.prompt_token_ids:
+                        prompt_token_ids_len = len(output.prompt_token_ids)
+                    cumulative_text = output0.text or ""
+                    if cumulative_text:
+                        if len(cumulative_text) >= sent_text_len:
+                            delta_text = cumulative_text[sent_text_len:]
+                        else:
+                            delta_text = cumulative_text
+                        sent_text_len = len(cumulative_text)
+                        full_text = cumulative_text
+                    else:
+                        delta_text = ""
+
+                    if delta_text:
+                        await self.send(TranscriptionDelta(delta=delta_text))
 
                 audio_chunks, sample_rate = self._extract_audio_chunks(output)
 
@@ -119,15 +145,22 @@ class RealtimeConnection(VllmRealtimeConnection):
                 if not self._is_connected:
                     break
 
+            usage = UsageInfo(
+                prompt_tokens=prompt_token_ids_len,
+                completion_tokens=completion_tokens_len,
+                total_tokens=prompt_token_ids_len + completion_tokens_len,
+            )
+            await self.send(TranscriptionDone(text=full_text, usage=usage))
+
             if sent_audio:
                 await self.send_json({"type": "response.audio.done", "has_audio": True})
-                done_sent = True
+                audio_done_sent = True
         except Exception as e:
             logger.exception("Error in generation: %s", e)
             await self.send_error(str(e), "processing_error")
         finally:
             # Always send terminal event so clients don't hang forever.
-            if self._is_connected and not done_sent:
+            if self._is_connected and not audio_done_sent:
                 try:
                     await self.send_json({"type": "response.audio.done", "has_audio": sent_audio})
                 except Exception:

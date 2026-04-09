@@ -108,7 +108,9 @@ def _get_streaming_talker_tokens(
     clear_state: bool = False,
 ) -> tuple[list[int], list[int], list[int], list[int]]:
     """Return streaming token slices and merged token views for thinker->talker.
-
+       e.g. For the second streaming input request:
+       merged_sequences: [input_prompt 1, output_tokens 1[:-1], input_prompt 2, output_tokens 2]
+      thinker_input_ids: [input_prompt 1, output_tokens 1[:-1], input_prompt 2]
     Returns:
         inc_prompt: prompt token delta for this segment.
         inc_output: output token delta for this segment.
@@ -132,9 +134,6 @@ def _get_streaming_talker_tokens(
 
     # Persist history for next segment. Drop the latest sampled token to keep
     # thinker_input_ids / thinker_sequences alignment with next-step append.
-    # For the second streaming input request:
-    # merged_sequences: [input_prompt 1, output_tokens 1[:-1], input_prompt 2, output_tokens 2]
-    # thinker_input_ids: [input_prompt 1, output_tokens 1[:-1], input_prompt 2]
     cached_sequences.extend(delta_sequences[:-1])
 
     state.last_prompt_len = cur_prompt_len
