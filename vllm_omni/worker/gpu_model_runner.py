@@ -1405,7 +1405,6 @@ class OmniGPUModelRunner(GPUModelRunner):
         if cached_additional_info:
             payload_info = getattr(new_req_data, "additional_information", None)
             inc_info = deserialize_additional_information(payload_info)
-            logger.info(f"cwj }")
             if isinstance(inc_info, dict) and inc_info:
                 merged_info = dict(cached_additional_info)
                 for key, value in inc_info.items():
