@@ -3,6 +3,7 @@
 # Copyright 2025 The Qwen team.
 """Stage input processor for Qwen3 Omni MoE: Thinker → Talker transition."""
 
+import os
 from typing import Any
 
 import torch
@@ -17,6 +18,10 @@ from vllm_omni.model_executor.stage_input_processors.tts_utils import (
     extract_speaker_from_prompt,
     extract_speaker_from_request,
 )
+
+_THINKER2TALKER_LAST_PROMPT_LEN: dict[str, int] = {}
+_THINKER2TALKER_LAST_OUTPUT_LEN: dict[str, int] = {}
+_THINKER2TALKER_STREAMING_TOKEN_CACHE: dict[str, dict[str, list[int]]] = {}
 
 
 def _compute_talker_prompt_ids_length(info, device: torch.device | str = "cuda") -> int:
@@ -51,7 +56,7 @@ def _compute_talker_prompt_ids_length(info, device: torch.device | str = "cuda")
             assistant_len += 9  # 3 + 4 + 1 + 1
         else:
             pass
-
+    print(f"cwj thinker sum_user_len = {sum_user_len}, assistant_len = {assistant_len}")
     return sum_user_len + assistant_len
 
 
@@ -84,6 +89,83 @@ def _validate_stage_inputs(stage_list, engine_input_source):
     return stage.engine_outputs
 
 
+def _trim_leading_zero_rows(code_rows: torch.Tensor) -> torch.Tensor:
+    """Drop prefill placeholder rows that are all zeros.
+
+    In talker stage, prefill may initialize code_predictor_codes with zero rows.
+    For code2wav, we should keep only rows from the first non-zero row onward.
+    """
+    if not isinstance(code_rows, torch.Tensor) or code_rows.numel() == 0:
+        return code_rows
+    if code_rows.ndim != 2:
+        return code_rows
+    non_zero_rows = (code_rows != 0).any(dim=1)
+    if not bool(non_zero_rows.any().item()):
+        return code_rows[:0]
+    first_valid = int(torch.nonzero(non_zero_rows, as_tuple=False)[0].item())
+    return code_rows[first_valid:]
+
+
+def _slice_incremental_tokens(
+    request_id: str,
+    prompt_token_ids: list[int],
+    output_token_ids: list[int],
+    *,
+    clear_state: bool = False,
+) -> tuple[list[int], list[int]]:
+    """Return incremental prompt/output token slices for one request."""
+    prev_prompt_len = _THINKER2TALKER_LAST_PROMPT_LEN.get(request_id, 0)
+    prev_output_len = _THINKER2TALKER_LAST_OUTPUT_LEN.get(request_id, 0)
+
+    cur_prompt_len = len(prompt_token_ids)
+    cur_output_len = len(output_token_ids)
+
+    inc_prompt = prompt_token_ids[prev_prompt_len:]
+    inc_output = output_token_ids[prev_output_len:]
+
+    _THINKER2TALKER_LAST_PROMPT_LEN[request_id] = cur_prompt_len
+    _THINKER2TALKER_LAST_OUTPUT_LEN[request_id] = cur_output_len
+
+    if clear_state:
+        _THINKER2TALKER_LAST_PROMPT_LEN.pop(request_id, None)
+        _THINKER2TALKER_LAST_OUTPUT_LEN.pop(request_id, None)
+
+    return inc_prompt, inc_output
+
+
+def _merge_streaming_token_info(
+    request_id: str,
+    prompt_token_ids: list[int],
+    output_token_ids: list[int],
+    *,
+    clear_state: bool = False,
+) -> tuple[list[int], list[int]]:
+    """Merge token deltas and derive thinker_input_ids from thinker_sequences."""
+    merged_seq = prompt_token_ids + output_token_ids
+    if not merged_seq:
+        if clear_state:
+            _THINKER2TALKER_STREAMING_TOKEN_CACHE.pop(request_id, None)
+        return merged_seq, []
+
+    cached = _THINKER2TALKER_STREAMING_TOKEN_CACHE.get(request_id)
+    old_seq = []
+    if cached is not None:
+        old_seq = cached.get("thinker_sequences", [])
+        if old_seq is not None:
+            merged_seq = old_seq + merged_seq
+
+    merged_input_ids = old_seq + prompt_token_ids
+    _THINKER2TALKER_STREAMING_TOKEN_CACHE[request_id] = {
+        "thinker_sequences": merged_seq[:-1],
+        "thinker_input_ids": merged_input_ids,
+    }
+
+    if clear_state:
+        _THINKER2TALKER_STREAMING_TOKEN_CACHE.pop(request_id, None)
+
+    return merged_seq, merged_input_ids
+
+
 # =========================
 # Thinker -> Talker
 # =========================
@@ -94,6 +176,7 @@ def thinker2talker_async_chunk(
     pooling_output: dict[str, Any],
     request: OmniEngineCoreRequest,
     is_finished: bool = False,
+    is_segment_finished: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Process thinker outputs to create talker inputs.
@@ -120,6 +203,7 @@ def thinker2talker_async_chunk(
             "tts_eos_embed": pooling_output.get("tts_eos_embed").detach().cpu(),
             "tts_pad_embed": pooling_output.get("tts_pad_embed").detach().cpu(),
             "finished": torch.tensor(is_finished, dtype=torch.bool),
+            "is_segment_finished": torch.tensor(is_segment_finished, dtype=torch.bool),
         }
         speaker = extract_speaker_from_request(request)
         if speaker is not None:
@@ -151,6 +235,7 @@ def thinker2talker_async_chunk(
 
         talker_additional_info = {
             "finished": torch.tensor(is_finished, dtype=torch.bool),
+            "is_segment_finished": torch.tensor(is_segment_finished, dtype=torch.bool),
         }
         speaker = extract_speaker_from_request(request)
         if speaker is not None:
@@ -170,12 +255,13 @@ def thinker2talker_async_chunk(
 
     return talker_additional_info
 
-
 def thinker2talker(
     stage_list: list[Any],
     engine_input_source: list[int],
     prompt: OmniTokensPrompt | TextPrompt | None = None,
     requires_multimodal_data: bool = False,
+    new_prompt_len_snapshot: Any | None = None,
+    is_streaming_session: bool = False,
 ) -> list[OmniTokensPrompt]:
     """
     Process thinker outputs to create talker inputs.
@@ -202,14 +288,38 @@ def thinker2talker(
     # Process each thinker output
     for i, thinker_output in enumerate(thinker_outputs):
         output = thinker_output.outputs[0]
+        req_id = str(getattr(thinker_output, "request_id", f"idx-{i}"))
+        # todo: The next streaming segment is already concatenated to the prompt,
+        #  so it should be truncated, except last segment
+        print(f"cwj thinker2talker input ids = {thinker_output.prompt_token_ids}, new_prompt_len_snapshot = {new_prompt_len_snapshot}")
+        print(f"cwj thinker2talker output ids = {output.token_ids}")
+        prompt_token_ids = thinker_output.prompt_token_ids
+        output_ids = output.token_ids
+        if is_streaming_session:
+            if new_prompt_len_snapshot:
+                prompt_token_ids = thinker_output.prompt_token_ids[:-new_prompt_len_snapshot]
+            prompt_token_ids, output_ids = _slice_incremental_tokens(
+                req_id,
+                prompt_token_ids,
+                output_ids,
+                clear_state=bool(getattr(thinker_output, "finished", False)),
+            )
+            thinker_sequences, thinker_input_ids = _merge_streaming_token_info(
+                req_id,
+                prompt_token_ids,
+                output_ids,
+                clear_state=bool(getattr(thinker_output, "finished", False)),
+            )
+        else:
+            thinker_sequences = prompt_token_ids + output_ids
+            thinker_input_ids = prompt_token_ids
+        incremental_cached_token_length = len(prompt_token_ids + output_ids) - 1
 
         info = {
-            "thinker_prefill_embeddings": output.multimodal_output["0"].detach().to(device=device, dtype=torch.float),
-            "thinker_hidden_states": output.multimodal_output["24"].detach().to(device=device, dtype=torch.float),
-            "thinker_sequences": (
-                thinker_output.prompt_token_ids + output.token_ids
-            ),  # the thinker_sequences is the whole ids
-            "thinker_input_ids": thinker_output.prompt_token_ids,
+            "thinker_prefill_embeddings": output.multimodal_output["0"].detach().to(device=device, dtype=torch.float)[-incremental_cached_token_length:],
+            "thinker_hidden_states": output.multimodal_output["24"].detach().to(device=device, dtype=torch.float)[-incremental_cached_token_length:],
+            "thinker_sequences": thinker_sequences,
+            "thinker_input_ids": thinker_input_ids,
             # Provide thinker-side TTS token embeddings for talker projection
             "tts_bos_embed": output.multimodal_output["tts_bos_embed"].detach().to(device=device, dtype=torch.float),
             "tts_eos_embed": output.multimodal_output["tts_eos_embed"].detach().to(device=device, dtype=torch.float),
@@ -222,8 +332,15 @@ def thinker2talker(
         if language is not None:
             info["language"] = language
 
-        prompt_len = _compute_talker_prompt_ids_length(info, device=device)
+        # print(f"cwj input process len(thinker_sequences) = {len(info.get('thinker_sequences'))}")
+        print(f"cwj input process len(thinker_sequences) = {len(thinker_sequences)}")
+        print(f"cwj input process len(thinker_input_ids) = {len(thinker_input_ids)}")
+        print(f"cwj input process thinker_hidden.shape[0] = {info.get('thinker_hidden_states').shape[0]}")
+        print(f"cwj input process thinker_prefill_embeddings.shape[0] = {info.get('thinker_prefill_embeddings').shape[0]}")
 
+        prompt_len = _compute_talker_prompt_ids_length(info, device=device)
+        print(f"cwj thinker prompt len: {len(thinker_input_ids)}, sequences len: {len(thinker_sequences)}, "
+              f"talker prompt len: {prompt_len}")
         talker_inputs.append(
             OmniTokensPrompt(
                 prompt_token_ids=[0] * prompt_len,
@@ -246,6 +363,7 @@ def talker2code2wav_async_chunk(
     pooling_output: dict[str, Any],
     request: OmniEngineCoreRequest,
     is_finished: bool = False,
+    is_segment_finished: bool = False,
 ):
     """
     Pooling version.
@@ -305,6 +423,7 @@ def talker2code2wav_async_chunk(
         "code_predictor_codes": codes,
         "left_context_size": left_context_size,
         "finished": torch.tensor(is_finished, dtype=torch.bool),
+        "is_segment_finished": torch.tensor(is_segment_finished, dtype=torch.bool),
     }
     return info
 
@@ -314,6 +433,8 @@ def talker2code2wav(
     engine_input_source: list[int],
     prompt: OmniTokensPrompt | TextPrompt | None = None,
     requires_multimodal_data: bool = False,
+    new_prompt_len_snapshot: Any | None = None,
+    is_streaming_session: bool = False,
 ) -> list[OmniTokensPrompt]:
     """
     Process talker outputs to create code2wav inputs.
@@ -338,17 +459,13 @@ def talker2code2wav(
     for talker_output in talker_outputs:
         output = talker_output.outputs[0]
         seq_len = len(output.token_ids) - 1
+        print(f"cwj talker2code2wav output = {output}, seq_len = {seq_len}")
         # Extract codec codes from talker output
         # Expected shape: [8, seq_len] (8-layer RVQ codes)
-        codec_codes = (
-            output.multimodal_output["code_predictor_codes"][-seq_len:]
-            .to(torch.long)
-            .transpose(0, 1)
-            .cpu()
-            .to(torch.long)
-            .reshape(-1)
-            .tolist()
-        )  # 16, seq_len
+        code_rows = output.multimodal_output["code_predictor_codes"][-seq_len:].to(torch.long)
+        code_rows = _trim_leading_zero_rows(code_rows)
+        codec_codes = code_rows.transpose(0, 1).cpu().reshape(-1).tolist()  # 16, seq_len_eff
+        print(f"cwj talker2code2wav codec_codes: {codec_codes}")
         code2wav_inputs.append(
             OmniTokensPrompt(
                 prompt_token_ids=codec_codes,
@@ -356,5 +473,4 @@ def talker2code2wav(
                 mm_processor_kwargs=None,
             )
         )
-
     return code2wav_inputs

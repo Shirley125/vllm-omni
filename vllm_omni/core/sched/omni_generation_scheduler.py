@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import time
 from collections import defaultdict
 
@@ -11,9 +13,14 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.request_queue import create_request_queue
 from vllm.v1.core.sched.scheduler import Scheduler as VLLMScheduler
 from vllm.v1.core.sched.utils import remove_all
-from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
+from vllm.v1.engine import (
+    EngineCoreEventType,
+    EngineCoreOutput,
+    EngineCoreOutputs,
+    FinishReason,
+)
 from vllm.v1.metrics.perf import PerfStats
-from vllm.v1.request import Request, RequestStatus
+from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniCachedRequestData, OmniNewRequestData
@@ -29,6 +36,7 @@ class OmniGenerationScheduler(VLLMScheduler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         model_config = self.vllm_config.model_config
+        self.finished_req_ids_dict: dict[int, set[str]] | None = defaultdict(set)
         self.chunk_transfer_adapter = None
         if getattr(model_config, "async_chunk", False):
             self.chunk_transfer_adapter = OmniChunkTransferAdapter(self.vllm_config)
@@ -569,7 +577,7 @@ class OmniGenerationScheduler(VLLMScheduler):
                 if (eco := engine_core_outputs.get(client_index)) is not None:
                     eco.finished_requests = finished_set
                 else:
-                    engine_core_outputs[client_index] = EngineCoreOutputs(finished_requests=finished_set)
+                    engine_core_outputs[client_index] = EngineCoreOutput
             finished_req_ids.clear()
 
         if (stats := self.make_stats(spec_decoding_stats, kv_connector_stats, cudagraph_stats, perf_stats)) is not None:
@@ -581,3 +589,33 @@ class OmniGenerationScheduler(VLLMScheduler):
             eco.scheduler_stats = stats
 
         return engine_core_outputs
+
+
+    def _update_request_as_session(
+            self, session: Request, update: StreamingUpdate
+    ) -> None:
+        """
+        Override: replace the waiting session with the next streaming update.
+
+        Discards the last sampled output token from the prior input chunk.
+        """
+        # Current streaming input behavior for stage id > 0:
+        # replace current prompt by updated prompt
+        del session._all_token_ids
+        session._output_token_ids.clear()
+        del session.prompt_token_ids
+        session.num_computed_tokens = 0
+        session._all_token_ids = update.prompt_token_ids or ()
+        session.prompt_token_ids = update.prompt_token_ids or ()
+        session.additional_information = update.additional_information or None
+        # Update block hashes for the new tokens.
+        session.update_block_hashes()
+        session.num_prompt_tokens = len(session.prompt_token_ids)
+        session.arrival_time = update.arrival_time
+        session.sampling_params = update.sampling_params
+        if session.status == RequestStatus.WAITING_FOR_STREAMING_REQ:
+            self.num_waiting_for_streaming_input -= 1
+        session.status = RequestStatus.WAITING
+
+        if self.log_stats:
+            session.record_event(EngineCoreEventType.QUEUED)

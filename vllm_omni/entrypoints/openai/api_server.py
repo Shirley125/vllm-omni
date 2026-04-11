@@ -52,7 +52,6 @@ from vllm.entrypoints.openai.engine.protocol import (
 from vllm.entrypoints.openai.models.protocol import BaseModelPath
 from vllm.entrypoints.openai.models.serving import OpenAIServingModels
 from vllm.entrypoints.openai.orca_metrics import metrics_header
-from vllm.entrypoints.openai.realtime.connection import RealtimeConnection
 from vllm.entrypoints.openai.realtime.serving import OpenAIServingRealtime
 from vllm.entrypoints.openai.responses.serving import OpenAIServingResponses
 from vllm.entrypoints.openai.server_utils import get_uvicorn_log_config
@@ -92,6 +91,7 @@ from vllm_omni.entrypoints.openai.image_api_utils import (
     validate_layered_layers,
 )
 from vllm_omni.entrypoints.openai.protocol.audio import BatchSpeechRequest, OpenAICreateSpeechRequest
+from vllm_omni.entrypoints.openai.realtime_connection import RealtimeConnection
 from vllm_omni.entrypoints.openai.protocol.images import (
     ImageData,
     ImageGenerationRequest,

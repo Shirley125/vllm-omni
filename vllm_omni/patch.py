@@ -9,13 +9,14 @@ from vllm.v1.engine import EngineCoreOutput as _OriginalEngineCoreOutput
 from vllm.v1.engine import EngineCoreOutputs as _OriginalEngineCoreOutputs
 from vllm.v1.engine import EngineCoreRequest as _OriginalEngineCoreRequest
 from vllm.v1.request import Request as _OriginalRequest
+from vllm.v1.request import StreamingUpdate as _OriginalStreamingUpdate
 from vllm.v1.request import RequestStatus
 
 import vllm_omni.logger  # noqa: F401
 from vllm_omni.engine import OmniEngineCoreOutput, OmniEngineCoreOutputs, OmniEngineCoreRequest
 from vllm_omni.inputs.data import OmniTokensPrompt
 from vllm_omni.model_executor.layers.rotary_embedding import OmniMRotaryEmbedding
-from vllm_omni.request import OmniRequest
+from vllm_omni.request import OmniRequest, OmniStreamingUpdate
 
 # =============================================================================
 # Patch GlmImageTextConfig to expose mrope_section in rope_parameters
@@ -63,5 +64,7 @@ for module_name, module in sys.modules.items():
         module.MRotaryEmbedding = OmniMRotaryEmbedding
     if hasattr(module, "Request") and module.Request == _OriginalRequest:
         module.Request = OmniRequest
+    if hasattr(module, "StreamingUpdate") and module.StreamingUpdate == _OriginalStreamingUpdate:
+        module.StreamingUpdate = OmniStreamingUpdate
     if hasattr(module, "EngineCoreRequest") and module.EngineCoreRequest == _OriginalEngineCoreRequest:
         module.EngineCoreRequest = OmniEngineCoreRequest

@@ -297,6 +297,8 @@ class StageEngineCoreClientBase:
         self,
         stage_list: list[Any],
         prompt: OmniTokensPrompt | list[OmniTokensPrompt] | None = None,
+        new_prompt_len_snapshot: Any | None = None,
+        is_streaming_session: bool = False,
     ) -> list[OmniTokensPrompt]:
         """Process inputs from upstream stages."""
         from vllm_omni.inputs.data import OmniTokensPrompt
@@ -307,6 +309,8 @@ class StageEngineCoreClientBase:
                 self.engine_input_source,
                 prompt,
                 self.requires_multimodal_data,
+                new_prompt_len_snapshot,
+                is_streaming_session
             )
 
         if not self.engine_input_source:

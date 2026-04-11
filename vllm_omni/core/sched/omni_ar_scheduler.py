@@ -15,7 +15,7 @@ from vllm.v1.core.sched.utils import remove_all
 from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.metrics.perf import PerfStats
 from vllm.v1.outputs import ModelRunnerOutput
-from vllm.v1.request import Request, RequestStatus
+from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
 from vllm_omni.core.sched.output import OmniSchedulerOutput
@@ -71,6 +71,8 @@ class OmniARScheduler(VLLMScheduler):
         self.chunk_transfer_adapter = None
         if getattr(model_config, "async_chunk", False):
             self.chunk_transfer_adapter = OmniChunkTransferAdapter(self.vllm_config)
+        # Snapshot prompt length for each streaming input update
+        self._new_prompt_len_snapshot: dict[str, int] = {}
 
     def _get_kv_transfer_criteria(self) -> dict | None:
         # Note: vllm_config is available in Scheduler after super().__init__
@@ -225,10 +227,11 @@ class OmniARScheduler(VLLMScheduler):
         # Wrap in omni scheduler output to carry transfer metadata.
         base_fields = SchedulerOutput.__dataclass_fields__.keys()
         base_data = {name: getattr(scheduler_output, name) for name in base_fields}
-        return OmniSchedulerOutput(
+        res =  OmniSchedulerOutput(
             **base_data,
             finished_requests_needing_kv_transfer=finished_reqs,
         )
+        return res
 
     def update_from_output(
         self,
@@ -313,6 +316,7 @@ class OmniARScheduler(VLLMScheduler):
                 )
 
             stopped = False
+            is_segment_finished = False
             new_logprobs = None
             new_token_ids = generated_token_ids
             pooler_output = pooler_outputs[req_index] if pooler_outputs else None
@@ -341,6 +345,7 @@ class OmniARScheduler(VLLMScheduler):
                 # Capture finish_reason BEFORE _handle_stopped_request, which may
                 # reset the status to WAITING for streaming requests that continue.
                 finish_reason = request.get_finished_reason()
+                is_segment_finished = request.is_finished() and request.resumable
                 finished = self._handle_stopped_request(request)
                 if finished:
                     kv_transfer_params = self._free_request(request)
@@ -393,6 +398,8 @@ class OmniARScheduler(VLLMScheduler):
                         num_external_computed_tokens=request.num_external_computed_tokens,
                         routed_experts=routed_experts,
                         num_nans_in_logits=request.num_nans_in_logits,
+                        is_segment_finished=is_segment_finished,
+                        new_prompt_len_snapshot=self._new_prompt_len_snapshot.get(req_id, None),
                     )
                 )
                 if self.chunk_transfer_adapter is not None:
@@ -532,8 +539,43 @@ class OmniARScheduler(VLLMScheduler):
                         self.waiting_for_transfer_free.remove(req_id)
         except Exception:
             init_logger(__name__).exception("Failed to process finished transfer requests")
-
         return engine_core_outputs
+
+    def _update_request_as_session(
+            self, session: Request, update: StreamingUpdate
+    ) -> None:
+        """
+        Override: Only update session at stage 0
+        Updates the waiting session with the next streaming update.
+
+        Discards the last sampled output token from the prior input chunk.
+        """
+        req_id = session.request_id
+        self._new_prompt_len_snapshot[req_id] = len(update.prompt_token_ids)
+        if self.vllm_config.model_config.stage_id != 0:
+            # Current streaming input behavior for stage id > 0:
+            # replace current prompt by updated prompt
+            del session._all_token_ids
+            session._output_token_ids.clear()
+            del session.prompt_token_ids
+            session.num_computed_tokens = 0
+            session._all_token_ids = update.prompt_token_ids or ()
+            session.prompt_token_ids = update.prompt_token_ids or ()
+            session.additional_information = update.additional_information or None
+            # Update block hashes for the new tokens.
+            session.update_block_hashes()
+            session.num_prompt_tokens = len(session.prompt_token_ids)
+            session.arrival_time = update.arrival_time
+            session.sampling_params = update.sampling_params
+            if session.status == RequestStatus.WAITING_FOR_STREAMING_REQ:
+                self.num_waiting_for_streaming_input -= 1
+            session.status = RequestStatus.WAITING
+
+            if self.log_stats:
+                session.record_event(EngineCoreEventType.QUEUED)
+
+        else:
+            super()._update_request_as_session(session, update)
 
     def _free_request(self, request: Request, delay_free_blocks: bool = False) -> dict[str, Any] | None:
         # TODO(wzliu)! for offline mode, we should not end process until all data is transferred
@@ -548,6 +590,7 @@ class OmniARScheduler(VLLMScheduler):
         self.encoder_cache_manager.free(request)
         request_id = request.request_id
         self.finished_req_ids.add(request_id)
+        self._new_prompt_len_snapshot.pop(request_id, None)
         if self.finished_req_ids_dict is not None:
             self.finished_req_ids_dict[request.client_index].add(request_id)
 
