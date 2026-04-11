@@ -227,11 +227,10 @@ class OmniARScheduler(VLLMScheduler):
         # Wrap in omni scheduler output to carry transfer metadata.
         base_fields = SchedulerOutput.__dataclass_fields__.keys()
         base_data = {name: getattr(scheduler_output, name) for name in base_fields}
-        res = OmniSchedulerOutput(
+        return OmniSchedulerOutput(
             **base_data,
             finished_requests_needing_kv_transfer=finished_reqs,
         )
-        return res
 
     def update_from_output(
         self,
@@ -539,14 +538,15 @@ class OmniARScheduler(VLLMScheduler):
                         self.waiting_for_transfer_free.remove(req_id)
         except Exception:
             init_logger(__name__).exception("Failed to process finished transfer requests")
+
         return engine_core_outputs
 
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         """
-        Override: Only update session at stage 0
-        Updates the waiting session with the next streaming update.
+        Override: Only extend prompt at stage 0, and replace
+        the existing session with the next streaming update at other stages.
 
-        Discards the last sampled output token from the prior input chunk.
+        Discards the last sampled output token from the prior input chunk at stage 0.
         """
         req_id = session.request_id
         self._new_prompt_len_snapshot[req_id] = len(update.prompt_token_ids)

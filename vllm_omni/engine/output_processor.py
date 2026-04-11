@@ -1,4 +1,3 @@
-from collections import deque
 from typing import Any
 
 import numpy as np
@@ -8,14 +7,12 @@ from vllm.outputs import PoolingRequestOutput
 from vllm.sampling_params import RequestOutputKind
 from vllm.tokenizers import TokenizerLike
 from vllm.v1.engine import EngineCoreOutput, EngineCoreRequest, FinishReason
+from vllm.v1.engine.output_processor import OutputProcessor as VLLMOutputProcessor
 from vllm.v1.engine.output_processor import (
-    STREAM_FINISHED,
     OutputProcessorOutput,
     RequestOutputCollector,
     RequestState,
-    StreamingUpdate,
 )
-from vllm.v1.engine.output_processor import OutputProcessor as VLLMOutputProcessor
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.metrics.stats import IterationStats
 
@@ -222,6 +219,7 @@ class OmniRequestState(RequestState):
             if not outputs:
                 return None
             external_req_id = self.parent_req.external_req_id
+
         return self._new_request_output(external_req_id, outputs, finished, kv_transfer_params)
 
     def _new_completion_output(
@@ -355,37 +353,3 @@ class MultimodalOutputProcessor(VLLMOutputProcessor):
             engine_core_timestamp=engine_core_timestamp,
             iteration_stats=iteration_stats,
         )
-
-    def _update_streaming_request_state(
-        self, req_state: RequestState, request: EngineCoreRequest, prompt: str | None
-    ) -> None:
-        """Queue a streaming update instead of immediately applying it."""
-        if not request.resumable:
-            # Final request - just mark completion, don't add its dummy tokens.
-            if req_state.input_chunk_queue is None:
-                # Engine already finished - emit final output and clean up.
-                # self._finish_request(req_state)
-                req_state.streaming_input = False
-                if req_state.queue is not None:
-                    # Emit a final output with finished=True
-                    # to unblock the generate() loop.
-                    req_state.queue.put(STREAM_FINISHED)
-            elif req_state.input_chunk_queue:
-                req_state.input_chunk_queue[-1].final = True
-            else:
-                req_state.streaming_input = False
-            return
-
-        update = StreamingUpdate(
-            prompt=prompt,
-            prompt_token_ids=request.prompt_token_ids,
-            arrival_time=request.arrival_time,
-        )
-
-        # Apply request updates now if the last input already completed.
-        if req_state.input_chunk_queue is None:
-            req_state.apply_streaming_update(update)
-            req_state.input_chunk_queue = deque()
-        else:
-            # Queue the streaming update otherwise.
-            req_state.input_chunk_queue.append(update)

@@ -1067,7 +1067,7 @@ class AsyncOmniEngine:
 
         # CFG companion expansion: create and enqueue companion requests
         # so the AR stage also generates their KV caches.
-        if self.prompt_expand_func is not None and final_stage_id > 0 and not resumable:
+        if self.prompt_expand_func is not None and final_stage_id > 0:
             original_prompt = msg.get("original_prompt", prompt)
             effective_spl = msg.get("sampling_params_list", [])
             stage0_params = effective_spl[0] if effective_spl else None

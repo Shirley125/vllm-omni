@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Copyright 2025 The Qwen team.
-"""Stage input processor for Qwen3 Omni MoE: Thinker → Talker transition."""
+"""Stage input processor for Qwen3 Omni MoE: Thinker -> Talker transition."""
 
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -17,10 +18,6 @@ from vllm_omni.model_executor.stage_input_processors.tts_utils import (
     extract_speaker_from_prompt,
     extract_speaker_from_request,
 )
-
-_THINKER2TALKER_LAST_PROMPT_LEN: dict[str, int] = {}
-_THINKER2TALKER_LAST_OUTPUT_LEN: dict[str, int] = {}
-_THINKER2TALKER_STREAMING_TOKEN_CACHE: dict[str, dict[str, list[int]]] = {}
 
 
 def _compute_talker_prompt_ids_length(info, device: torch.device | str = "cuda") -> int:
@@ -55,7 +52,6 @@ def _compute_talker_prompt_ids_length(info, device: torch.device | str = "cuda")
             assistant_len += 9  # 3 + 4 + 1 + 1
         else:
             pass
-    print(f"cwj thinker sum_user_len = {sum_user_len}, assistant_len = {assistant_len}")
     return sum_user_len + assistant_len
 
 
@@ -88,81 +84,80 @@ def _validate_stage_inputs(stage_list, engine_input_source):
     return stage.engine_outputs
 
 
-def _trim_leading_zero_rows(code_rows: torch.Tensor) -> torch.Tensor:
-    """Drop prefill placeholder rows that are all zeros.
-
-    In talker stage, prefill may initialize code_predictor_codes with zero rows.
-    For code2wav, we should keep only rows from the first non-zero row onward.
-    """
-    if not isinstance(code_rows, torch.Tensor) or code_rows.numel() == 0:
-        return code_rows
-    if code_rows.ndim != 2:
-        return code_rows
-    non_zero_rows = (code_rows != 0).any(dim=1)
-    if not bool(non_zero_rows.any().item()):
-        return code_rows[:0]
-    first_valid = int(torch.nonzero(non_zero_rows, as_tuple=False)[0].item())
-    return code_rows[first_valid:]
+# =========================
+# Streaming input helpers
+# =========================
 
 
-def _slice_incremental_tokens(
+@dataclass
+class _Thinker2TalkerStreamingState:
+    last_prompt_len: int = 0
+    last_output_len: int = 0
+    merged_sequences: list[int] = field(default_factory=list)
+
+
+_THINKER2TALKER_STREAMING_STATE: dict[str, _Thinker2TalkerStreamingState] = {}
+_TALKER2CODE2WAV_LAST_SEQ_LEN: dict[str, int] = {}
+
+
+def _get_streaming_talker_tokens(
     request_id: str,
     prompt_token_ids: list[int],
     output_token_ids: list[int],
+    new_prompt_len_snapshot: Any | None = None,
     *,
     clear_state: bool = False,
-) -> tuple[list[int], list[int]]:
-    """Return incremental prompt/output token slices for one request."""
-    prev_prompt_len = _THINKER2TALKER_LAST_PROMPT_LEN.get(request_id, 0)
-    prev_output_len = _THINKER2TALKER_LAST_OUTPUT_LEN.get(request_id, 0)
-
+) -> tuple[list[int], list[int], list[int], list[int]]:
+    """Return streaming token slices and merged token views for thinker->talker.
+       e.g. For the second streaming input request:
+       merged_sequences: [input_prompt 1, output_tokens 1[:-1], input_prompt 2, output_tokens 2]
+      thinker_input_ids: [input_prompt 1, output_tokens 1[:-1], input_prompt 2]
+    Returns:
+        inc_prompt: prompt token delta for this segment.
+        inc_output: output token delta for this segment.
+        merged_sequences: full thinker_sequences to send downstream.
+        thinker_input_ids: full thinker_input_ids paired with merged_sequences.
+    """
+    state = _THINKER2TALKER_STREAMING_STATE.get(request_id)
+    if state is None:
+        state = _Thinker2TalkerStreamingState()
+    if new_prompt_len_snapshot:
+        prompt_token_ids = prompt_token_ids[:-new_prompt_len_snapshot]
     cur_prompt_len = len(prompt_token_ids)
     cur_output_len = len(output_token_ids)
 
-    inc_prompt = prompt_token_ids[prev_prompt_len:]
-    inc_output = output_token_ids[prev_output_len:]
+    inc_prompt = prompt_token_ids[state.last_prompt_len :]
+    inc_output = output_token_ids[state.last_output_len :]
+    delta_sequences = inc_prompt + inc_output
+    cached_sequences = state.merged_sequences
 
-    _THINKER2TALKER_LAST_PROMPT_LEN[request_id] = cur_prompt_len
-    _THINKER2TALKER_LAST_OUTPUT_LEN[request_id] = cur_output_len
+    merged_sequences = cached_sequences + delta_sequences
+    thinker_input_ids = cached_sequences + inc_prompt
 
-    if clear_state:
-        _THINKER2TALKER_LAST_PROMPT_LEN.pop(request_id, None)
-        _THINKER2TALKER_LAST_OUTPUT_LEN.pop(request_id, None)
+    # Persist history for next segment. Drop the latest sampled token to keep
+    # thinker_input_ids / thinker_sequences alignment with next-step append.
+    cached_sequences.extend(delta_sequences[:-1])
 
-    return inc_prompt, inc_output
-
-
-def _merge_streaming_token_info(
-    request_id: str,
-    prompt_token_ids: list[int],
-    output_token_ids: list[int],
-    *,
-    clear_state: bool = False,
-) -> tuple[list[int], list[int]]:
-    """Merge token deltas and derive thinker_input_ids from thinker_sequences."""
-    merged_seq = prompt_token_ids + output_token_ids
-    if not merged_seq:
-        if clear_state:
-            _THINKER2TALKER_STREAMING_TOKEN_CACHE.pop(request_id, None)
-        return merged_seq, []
-
-    cached = _THINKER2TALKER_STREAMING_TOKEN_CACHE.get(request_id)
-    old_seq = []
-    if cached is not None:
-        old_seq = cached.get("thinker_sequences", [])
-        if old_seq is not None:
-            merged_seq = old_seq + merged_seq
-
-    merged_input_ids = old_seq + prompt_token_ids
-    _THINKER2TALKER_STREAMING_TOKEN_CACHE[request_id] = {
-        "thinker_sequences": merged_seq[:-1],
-        "thinker_input_ids": merged_input_ids,
-    }
+    state.last_prompt_len = cur_prompt_len
+    state.last_output_len = cur_output_len
 
     if clear_state:
-        _THINKER2TALKER_STREAMING_TOKEN_CACHE.pop(request_id, None)
+        _THINKER2TALKER_STREAMING_STATE.pop(request_id, None)
+    else:
+        _THINKER2TALKER_STREAMING_STATE[request_id] = state
 
-    return merged_seq, merged_input_ids
+    return inc_prompt, inc_output, merged_sequences, thinker_input_ids
+
+
+def _get_streaming_codec_delta_len(cur_seq_len: int, request_id: str, talker_output: Any) -> int:
+    """Return newly added seq_len for talker->code2wav in streaming mode."""
+    prev_seq_len = _TALKER2CODE2WAV_LAST_SEQ_LEN.get(request_id, 0)
+    seq_len = cur_seq_len - prev_seq_len
+    _TALKER2CODE2WAV_LAST_SEQ_LEN[request_id] = cur_seq_len + 1
+    if bool(getattr(talker_output, "finished", False)):
+        # Final segment: clear history to avoid cross-session carry-over.
+        _TALKER2CODE2WAV_LAST_SEQ_LEN.pop(request_id, None)
+    return seq_len
 
 
 # =========================
@@ -175,7 +170,6 @@ def thinker2talker_async_chunk(
     pooling_output: dict[str, Any],
     request: OmniEngineCoreRequest,
     is_finished: bool = False,
-    is_segment_finished: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Process thinker outputs to create talker inputs.
@@ -202,7 +196,6 @@ def thinker2talker_async_chunk(
             "tts_eos_embed": pooling_output.get("tts_eos_embed").detach().cpu(),
             "tts_pad_embed": pooling_output.get("tts_pad_embed").detach().cpu(),
             "finished": torch.tensor(is_finished, dtype=torch.bool),
-            "is_segment_finished": torch.tensor(is_segment_finished, dtype=torch.bool),
         }
         speaker = extract_speaker_from_request(request)
         if speaker is not None:
@@ -234,7 +227,6 @@ def thinker2talker_async_chunk(
 
         talker_additional_info = {
             "finished": torch.tensor(is_finished, dtype=torch.bool),
-            "is_segment_finished": torch.tensor(is_segment_finished, dtype=torch.bool),
         }
         speaker = extract_speaker_from_request(request)
         if speaker is not None:
@@ -289,43 +281,30 @@ def thinker2talker(
     for i, thinker_output in enumerate(thinker_outputs):
         output = thinker_output.outputs[0]
         req_id = str(getattr(thinker_output, "request_id", f"idx-{i}"))
-        # todo: The next streaming segment is already concatenated to the prompt,
-        #  so it should be truncated, except last segment
-        print(
-            "cwj thinker2talker input ids = "
-            f"{thinker_output.prompt_token_ids}, "
-            f"new_prompt_len_snapshot = {new_prompt_len_snapshot}"
-        )
-        print(f"cwj thinker2talker output ids = {output.token_ids}")
-        prompt_token_ids = thinker_output.prompt_token_ids
-        output_ids = output.token_ids
+        prompt_token_ids = _ensure_list(thinker_output.prompt_token_ids)
+        output_ids = _ensure_list(output.token_ids)
         if is_streaming_session:
-            if new_prompt_len_snapshot:
-                prompt_token_ids = thinker_output.prompt_token_ids[:-new_prompt_len_snapshot]
-            prompt_token_ids, output_ids = _slice_incremental_tokens(
+            prompt_token_ids, output_ids, thinker_sequences, thinker_input_ids = _get_streaming_talker_tokens(
                 req_id,
                 prompt_token_ids,
                 output_ids,
-                clear_state=bool(getattr(thinker_output, "finished", False)),
-            )
-            thinker_sequences, thinker_input_ids = _merge_streaming_token_info(
-                req_id,
-                prompt_token_ids,
-                output_ids,
+                new_prompt_len_snapshot,
                 clear_state=bool(getattr(thinker_output, "finished", False)),
             )
         else:
             thinker_sequences = prompt_token_ids + output_ids
             thinker_input_ids = prompt_token_ids
-        incremental_cached_token_length = len(prompt_token_ids + output_ids) - 1
+        # For streaming input, just send incremental prefill and hidden states tensor to talker
+        # Equally applicable to non-streaming cases.
+        new_seq_length = len(prompt_token_ids + output_ids) - 1
 
         info = {
             "thinker_prefill_embeddings": output.multimodal_output["0"]
             .detach()
-            .to(device=device, dtype=torch.float)[-incremental_cached_token_length:],
+            .to(device=device, dtype=torch.float)[-new_seq_length:],
             "thinker_hidden_states": output.multimodal_output["24"]
             .detach()
-            .to(device=device, dtype=torch.float)[-incremental_cached_token_length:],
+            .to(device=device, dtype=torch.float)[-new_seq_length:],
             "thinker_sequences": thinker_sequences,
             "thinker_input_ids": thinker_input_ids,
             # Provide thinker-side TTS token embeddings for talker projection
@@ -339,20 +318,7 @@ def thinker2talker(
         language = extract_language_from_prompt(prompt, index=i)
         if language is not None:
             info["language"] = language
-
-        # print(f"cwj input process len(thinker_sequences) = {len(info.get('thinker_sequences'))}")
-        print(f"cwj input process len(thinker_sequences) = {len(thinker_sequences)}")
-        print(f"cwj input process len(thinker_input_ids) = {len(thinker_input_ids)}")
-        print(f"cwj input process thinker_hidden.shape[0] = {info.get('thinker_hidden_states').shape[0]}")
-        print(
-            f"cwj input process thinker_prefill_embeddings.shape[0] = {info.get('thinker_prefill_embeddings').shape[0]}"
-        )
-
         prompt_len = _compute_talker_prompt_ids_length(info, device=device)
-        print(
-            f"cwj thinker prompt len: {len(thinker_input_ids)}, sequences len: {len(thinker_sequences)}, "
-            f"talker prompt len: {prompt_len}"
-        )
         talker_inputs.append(
             OmniTokensPrompt(
                 prompt_token_ids=[0] * prompt_len,
@@ -375,7 +341,6 @@ def talker2code2wav_async_chunk(
     pooling_output: dict[str, Any],
     request: OmniEngineCoreRequest,
     is_finished: bool = False,
-    is_segment_finished: bool = False,
 ):
     """
     Pooling version.
@@ -435,7 +400,6 @@ def talker2code2wav_async_chunk(
         "code_predictor_codes": codes,
         "left_context_size": left_context_size,
         "finished": torch.tensor(is_finished, dtype=torch.bool),
-        "is_segment_finished": torch.tensor(is_segment_finished, dtype=torch.bool),
     }
     return info
 
@@ -468,16 +432,25 @@ def talker2code2wav(
     talker_outputs = _validate_stage_inputs(stage_list, engine_input_source)
     code2wav_inputs: list[OmniTokensPrompt] = []
     # Process each talker output
-    for talker_output in talker_outputs:
+    for i, talker_output in enumerate(talker_outputs):
         output = talker_output.outputs[0]
-        seq_len = len(output.token_ids) - 1
-        print(f"cwj talker2code2wav output = {output}, seq_len = {seq_len}")
+        req_id = str(getattr(talker_output, "request_id", f"idx-{i}"))
+        cur_seq_len = len(output.token_ids) - 1
+        seq_len = cur_seq_len
+        if is_streaming_session:
+            seq_len = _get_streaming_codec_delta_len(cur_seq_len, req_id, talker_output)
         # Extract codec codes from talker output
         # Expected shape: [8, seq_len] (8-layer RVQ codes)
-        code_rows = output.multimodal_output["code_predictor_codes"][-seq_len:].to(torch.long)
-        code_rows = _trim_leading_zero_rows(code_rows)
-        codec_codes = code_rows.transpose(0, 1).cpu().reshape(-1).tolist()  # 16, seq_len_eff
-        print(f"cwj talker2code2wav codec_codes: {codec_codes}")
+        codec_codes = (
+            output.multimodal_output["code_predictor_codes"][-seq_len:]
+            .to(torch.long)
+            .transpose(0, 1)
+            .cpu()
+            .to(torch.long)
+            .reshape(-1)
+            .tolist()
+        )  # 16, seq_len
+
         code2wav_inputs.append(
             OmniTokensPrompt(
                 prompt_token_ids=codec_codes,
