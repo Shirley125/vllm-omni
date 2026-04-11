@@ -513,10 +513,21 @@ class OmniGPUModelRunner(GPUModelRunner):
                     if getattr(self.model, "model_stage", None) == "talker":
                         tail = req_state.output_token_ids[-8:] if req_state.output_token_ids else []
                         has_minus1 = any(tok == -1 for tok in tail)
+                        all_tokens_len = len(resumed_token_ids)
+                        source_tail = resumed_token_ids[-8:] if resumed_token_ids else []
+                        source_has_minus1 = any(tok == -1 for tok in source_tail)
+                        len_delta = num_output_tokens - all_tokens_len
                         logger.warning(
-                            "[CWJ_TALKER_STATE] RESUME_RECOVER req_id=%s out_len=%s tail=%s has_minus1=%s",
+                            "[CWJ_TALKER_STATE] RESUME_RECOVER req_id=%s num_output_tokens=%s "
+                            "all_token_ids_len=%s len_delta=%s out_len=%s "
+                            "src_tail=%s src_has_minus1=%s tail=%s has_minus1=%s",
                             req_id,
+                            num_output_tokens,
+                            all_tokens_len,
+                            len_delta,
                             len(req_state.output_token_ids),
+                            source_tail,
+                            source_has_minus1,
                             tail,
                             has_minus1,
                         )
