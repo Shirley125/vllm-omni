@@ -1382,7 +1382,6 @@ class OmniGPUModelRunner(GPUModelRunner):
 
     def _update_streaming_input_additional_info(self, new_req_data, req_id):
         # For streaming input prefill case only. Update buffer from last segment input
-        # TODO: update additional buffer in qwen3_omni.py, avoid gpu->cpu
         cached_additional_info = self.model_intermediate_buffer.get(req_id, {})
         if cached_additional_info:
             payload_info = getattr(new_req_data, "additional_information", None)
@@ -1390,9 +1389,7 @@ class OmniGPUModelRunner(GPUModelRunner):
             if isinstance(inc_info, dict) and inc_info:
                 merged_info = dict(cached_additional_info)
                 for key, value in inc_info.items():
-                    if key in ("thinker_prefill_embeddings", "thinker_hidden_states") and isinstance(
-                        value, torch.Tensor
-                    ):
+                    if key in self.model.streaming_accumulated_keys and isinstance(value, torch.Tensor):
                         inc_tensor = value.detach().to("cpu").contiguous()
                         old_tensor = merged_info.get(key)
                         if old_tensor is None:
@@ -1403,6 +1400,6 @@ class OmniGPUModelRunner(GPUModelRunner):
 
                     # Default for other keys: latest value.
                     merged_info[key] = value
-
+                merged_info["num_processed_tokens"] = 0
                 self.model_intermediate_buffer[req_id] = merged_info
                 setattr(self.requests[req_id], "additional_information_cpu", merged_info)

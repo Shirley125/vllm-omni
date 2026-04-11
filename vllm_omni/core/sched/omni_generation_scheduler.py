@@ -596,11 +596,12 @@ class OmniGenerationScheduler(VLLMScheduler):
         """
         # Current streaming input behavior for stage id > 0:
         # replace current prompt by updated prompt
-        del session._all_token_ids
         session._output_token_ids.clear()
+        session._all_token_ids.clear()
+        new_prompt = update.prompt_token_ids or ()
+        session._all_token_ids.extend(new_prompt)
         del session.prompt_token_ids
         session.num_computed_tokens = 0
-        session._all_token_ids = update.prompt_token_ids or ()
         session.prompt_token_ids = update.prompt_token_ids or ()
         session.additional_information = update.additional_information or None
         # Update block hashes for the new tokens.
