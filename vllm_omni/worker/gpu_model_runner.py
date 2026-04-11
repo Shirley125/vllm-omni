@@ -410,6 +410,20 @@ class OmniGPUModelRunner(GPUModelRunner):
             resumed_from_preemption = req_id in req_data.resumed_req_ids
             num_output_tokens = req_data.num_output_tokens[i]
             req_index = self.input_batch.req_id_to_index.get(req_id)
+            if getattr(self.model, "model_stage", None) == "talker":
+                tail = req_state.output_token_ids[-8:] if req_state.output_token_ids else []
+                has_minus1 = any(tok == -1 for tok in tail)
+                logger.warning(
+                    "[CWJ_TALKER_STATE] ENTER req_id=%s req_index=%s num_computed=%s "
+                    "num_output_tokens=%s out_len=%s tail=%s has_minus1=%s",
+                    req_id,
+                    req_index,
+                    num_computed_tokens,
+                    num_output_tokens,
+                    len(req_state.output_token_ids),
+                    tail,
+                    has_minus1,
+                )
 
             if req_state.prev_num_draft_len and self.use_async_scheduling:
                 # prev_num_draft_len is used in async scheduling mode with
@@ -430,6 +444,15 @@ class OmniGPUModelRunner(GPUModelRunner):
                 else:
                     optimistic_num_accepted = req_state.prev_num_draft_len
                     req_state.output_token_ids.extend([-1] * optimistic_num_accepted)
+                    if getattr(self.model, "model_stage", None) == "talker":
+                        tail = req_state.output_token_ids[-8:] if req_state.output_token_ids else []
+                        logger.warning(
+                            "[CWJ_TALKER_STATE] PLACEHOLDER_EXTEND req_id=%s accepted=%s out_len=%s tail=%s",
+                            req_id,
+                            optimistic_num_accepted,
+                            len(req_state.output_token_ids),
+                            tail,
+                        )
 
                     deferred_spec_decode_corrections.append((req_id, optimistic_num_accepted, req_state))
 
@@ -487,6 +510,16 @@ class OmniGPUModelRunner(GPUModelRunner):
                     # async scheduling case, so that correct input_ids are obtained.
                     resumed_token_ids = req_data.all_token_ids[req_id]
                     req_state.output_token_ids = resumed_token_ids[-num_output_tokens:]
+                    if getattr(self.model, "model_stage", None) == "talker":
+                        tail = req_state.output_token_ids[-8:] if req_state.output_token_ids else []
+                        has_minus1 = any(tok == -1 for tok in tail)
+                        logger.warning(
+                            "[CWJ_TALKER_STATE] RESUME_RECOVER req_id=%s out_len=%s tail=%s has_minus1=%s",
+                            req_id,
+                            len(req_state.output_token_ids),
+                            tail,
+                            has_minus1,
+                        )
 
                 reqs_to_add.append(req_state)
                 continue
@@ -504,6 +537,19 @@ class OmniGPUModelRunner(GPUModelRunner):
                 end_token_index = num_computed_tokens + len(new_token_ids)
                 self.input_batch.token_ids_cpu[req_index, start_token_index:end_token_index] = new_token_ids
                 self.input_batch.num_tokens_no_spec[req_index] = end_token_index
+                if getattr(self.model, "model_stage", None) == "talker":
+                    tail_new = new_token_ids[-8:] if new_token_ids else []
+                    has_minus1_new = any(tok == -1 for tok in tail_new)
+                    logger.warning(
+                        "[CWJ_TALKER_STATE] TOKEN_IDS_CPU_WRITE req_id=%s req_index=%s "
+                        "write_range=[%s,%s) new_tail=%s has_minus1_new=%s",
+                        req_id,
+                        req_index,
+                        start_token_index,
+                        end_token_index,
+                        tail_new,
+                        has_minus1_new,
+                    )
 
             # Add spec_token_ids to token_ids_cpu.
             self.input_batch.update_req_spec_token_ids(req_state, scheduled_spec_tokens)
@@ -1148,7 +1194,6 @@ class OmniGPUModelRunner(GPUModelRunner):
             # NOTE(woosuk): To unify token ids and soft tokens (vision
             # embeddings), we always use embeddings (rather than token ids)
             # as input to the multimodal model, even when the input is text.
-            logger.info(f"cwj input ids = {self.input_ids}, num_scheduled_tokens = {num_scheduled_tokens}")
             inputs_embeds_scheduled = self.model.embed_input_ids(
                 self.input_ids.gpu[:num_scheduled_tokens],
                 multimodal_embeddings=mm_embeds,

@@ -1,4 +1,3 @@
-import os
 from collections.abc import Iterable
 from typing import Any
 
@@ -518,27 +517,4 @@ class Qwen3OmniMoeModel(Qwen3MoeLLMForCausalLM):
         input_ids: torch.Tensor,
     ) -> torch.Tensor:
         """Embed codec input IDs."""
-        try:
-            vocab_size = int(self.model.codec_embedding.num_embeddings)
-            min_id = int(input_ids.min().item()) if input_ids.numel() > 0 else 0
-            max_id = int(input_ids.max().item()) if input_ids.numel() > 0 else 0
-            invalid_mask = (input_ids < 0) | (input_ids >= vocab_size)
-            invalid_count = int(invalid_mask.sum().item()) if input_ids.numel() > 0 else 0
-            head_ids = input_ids[:8].detach().cpu().tolist() if input_ids.numel() > 0 else []
-            tail_ids = input_ids[-8:].detach().cpu().tolist() if input_ids.numel() > 0 else []
-            logger.warning(
-                "[CWJ_TALKER_EMBED] shape=%s dtype=%s device=%s vocab_size=%d "
-                "min_id=%d max_id=%d invalid_count=%d head=%s tail=%s",
-                tuple(input_ids.shape),
-                str(input_ids.dtype),
-                str(input_ids.device),
-                vocab_size,
-                min_id,
-                max_id,
-                invalid_count,
-                head_ids,
-                tail_ids,
-            )
-        except Exception:
-            logger.exception("[CWJ_TALKER_EMBED] failed to log embed_input_ids probe")
         return self.model.codec_embedding(input_ids)
