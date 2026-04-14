@@ -37,10 +37,10 @@ if current_omni_platform.is_xpu():
 
 
 def _realtime_stage_config_path() -> str:
-    """CI omni layout without async_chunk; stage 0 thinker max_tokens=5."""
+    """CI omni layout without async_chunk; stage 0 thinker max_tokens=10."""
     return modify_stage_config(
         default_stage_config,
-        updates={"stage_args": {0: {"default_sampling_params.max_tokens": 5}}},
+        updates={"stage_args": {0: {"default_sampling_params.max_tokens": 10}}},
     )
 
 
@@ -51,7 +51,7 @@ realtime_server_params = [
             stage_config_path=_realtime_stage_config_path(),
             use_stage_cli=True,
         ),
-        id="thinker_max_tokens_5",
+        id="thinker_max_tokens_10",
     ),
 ]
 

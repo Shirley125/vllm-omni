@@ -552,7 +552,6 @@ class Orchestrator:
         next_stage_id = stage_id + 1
         next_client = self.stage_clients[next_stage_id]
         params = req_state.sampling_params_list[next_stage_id]
-        # params.output_kind=RequestOutputKind.DELTA
         next_stage_resumable = is_streaming_session and not is_final_update
 
         if next_client.stage_type == "diffusion":
