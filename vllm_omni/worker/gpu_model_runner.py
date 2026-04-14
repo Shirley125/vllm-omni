@@ -1389,7 +1389,10 @@ class OmniGPUModelRunner(GPUModelRunner):
             if isinstance(inc_info, dict) and inc_info:
                 merged_info = dict(cached_additional_info)
                 for key, value in inc_info.items():
-                    if key in self.model.streaming_accumulated_keys and isinstance(value, torch.Tensor):
+                    accumulated_keys: set[str] = set()
+                    if hasattr(self, "model") and hasattr(self.model, "streaming_accumulated_keys"):
+                        accumulated_keys = self.model.streaming_accumulated_keys
+                    if key in accumulated_keys and isinstance(value, torch.Tensor):
                         inc_tensor = value.detach().to("cpu").contiguous()
                         old_tensor = merged_info.get(key)
                         if old_tensor is None:

@@ -670,7 +670,6 @@ class Orchestrator:
             raw_outputs.timestamp,
             None,
         )
-        # todo:perf
         for eco in raw_outputs.outputs:
             req_state = self.request_states.get(eco.request_id)
             if req_state:
