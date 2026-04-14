@@ -106,7 +106,7 @@ class OrchestratorRequestState:
     # Metrics: timestamp when request was submitted to each stage
     stage_submit_ts: dict[int, float] = field(default_factory=dict)
 
-    # Streaming input Request
+    # Flag of streaming input Request
     is_streaming_session: bool = False
     # Flag of segment of streaming input finished
     segment_finished: bool = False
