@@ -93,7 +93,7 @@ class RealtimeConnection(VllmRealtimeConnection):
             sampling_params = SamplingParams.from_optional(
                 temperature=0.0,
                 max_tokens=self.serving.model_cls.realtime_max_tokens,
-                # FIX ME: We cannot enable output_kind=DELTA right now.
+                # FIXME: We cannot enable output_kind=DELTA right now.
                 # Enabling SamplingParams.output_kind=DELTA causes missing token IDs
                 # during thinker2talker transfer. We temporarily keep cumulative
                 # text output and deduplicate here by slicing with sent_text_len.

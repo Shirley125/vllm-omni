@@ -1210,8 +1210,8 @@ async def realtime_websocket(websocket: WebSocket):
                 "type": "error",
                 "error": (
                     "The /v1/realtime API is not supported when async_chunk is enabled on the server. "
-                    "Use a stage configuration with async_chunk disabled restart the server before using "
-                    "his endpoint."
+                    "Use a stage configuration with async_chunk disabled and restart the server before using "
+                    "this endpoint."
                 ),
                 "code": "unsupported",
             }
