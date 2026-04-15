@@ -304,13 +304,22 @@ class StageEngineCoreClientBase:
         from vllm_omni.inputs.data import OmniTokensPrompt
 
         if self.custom_process_input_func is not None:
+            # Non-streaming: keep the legacy arg call so older processors stay valid.
+            # Streaming: pass scheduler/orchestrator snapshot + flag for Qwen3-Omni-style bridges.
+            if is_streaming_session:
+                return self.custom_process_input_func(
+                    stage_list,
+                    self.engine_input_source,
+                    prompt,
+                    self.requires_multimodal_data,
+                    new_prompt_len_snapshot,
+                    is_streaming_session,
+                )
             return self.custom_process_input_func(
                 stage_list,
                 self.engine_input_source,
                 prompt,
                 self.requires_multimodal_data,
-                new_prompt_len_snapshot,
-                is_streaming_session,
             )
 
         if not self.engine_input_source:
