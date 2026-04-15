@@ -112,7 +112,8 @@ class RealtimeConnection(VllmRealtimeConnection):
                     token_ids = list(output0.token_ids)
                     if token_ids:
                         input_stream.put_nowait(token_ids)
-                        completion_tokens_len += len(token_ids)
+                        # token_ids are cumulative per request
+                        completion_tokens_len = len(token_ids)
                     if not prompt_token_ids_len and output.prompt_token_ids:
                         prompt_token_ids_len = len(output.prompt_token_ids)
                     cumulative_text = output0.text or ""
