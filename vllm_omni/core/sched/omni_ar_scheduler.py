@@ -12,12 +12,13 @@ from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler as VLLMScheduler
 from vllm.v1.core.sched.utils import remove_all
-from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
+from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.metrics.perf import PerfStats
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 
+from vllm_omni.core.sched.omni_scheduler_mixin import OmniSchedulerMixin
 from vllm_omni.core.sched.output import OmniSchedulerOutput
 from vllm_omni.distributed.omni_connectors.transfer_adapter.chunk_transfer_adapter import (
     OmniChunkTransferAdapter,
@@ -38,7 +39,7 @@ class KVCacheTransferData:
         return asdict(self)
 
 
-class OmniARScheduler(VLLMScheduler):
+class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
     """
     OmniARScheduler: Scheduler for vLLM-Omni multimodal processing.
 
@@ -551,26 +552,7 @@ class OmniARScheduler(VLLMScheduler):
         req_id = session.request_id
         self._new_prompt_len_snapshot[req_id] = len(update.prompt_token_ids)
         if self.vllm_config.model_config.stage_id != 0:
-            # Current streaming input behavior for stage id > 0:
-            # replace current prompt by updated prompt
-            session._output_token_ids.clear()
-            session._all_token_ids.clear()
-            new_prompt = update.prompt_token_ids or ()
-            session._all_token_ids.extend(new_prompt)
-            session.num_computed_tokens = 0
-            session.prompt_token_ids = update.prompt_token_ids or ()
-            session.additional_information = update.additional_information or None
-            # Update block hashes for the new tokens.
-            session.update_block_hashes()
-            session.num_prompt_tokens = len(session.prompt_token_ids)
-            session.arrival_time = update.arrival_time
-            session.sampling_params = update.sampling_params
-            if session.status == RequestStatus.WAITING_FOR_STREAMING_REQ:
-                self.num_waiting_for_streaming_input -= 1
-            session.status = RequestStatus.WAITING
-
-            if self.log_stats:
-                session.record_event(EngineCoreEventType.QUEUED)
+            self._replace_session_with_streaming_update(session, update)
 
         else:
             super()._update_request_as_session(session, update)
