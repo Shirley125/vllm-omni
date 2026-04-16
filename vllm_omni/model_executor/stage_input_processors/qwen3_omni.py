@@ -104,7 +104,7 @@ def _get_streaming_talker_tokens(
     request_id: str,
     prompt_token_ids: list[int],
     output_token_ids: list[int],
-    new_prompt_len_snapshot: Any | None = None,
+    new_prompt_len_snapshot: int | None = None,
     *,
     clear_state: bool = False,
 ) -> tuple[list[int], list[int], list[int], list[int]]:
@@ -252,7 +252,7 @@ def thinker2talker(
     engine_input_source: list[int],
     prompt: OmniTokensPrompt | TextPrompt | None = None,
     requires_multimodal_data: bool = False,
-    new_prompt_len_snapshot: Any | None = None,
+    new_prompt_len_snapshot: int | None = None,
     is_streaming_session: bool = False,
 ) -> list[OmniTokensPrompt]:
     """
@@ -409,7 +409,7 @@ def talker2code2wav(
     engine_input_source: list[int],
     prompt: OmniTokensPrompt | TextPrompt | None = None,
     requires_multimodal_data: bool = False,
-    new_prompt_len_snapshot: Any | None = None,
+    new_prompt_len_snapshot: int | None = None,
     is_streaming_session: bool = False,
 ) -> list[OmniTokensPrompt]:
     """

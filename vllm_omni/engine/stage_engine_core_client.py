@@ -297,7 +297,7 @@ class StageEngineCoreClientBase:
         self,
         stage_list: list[Any],
         prompt: OmniTokensPrompt | list[OmniTokensPrompt] | None = None,
-        new_prompt_len_snapshot: Any | None = None,
+        new_prompt_len_snapshot: int | None = None,
         is_streaming_session: bool = False,
     ) -> list[OmniTokensPrompt]:
         """Process inputs from upstream stages."""

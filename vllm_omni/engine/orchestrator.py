@@ -111,7 +111,7 @@ class OrchestratorRequestState:
     # Flag of segment of streaming input finished
     segment_finished: bool = False
     # Streaming update prompt length
-    new_prompt_len_snapshot: Any = None
+    new_prompt_len_snapshot: int | None = None
 
 
 class Orchestrator:
@@ -670,6 +670,8 @@ class Orchestrator:
             None,
         )
         for eco in raw_outputs.outputs:
+            if not hasattr(eco, "request_id"):
+                continue
             req_state = self.request_states.get(eco.request_id)
             if req_state:
                 req_state.segment_finished = eco.is_segment_finished

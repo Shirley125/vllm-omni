@@ -600,7 +600,6 @@ class OmniGenerationScheduler(VLLMScheduler):
         session._all_token_ids.clear()
         new_prompt = update.prompt_token_ids or ()
         session._all_token_ids.extend(new_prompt)
-        del session.prompt_token_ids
         session.num_computed_tokens = 0
         session.prompt_token_ids = update.prompt_token_ids or ()
         session.additional_information = update.additional_information or None
