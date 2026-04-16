@@ -106,12 +106,19 @@ class OrchestratorRequestState:
     # Metrics: timestamp when request was submitted to each stage
     stage_submit_ts: dict[int, float] = field(default_factory=dict)
 
-    # Flag of streaming input Request
-    is_streaming_session: bool = False
+    streaming: StreamingInputState = field(default_factory=lambda: StreamingInputState())
+
+
+@dataclass
+class StreamingInputState:
+    # Flag of streaming input request
+    enabled: bool = False
     # Flag of segment of streaming input finished
     segment_finished: bool = False
     # Streaming update prompt length
     new_prompt_len_snapshot: int | None = None
+    # Model/bridge-specific runtime states (e.g., thinker->talker)
+    bridge_states: dict[str, Any] = field(default_factory=dict)
 
 
 class Orchestrator:
@@ -358,12 +365,12 @@ class Orchestrator:
         if (
             stage_id < req_state.final_stage_id
             and not self.async_chunk
-            and (not self._next_stage_already_submitted(stage_id, req_state) or req_state.is_streaming_session)
+            and (not self._next_stage_already_submitted(stage_id, req_state) or req_state.streaming.enabled)
         ):
             # Non-streaming requests forward on stage completion.
             # Streaming sessions forward each segment output so downstream
             # stages can consume updates in-order and retain history.
-            should_forward = finished or (req_state.is_streaming_session and req_state.segment_finished)
+            should_forward = finished or (req_state.streaming.enabled and req_state.streaming.segment_finished)
 
         if should_forward:
             # If this parent has CFG companions, defer forwarding until all done
@@ -378,10 +385,10 @@ class Orchestrator:
                     stage_id,
                     output,
                     req_state,
-                    is_streaming_session=req_state.is_streaming_session,
+                    is_streaming_session=req_state.streaming.enabled,
                     is_final_update=False,
                 )
-                if req_state.is_streaming_session and finished:
+                if req_state.streaming.enabled and finished:
                     # For streaming sessions, send the terminal (resumable=False) update only on a finish
                     await self._forward_to_next_stage(
                         req_id,
@@ -609,8 +616,7 @@ class Orchestrator:
             next_inputs = next_client.process_engine_inputs(
                 stage_list=self.stage_clients,
                 prompt=req_state.prompt,
-                new_prompt_len_snapshot=req_state.new_prompt_len_snapshot,
-                is_streaming_session=req_state.is_streaming_session,
+                streaming_context=(req_state.streaming if req_state.streaming.enabled else None),
             )
         except Exception:
             logger.exception(
@@ -674,8 +680,8 @@ class Orchestrator:
                 continue
             req_state = self.request_states.get(eco.request_id)
             if req_state:
-                req_state.segment_finished = eco.is_segment_finished
-                req_state.new_prompt_len_snapshot = eco.new_prompt_len_snapshot
+                req_state.streaming.segment_finished = eco.is_segment_finished
+                req_state.streaming.new_prompt_len_snapshot = eco.new_prompt_len_snapshot
 
         if processed.reqs_to_abort:
             await self.stage_clients[stage_id].abort_requests_async(processed.reqs_to_abort)
@@ -718,8 +724,8 @@ class Orchestrator:
             prompt=original_prompt,
             sampling_params_list=sampling_params_list,
             final_stage_id=final_stage_id,
-            is_streaming_session=is_streaming,
         )
+        req_state.streaming.enabled = is_streaming
         req_state.stage_submit_ts[stage_id] = _time.time()
         self.request_states[request_id] = req_state
 
@@ -761,7 +767,7 @@ class Orchestrator:
 
         if "sampling_params_list" in msg and msg["sampling_params_list"]:
             req_state.sampling_params_list = msg["sampling_params_list"]
-        req_state.is_streaming_session = True
+        req_state.streaming.enabled = True
 
         req_state.stage_submit_ts[stage_id] = _time.time()
         stage_client = self.stage_clients[stage_id]

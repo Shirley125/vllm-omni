@@ -88,21 +88,8 @@ class RealtimeConnection(VllmRealtimeConnection):
         completion_tokens_len = 0
 
         try:
-            from vllm.sampling_params import SamplingParams
-
-            sampling_params = SamplingParams.from_optional(
-                temperature=0.0,
-                max_tokens=self.serving.model_cls.realtime_max_tokens,
-                # FIXME: We cannot enable output_kind=DELTA right now.
-                # Enabling SamplingParams.output_kind=DELTA causes missing token IDs
-                # during thinker2talker transfer. We temporarily keep cumulative
-                # text output and deduplicate here by slicing with sent_text_len.
-                skip_clone=True,
-            )
-
             result_gen = self.serving.engine_client.generate(
                 prompt=streaming_input_gen,
-                sampling_params=sampling_params,
                 request_id=request_id,
             )
 

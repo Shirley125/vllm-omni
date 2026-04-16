@@ -14,19 +14,16 @@ pytestmark = [pytest.mark.core_model, pytest.mark.cpu]
 
 
 @pytest.fixture(autouse=True)
-def _clear_qwen3_streaming_globals() -> None:
-    q3._THINKER2TALKER_STREAMING_STATE.clear()
-    q3._TALKER2CODE2WAV_LAST_SEQ_LEN.clear()
-    yield
-    q3._THINKER2TALKER_STREAMING_STATE.clear()
-    q3._TALKER2CODE2WAV_LAST_SEQ_LEN.clear()
+def _streaming_context() -> SimpleNamespace:
+    return SimpleNamespace(bridge_states={})
 
 
-def test_get_streaming_talker_tokens_first_segment() -> None:
+def test_get_streaming_talker_tokens_first_segment(_streaming_context: SimpleNamespace) -> None:
     inc_p, inc_o, merged, thinker_in = q3._get_streaming_talker_tokens(
         "r1",
         [1, 2],
         [10, 11],
+        streaming_context=_streaming_context,
     )
     assert inc_p == [1, 2]
     assert inc_o == [10, 11]
@@ -34,21 +31,29 @@ def test_get_streaming_talker_tokens_first_segment() -> None:
     assert thinker_in == [1, 2]
 
 
-def test_get_streaming_talker_tokens_second_segment_accumulates() -> None:
-    q3._get_streaming_talker_tokens("r2", [1, 2], [10, 11])
-    inc_p, inc_o, merged, thinker_in = q3._get_streaming_talker_tokens("r2", [1, 2, 3, 4], [10, 11, 12, 13])
+def test_get_streaming_talker_tokens_second_segment_accumulates(_streaming_context: SimpleNamespace) -> None:
+    q3._get_streaming_talker_tokens("r2", [1, 2], [10, 11], streaming_context=_streaming_context)
+    inc_p, inc_o, merged, thinker_in = q3._get_streaming_talker_tokens(
+        "r2",
+        [1, 2, 3, 4],
+        [10, 11, 12, 13],
+        streaming_context=_streaming_context,
+    )
     assert inc_p == [3, 4]
     assert inc_o == [12, 13]
     assert merged == [1, 2, 10, 3, 4, 12, 13]
     assert thinker_in == [1, 2, 10, 3, 4]
 
 
-def test_get_streaming_talker_tokens_new_prompt_len_snapshot_truncates() -> None:
+def test_get_streaming_talker_tokens_new_prompt_len_snapshot_truncates(
+    _streaming_context: SimpleNamespace,
+) -> None:
     inc_p, inc_o, merged, thinker_in = q3._get_streaming_talker_tokens(
         "r3",
         [1, 2, 3, 4, 5, 6],
         [10],
         new_prompt_len_snapshot=2,
+        streaming_context=_streaming_context,
     )
     assert inc_p == [1, 2, 3, 4]
     assert inc_o == [10]
@@ -56,17 +61,21 @@ def test_get_streaming_talker_tokens_new_prompt_len_snapshot_truncates() -> None
     assert thinker_in == [1, 2, 3, 4]
 
 
-def test_get_streaming_talker_tokens_clear_state() -> None:
-    q3._get_streaming_talker_tokens("r4", [1], [2], clear_state=True)
-    assert "r4" not in q3._THINKER2TALKER_STREAMING_STATE
+def test_get_streaming_talker_tokens_clear_state(_streaming_context: SimpleNamespace) -> None:
+    q3._get_streaming_talker_tokens("r4", [1], [2], streaming_context=_streaming_context, clear_state=True)
+    state = q3._get_qwen3_streaming_state("r4", _streaming_context).thinker2talker
+    assert state.last_prompt_len == 0
+    assert state.last_output_len == 0
+    assert state.merged_sequences == []
 
 
-def test_get_streaming_codec_delta_len_increments_and_finishes() -> None:
-    d1 = q3._get_streaming_codec_delta_len(5, "c1", SimpleNamespace(finished=False))
+def test_get_streaming_codec_delta_len_increments_and_finishes(_streaming_context: SimpleNamespace) -> None:
+    d1 = q3._get_streaming_codec_delta_len(5, "c1", SimpleNamespace(finished=False), _streaming_context)
     assert d1 == 5
-    d2 = q3._get_streaming_codec_delta_len(8, "c1", SimpleNamespace(finished=False))
+    d2 = q3._get_streaming_codec_delta_len(8, "c1", SimpleNamespace(finished=False), _streaming_context)
     assert d2 == 2
     # After d2, stored cursor is cur_seq_len + 1 == 9; next delta uses new cur_seq_len - 9.
-    d3 = q3._get_streaming_codec_delta_len(10, "c1", SimpleNamespace(finished=True))
+    d3 = q3._get_streaming_codec_delta_len(10, "c1", SimpleNamespace(finished=True), _streaming_context)
     assert d3 == 1
-    assert "c1" not in q3._TALKER2CODE2WAV_LAST_SEQ_LEN
+    state = q3._get_qwen3_streaming_state("c1", _streaming_context)
+    assert state.talker2code2wav_last_seq_len == 0
