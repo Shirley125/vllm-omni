@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 from collections.abc import AsyncGenerator
+from typing import Any
 from uuid import uuid4
 
 import numpy as np
@@ -11,6 +12,8 @@ from vllm.entrypoints.openai.engine.protocol import UsageInfo
 from vllm.entrypoints.openai.realtime.connection import RealtimeConnection as VllmRealtimeConnection
 from vllm.entrypoints.openai.realtime.protocol import TranscriptionDelta, TranscriptionDone
 from vllm.logger import init_logger
+
+from vllm_omni.entrypoints.async_omni import AsyncOmni
 
 logger = init_logger(__name__)
 
@@ -24,6 +27,79 @@ class RealtimeConnection(VllmRealtimeConnection):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Optional overrides from the client's session.update (see openai_realtime_client.py).
+        self._session_sampling_patch: list[dict[str, Any]] | dict[str, Any] | None = None
+
+    async def handle_event(self, event: dict):
+        if event.get("type") == "session.update":
+            self._capture_session_sampling_fields(event)
+            if self._session_sampling_patch is not None:
+                try:
+                    self._build_realtime_sampling_params_list()
+                except Exception as e:
+                    logger.warning("Invalid realtime sampling params: %s", e)
+                    await self.send_error(str(e), "invalid_sampling_params")
+                    return
+        await super().handle_event(event)
+
+    def _capture_session_sampling_fields(self, event: dict) -> None:
+        if "sampling_params_list" in event:
+            val = event["sampling_params_list"]
+            if val is None:
+                self._session_sampling_patch = None
+            elif not isinstance(val, list):
+                raise ValueError("sampling_params_list must be a JSON array of objects or null")
+            else:
+                norm: list[dict[str, Any]] = []
+                for item in val:
+                    if not isinstance(item, dict):
+                        raise ValueError("Each sampling_params_list entry must be a JSON object")
+                    norm.append(dict(item))
+                self._session_sampling_patch = norm
+        elif "sampling_params" in event:
+            val = event["sampling_params"]
+            if val is None:
+                self._session_sampling_patch = None
+            elif not isinstance(val, dict):
+                raise ValueError("sampling_params must be a JSON object or null")
+            else:
+                self._session_sampling_patch = dict(val)
+
+    @staticmethod
+    def _patch_sampling_params(base: Any, patch: dict[str, Any]) -> Any:
+        out = base.clone()
+        for key, value in patch.items():
+            if not hasattr(out, key):
+                continue
+            setattr(out, key, value)
+        return out
+
+    def _build_realtime_sampling_params_list(self) -> list[Any]:
+        patch = self._session_sampling_patch
+        if patch is None:
+            raise ValueError("No sampling parameter overrides are set for this session")
+        ec = self.serving.engine_client
+        defaults = ec.default_sampling_params_list
+        out = [p.clone() for p in defaults]
+        if isinstance(patch, dict):
+            out[0] = self._patch_sampling_params(out[0], patch)
+        else:
+            if len(patch) != len(out):
+                raise ValueError(
+                    f"sampling_params_list must have one entry per pipeline stage "
+                    f"(expected {len(out)}, got {len(patch)})"
+                )
+            for i, stage_patch in enumerate(patch):
+                if not isinstance(stage_patch, dict):
+                    raise ValueError("Each sampling_params_list entry must be a JSON object")
+                out[i] = self._patch_sampling_params(out[i], stage_patch)
+        AsyncOmni._validate_streaming_input_sampling_params(out[0])
+        return out
+
+    def _realtime_sampling_params_list_kw(self) -> dict[str, list[Any]]:
+        if self._session_sampling_patch is None:
+            return {}
+        return {"sampling_params_list": self._build_realtime_sampling_params_list()}
 
     async def start_generation(self):
         await super().start_generation()
@@ -91,6 +167,7 @@ class RealtimeConnection(VllmRealtimeConnection):
             result_gen = self.serving.engine_client.generate(
                 prompt=streaming_input_gen,
                 request_id=request_id,
+                **self._realtime_sampling_params_list_kw(),
             )
 
             async for output in result_gen:

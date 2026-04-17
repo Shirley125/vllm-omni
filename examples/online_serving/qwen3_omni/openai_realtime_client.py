@@ -20,6 +20,11 @@ Usage:
       --output-wav realtime_output.wav \
       --delta-dump-dir ./rt_delta_wavs
 
+  # Optional: override stage-0 (thinker) sampling via JSON (merged into session.update):
+  python openai_realtime_client.py ... --sampling-params '{"temperature": 0.8, "max_tokens": 512}'
+  # Or per-stage list (length must match the served pipeline):
+  python openai_realtime_client.py ... --sampling-params-file ./sampling.json
+
 Dependencies:
   pip install websockets
 """
@@ -32,6 +37,7 @@ import base64
 import json
 import wave
 from pathlib import Path
+from typing import Any
 
 try:
     import websockets
@@ -62,6 +68,33 @@ def _read_wav_pcm16(path: Path) -> bytes:
         return wf.readframes(nframes)
 
 
+def _normalize_sampling_session_fields(data: Any) -> dict[str, Any]:
+    """Map JSON from --sampling-params / file to session.update keys."""
+    if isinstance(data, list):
+        return {"sampling_params_list": data}
+    if isinstance(data, dict):
+        if "sampling_params_list" in data or "sampling_params" in data:
+            out: dict[str, Any] = {}
+            if "sampling_params_list" in data:
+                out["sampling_params_list"] = data["sampling_params_list"]
+            if "sampling_params" in data:
+                out["sampling_params"] = data["sampling_params"]
+            return out
+        return {"sampling_params": data}
+    raise ValueError("Sampling JSON must be an object or an array (per-stage list)")
+
+
+def _merge_sampling_cli_args(sampling_params_json: str | None, sampling_params_file: Path | None) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    if sampling_params_file is not None:
+        raw = json.loads(sampling_params_file.read_text(encoding="utf-8"))
+        merged.update(_normalize_sampling_session_fields(raw))
+    if sampling_params_json is not None:
+        raw = json.loads(sampling_params_json)
+        merged.update(_normalize_sampling_session_fields(raw))
+    return merged
+
+
 def _write_wav_pcm16(path: Path, pcm16_bytes: bytes, sample_rate_hz: int) -> None:
     with wave.open(str(path), "wb") as wf:
         wf.setnchannels(1)
@@ -79,6 +112,7 @@ async def run_client(
     chunk_ms: int,
     send_delay_ms: int,
     delta_dump_dir: Path | None,
+    session_update_extra: dict[str, Any] | None = None,
     request_idx: int = 1,
     total_requests: int = 1,
 ) -> None:
@@ -97,15 +131,11 @@ async def run_client(
         delta_dump_dir.mkdir(parents=True, exist_ok=True)
 
     async with websockets.connect(url, max_size=64 * 1024 * 1024) as ws:
-        # 1) Validate model.
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "session.update",
-                    "model": model,
-                }
-            )
-        )
+        # 1) Validate model (optional sampling_params / sampling_params_list for vLLM-Omni).
+        session_update: dict[str, Any] = {"type": "session.update", "model": model}
+        if session_update_extra:
+            session_update.update(session_update_extra)
+        await ws.send(json.dumps(session_update))
 
         # 2) Start generation once (non-final commit).
         await ws.send(json.dumps({"type": "input_audio_buffer.commit", "final": False}))
@@ -215,6 +245,7 @@ async def run_clients_concurrent(
     delta_dump_dir: Path | None,
     num_requests: int,
     concurrency: int,
+    session_update_extra: dict[str, Any] | None = None,
 ) -> None:
     sem = asyncio.Semaphore(concurrency)
 
@@ -235,6 +266,7 @@ async def run_clients_concurrent(
                     chunk_ms=chunk_ms,
                     send_delay_ms=send_delay_ms,
                     delta_dump_dir=per_delta_dir,
+                    session_update_extra=session_update_extra,
                     request_idx=index,
                     total_requests=num_requests,
                 )
@@ -290,6 +322,21 @@ def main() -> None:
         default=1,
         help="Maximum number of concurrent websocket requests",
     )
+    parser.add_argument(
+        "--sampling-params",
+        default=None,
+        help=(
+            "JSON object with vLLM SamplingParams fields for stage 0 (thinker), "
+            'e.g. \'{"temperature":0.8,"max_tokens":512}\'. '
+            "Alternatively a JSON array becomes sampling_params_list (one object per stage)."
+        ),
+    )
+    parser.add_argument(
+        "--sampling-params-file",
+        type=Path,
+        default=None,
+        help="Path to JSON file with the same shapes as --sampling-params",
+    )
     args = parser.parse_args()
 
     if args.num_requests <= 0:
@@ -297,6 +344,9 @@ def main() -> None:
     if args.concurrency <= 0:
         raise ValueError("--concurrency must be >= 1")
     concurrency = min(args.concurrency, args.num_requests)
+
+    session_extra = _merge_sampling_cli_args(args.sampling_params, args.sampling_params_file)
+    session_update_extra = session_extra or None
 
     if args.num_requests == 1:
         asyncio.run(
@@ -309,6 +359,7 @@ def main() -> None:
                 chunk_ms=args.chunk_ms,
                 send_delay_ms=args.send_delay_ms,
                 delta_dump_dir=args.delta_dump_dir,
+                session_update_extra=session_update_extra,
             )
         )
     else:
@@ -324,6 +375,7 @@ def main() -> None:
                 delta_dump_dir=args.delta_dump_dir,
                 num_requests=args.num_requests,
                 concurrency=concurrency,
+                session_update_extra=session_update_extra,
             )
         )
 

@@ -39,6 +39,22 @@ class OmniRequestState(RequestState):
         self.mm_type: str | None = None
         self.mm_accumulated: dict[str, Any] | None = None
 
+    def _new_request_output(self, *args: Any, **kwargs: Any) -> Any:
+        """Detach ``prompt_token_ids`` before vLLM may ``extend`` RequestState's list.
+
+        vLLM reuses the same ``list`` for ``RequestState`` and ``RequestOutput``;
+        ``process_outputs`` can call ``apply_streaming_update`` on that list after
+        this returns. Copying here freezes the segment prompt; streaming still
+        relies on ``new_prompt_len_snapshot`` when the request prompt was
+        already extended before this forward.
+        """
+        ro = super()._new_request_output(*args, **kwargs)
+        if ro is not None:
+            pt = getattr(ro, "prompt_token_ids", None)
+            if pt is not None:
+                ro.prompt_token_ids = list(pt)
+        return ro
+
     def add_multimodal_tensor(self, payload: Any | None, mm_type: str | None) -> None:
         if payload is None:
             return
