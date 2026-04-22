@@ -90,7 +90,16 @@ async def _run_realtime_audio_roundtrip(
     bytes_per_ms = 16000 * 2 // 1000
     chunk_bytes = max(bytes_per_ms * chunk_ms, 2)
 
-    async with websockets.connect(uri, max_size=64 * 1024 * 1024) as ws:
+    # Default keepalive (periodic ping + short ping_timeout) can close with 1011
+    # keepalive ping timeout when the server is busy. Disable client pings; recv
+    # still uses asyncio.wait_for below. A generous close_timeout avoids "timed
+    # out while closing connection" on slow close handshakes.
+    async with websockets.connect(
+        uri,
+        max_size=64 * 1024 * 1024,
+        ping_interval=None,
+        close_timeout=120,
+    ) as ws:
         await ws.send(json.dumps({"type": "session.update", "model": model}))
         await ws.send(json.dumps({"type": "input_audio_buffer.commit", "final": False}))
 
