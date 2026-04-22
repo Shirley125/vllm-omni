@@ -7,12 +7,16 @@ busy loop in a subprocess, communicating with StageEngineCoreClient via ZMQ.
 
 from __future__ import annotations
 
+import os
 import signal
+import time
 from multiprocessing.process import BaseProcess
 from typing import TYPE_CHECKING, Any
 
 import msgspec
 import zmq
+import torch
+from vllm.config.profiler import _is_uri_path
 from vllm.logger import init_logger
 from vllm.transformers_utils.config import (
     maybe_register_config_serialize_by_value,
@@ -45,6 +49,92 @@ class StageEngineCoreProc(EngineCoreProc):
     entry point for launching in a subprocess.  Does **not** delegate to
     ``EngineCoreProc.run_engine_core()``.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # CPU-only Kineto trace for the scheduler + engine step (this process), see ``profile()``.
+        self._engine_core_torch_profiler: torch.profiler.profile | None = None
+
+    def profile(self, is_start: bool = True, profile_prefix: str | None = None) -> None:
+        """Start/stop torch profiler in this process for scheduler (CPU) + worker (GPU) traces.
+
+        vLLM's ``EngineCore.profile`` only forwards to ``model_executor.profile`` (workers).
+        The base :class:`vllm.v1.core.sched.Scheduler` already wraps hot paths in
+        ``record_function_or_nullcontext("schedule: ...")``; those only appear in a
+        **torch profiler running in the EngineCore process**, not in worker traces.
+        We therefore add a second profiler here with **CPU** activity when
+        ``profiler_config.profiler == "torch"``.
+        """
+        prof_cfg = getattr(self.vllm_config, "profiler_config", None)
+        use_engine_cpu = (
+            prof_cfg is not None
+            and getattr(prof_cfg, "profiler", None) == "torch"
+            and not _is_uri_path(getattr(prof_cfg, "torch_profiler_dir", None) or "")
+        )
+        if is_start:
+            if use_engine_cpu:
+                self._start_engine_core_cpu_profiler(prof_cfg, profile_prefix)
+            try:
+                super().profile(is_start, profile_prefix)
+            except Exception:
+                if use_engine_cpu:
+                    self._stop_engine_core_cpu_profiler()
+                raise
+        else:
+            super().profile(is_start, profile_prefix)
+            if use_engine_cpu or self._engine_core_torch_profiler is not None:
+                self._stop_engine_core_cpu_profiler()
+
+    def _start_engine_core_cpu_profiler(self, prof_cfg: Any, profile_prefix: str | None) -> None:
+        if self._engine_core_torch_profiler is not None:
+            logger.warning("Engine core torch profiler already running; skipping duplicate start")
+            return
+        out_dir = getattr(prof_cfg, "torch_profiler_dir", None) or ""
+        if not out_dir or _is_uri_path(out_dir):
+            return
+        os.makedirs(out_dir, exist_ok=True)
+        stage_id = getattr(self.vllm_config.model_config, "stage_id", 0)
+        ts = int(time.time())
+        stem = profile_prefix or f"engine_core_stage{stage_id}_{ts}"
+        if os.path.dirname(stem):
+            session_dir = os.path.dirname(stem) or out_dir
+            file_stem = os.path.basename(stem)
+        else:
+            session_dir = os.path.join(out_dir, f"{ts}_engine_core_stage{stage_id}")
+            file_stem = stem
+        os.makedirs(session_dir, exist_ok=True)
+        trace_path = os.path.join(session_dir, f"{file_stem}.json")
+        self._engine_core_cpu_trace_path = trace_path  # for logging in stop
+
+        def on_trace_ready(prof: Any) -> None:
+            try:
+                prof.export_chrome_trace(trace_path)
+                logger.info("Engine/scheduler trace (CPU) saved to: %s", trace_path)
+            except Exception as err:
+                logger.warning("Failed to export engine/scheduler trace: %s", err)
+
+        # CPU only: workers capture CUDA in the other process. Scheduler runs here.
+        self._engine_core_torch_profiler = torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU],
+            record_shapes=bool(getattr(prof_cfg, "torch_profiler_record_shapes", False)),
+            profile_memory=bool(getattr(prof_cfg, "torch_profiler_with_memory", False)),
+            with_stack=bool(getattr(prof_cfg, "torch_profiler_with_stack", False)),
+            with_flops=bool(getattr(prof_cfg, "torch_profiler_with_flops", False)),
+            on_trace_ready=on_trace_ready,
+        )
+        self._engine_core_torch_profiler.start()
+        logger.info("Engine core (scheduler) torch profiler started; trace -> %s", trace_path)
+
+    def _stop_engine_core_cpu_profiler(self) -> None:
+        prof = self._engine_core_torch_profiler
+        if prof is None:
+            return
+        try:
+            prof.stop()
+        except Exception as err:
+            logger.warning("Error stopping engine core torch profiler: %s", err)
+        finally:
+            self._engine_core_torch_profiler = None
 
     @staticmethod
     def run_stage_core(
