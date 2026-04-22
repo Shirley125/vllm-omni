@@ -1,6 +1,24 @@
+"""OpenAI-compatible multimodal chat demo with optional benchmarking fields matching ``benchmark_realtime_ws.py``.
+
+Streaming time anchor: clock starts when ``chat.completions.create(..., stream=True)`` returns
+(stream open, request sent). **ttft_transcription_s** = first text delta; **ttfp_audio_s** = first audio delta.
+Non-streaming runs only populate **e2e_s** / **rtf** / **tokens_per_s** (no first-token splits).
+"""
+
+from __future__ import annotations
+
 import base64
 import concurrent.futures
+import io
+import json
+import math
 import os
+import statistics
+import sys
+import time
+import wave
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import NamedTuple
 
 import requests
@@ -14,6 +32,101 @@ SEED = 42
 class QueryResult(NamedTuple):
     inputs: dict
     limit_mm_per_prompt: dict[str, int]
+
+
+@dataclass
+class RoundMetrics:
+    """Per-request stats aligned with ``scripts/benchmark_realtime_ws.py`` field names.
+
+    Time anchor (streaming): ``chat.completions.create(..., stream=True)`` has returned
+    (HTTP request sent, stream open) — analogue to realtime ``final`` input commit.
+    """
+
+    client_id: int
+    round_idx: int
+    absolute_round: int
+    ttft_transcription_s: float | None
+    ttfp_audio_s: float | None
+    e2e_s: float | None
+    rtf: float | None
+    tokens_per_s: float | None
+    completion_tokens: int
+    output_audio_seconds: float
+    output_sample_rate_hz: int
+    error: str | None = None
+
+
+def _percentile(sorted_vals: list[float], p: float) -> float:
+    if not sorted_vals:
+        return math.nan
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    k = (len(sorted_vals) - 1) * (p / 100.0)
+    f = int(math.floor(k))
+    c = min(f + 1, len(sorted_vals) - 1)
+    return sorted_vals[f] + (k - f) * (sorted_vals[c] - sorted_vals[f])
+
+
+def _fmt_stats(values: list[float]) -> str:
+    xs = sorted(v for v in values if not math.isnan(v))
+    if not xs:
+        return "n=0"
+    return (
+        f"n={len(xs)} mean={statistics.mean(xs):.4f}s "
+        f"p50={_percentile(xs, 50):.4f}s p95={_percentile(xs, 95):.4f}s p99={_percentile(xs, 99):.4f}s"
+    )
+
+
+def _wav_duration_and_sr(audio_bytes: bytes) -> tuple[float, int]:
+    """Return (duration_seconds, sample_rate_hz) if ``audio_bytes`` is a WAV blob; else (0, 0)."""
+    if not audio_bytes:
+        return 0.0, 0
+    try:
+        with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
+            sr = wf.getframerate()
+            if sr <= 0:
+                return 0.0, 0
+            dur = wf.getnframes() / float(sr)
+            return dur, int(sr)
+    except Exception:
+        return 0.0, 0
+
+
+def _print_metrics_summary(rows: list[RoundMetrics]) -> None:
+    ok = [r for r in rows if r.error is None]
+    bad = [r for r in rows if r.error is not None]
+
+    print(f"[summary] rounds_recorded={len(rows)} ok={len(ok)} failed={len(bad)}")
+    if bad:
+        for r in bad[:20]:
+            print(f"  client={r.client_id} abs_round={r.absolute_round} err={r.error}")
+        if len(bad) > 20:
+            print(f"  ... and {len(bad) - 20} more failures")
+
+    if not ok:
+        return
+
+    def col(name: str, getter) -> None:
+        vals = [getter(r) for r in ok]
+        vals_f = [v for v in vals if v is not None and not (isinstance(v, float) and math.isnan(v))]
+        print(f"  {name}: {_fmt_stats(vals_f)}")
+
+    col("ttft_transcription_s", lambda r: r.ttft_transcription_s)
+    col("ttfp_audio_s", lambda r: r.ttfp_audio_s)
+    col("e2e_s", lambda r: r.e2e_s)
+    col("rtf", lambda r: r.rtf)
+    col("tokens_per_s", lambda r: r.tokens_per_s)
+
+    total_e2e = sum(r.e2e_s for r in ok if r.e2e_s is not None)
+    total_tokens = sum(r.completion_tokens for r in ok)
+    total_audio_s = sum(r.output_audio_seconds for r in ok)
+    if total_e2e > 0:
+        print(
+            f"  aggregate_tokens_per_s (sum_tokens/sum_e2e): {total_tokens / total_e2e:.4f} "
+            f"(sum_completion_tokens={total_tokens}, sum_e2e_s={total_e2e:.4f})"
+        )
+    if total_e2e > 0 and total_audio_s > 0:
+        print(f"  aggregate_rtf (sum_e2e/sum_output_audio_s): {total_e2e / total_audio_s:.4f}")
 
 
 def make_audio_output_filename(request_id: str | None, index: int) -> str:
@@ -368,8 +481,197 @@ query_map = {
 }
 
 
-def run_multimodal_generation(args, client: OpenAI) -> None:
-    model_name = args.model
+def _messages_for_payload(payload: dict) -> list:
+    return [get_system_prompt(), payload["prompt"]]
+
+
+def _run_single_round(
+    *,
+    client: OpenAI,
+    model_name: str,
+    payload: dict,
+    output_modalities: list[str] | None,
+    stream: bool,
+    client_id: int,
+    absolute_round: int,
+    round_idx: int,
+    is_warmup: bool,
+    audio_file_index_start: int,
+    save_audio_files: bool,
+) -> tuple[RoundMetrics, int]:
+    """One chat completion; metrics match :mod:`benchmark_realtime_ws` naming.
+
+    Returns ``(metrics, next_audio_file_index)`` for sequential filenames across rounds.
+    """
+    err: str | None = None
+    ttft_t: float | None = None
+    ttfp_a: float | None = None
+    e2e: float | None = None
+    rtf: float | None = None
+    tok_ps: float | None = None
+    completion_tokens = 0
+    audio_accum = bytearray()
+    out_seconds = 0.0
+    out_sr = 0
+    file_idx = audio_file_index_start
+
+    try:
+        if not stream:
+            t0 = time.perf_counter()
+            chat_completion = client.chat.completions.create(
+                messages=_messages_for_payload(payload),
+                model=model_name,
+                modalities=output_modalities,
+                extra_body=payload["extra_body"],
+                stream=False,
+            )
+            t1 = time.perf_counter()
+            e2e = t1 - t0
+            usage = getattr(chat_completion, "usage", None)
+            if usage is not None:
+                ct = getattr(usage, "completion_tokens", None)
+                if isinstance(ct, int):
+                    completion_tokens = ct
+            request_id = getattr(chat_completion, "id", None)
+            for choice in chat_completion.choices:
+                if choice.message.audio:
+                    audio_data = base64.b64decode(choice.message.audio.data)
+                    audio_accum.extend(audio_data)
+                    if save_audio_files and not is_warmup:
+                        audio_file_path = make_audio_output_filename(request_id=request_id, index=file_idx)
+                        with open(audio_file_path, "wb") as f:
+                            f.write(audio_data)
+                        print(f"Audio saved to {audio_file_path}")
+                        file_idx += 1
+                elif choice.message.content and not is_warmup:
+                    print("Chat completion output from text:", choice.message.content)
+        else:
+            stream_it = client.chat.completions.create(
+                messages=_messages_for_payload(payload),
+                model=model_name,
+                modalities=output_modalities,
+                extra_body=payload["extra_body"],
+                stream=True,
+            )
+            t_after_create = time.perf_counter()
+            first_text_t: float | None = None
+            first_audio_t: float | None = None
+            printed_content = False
+            for chunk in stream_it:
+                now = time.perf_counter()
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    ct = getattr(usage, "completion_tokens", None)
+                    if isinstance(ct, int):
+                        completion_tokens = ct
+                modality = getattr(chunk, "modality", None)
+                for choice in chunk.choices:
+                    if hasattr(choice, "delta"):
+                        content = getattr(choice.delta, "content", None)
+                    else:
+                        content = None
+
+                    if modality == "audio" and content:
+                        audio_data = base64.b64decode(content)
+                        audio_accum.extend(audio_data)
+                        if first_audio_t is None:
+                            first_audio_t = now
+                        if save_audio_files and not is_warmup:
+                            request_id = getattr(chunk, "id", None)
+                            audio_file_path = make_audio_output_filename(request_id=request_id, index=file_idx)
+                            with open(audio_file_path, "wb") as f:
+                                f.write(audio_data)
+                            print(f"\nAudio saved to {audio_file_path}")
+                            file_idx += 1
+                    elif modality == "text" and content:
+                        if first_text_t is None:
+                            first_text_t = now
+                        if not is_warmup:
+                            if not printed_content:
+                                printed_content = True
+                                print("\ncontent:", end="", flush=True)
+                            print(content, end="", flush=True)
+
+            t_end = time.perf_counter()
+            e2e = t_end - t_after_create
+            if first_text_t is not None:
+                ttft_t = first_text_t - t_after_create
+            if first_audio_t is not None:
+                ttfp_a = first_audio_t - t_after_create
+
+        dur, sr = _wav_duration_and_sr(bytes(audio_accum))
+        if dur > 0:
+            out_seconds = dur
+            out_sr = sr
+
+        if err is None and e2e is not None and e2e > 0 and out_seconds > 0:
+            rtf = e2e / out_seconds
+        if err is None and e2e is not None and e2e > 0 and completion_tokens > 0:
+            tok_ps = completion_tokens / e2e
+
+    except Exception as exc:
+        err = str(exc)
+        ttft_t = ttfp_a = e2e = rtf = tok_ps = None
+        out_seconds = 0.0
+        out_sr = 0
+        completion_tokens = 0
+        file_idx = audio_file_index_start
+
+    metrics = RoundMetrics(
+        client_id=client_id,
+        round_idx=round_idx,
+        absolute_round=absolute_round,
+        ttft_transcription_s=ttft_t if err is None else None,
+        ttfp_audio_s=ttfp_a if err is None else None,
+        e2e_s=e2e if err is None else None,
+        rtf=rtf if err is None else None,
+        tokens_per_s=tok_ps if err is None else None,
+        completion_tokens=completion_tokens,
+        output_audio_seconds=out_seconds,
+        output_sample_rate_hz=out_sr,
+        error=err,
+    )
+    return metrics, file_idx
+
+
+def _worker_sequential_rounds(
+    client_id: int,
+    payload: dict,
+    args,
+    client: OpenAI,
+    output_modalities: list[str] | None,
+) -> list[RoundMetrics]:
+    total_rounds = args.warmup_rounds + args.rounds
+    results: list[RoundMetrics] = []
+    audio_idx = client_id * 100000
+    for r in range(1, total_rounds + 1):
+        is_warmup = r <= args.warmup_rounds
+        counted_idx = r - args.warmup_rounds
+        m, audio_idx = _run_single_round(
+            client=client,
+            model_name=args.model,
+            payload=payload,
+            output_modalities=output_modalities,
+            stream=args.stream,
+            client_id=client_id,
+            absolute_round=r,
+            round_idx=counted_idx if not is_warmup else -1,
+            is_warmup=is_warmup,
+            audio_file_index_start=audio_idx,
+            save_audio_files=not getattr(args, "no_save_audio", False),
+        )
+        if not is_warmup:
+            results.append(m)
+        if m.error:
+            break
+    return results
+
+
+def run_multimodal_generation(args, client: OpenAI) -> list[RoundMetrics]:
+    if args.rounds < 1:
+        raise ValueError("--rounds must be >= 1")
+    if args.warmup_rounds < 0:
+        raise ValueError("--warmup-rounds must be >= 0")
 
     # Get paths and custom prompt from args
     video_path = getattr(args, "video_path", None)
@@ -382,7 +684,6 @@ def run_multimodal_generation(args, client: OpenAI) -> None:
     else:
         output_modalities = None
 
-    # Test multiple concurrent completions
     num_concurrent_requests = args.num_concurrent_requests
     prompt_list = _parse_csv_arg(getattr(args, "prompts", None))
     speaker_list = _parse_csv_arg(getattr(args, "speakers", None))
@@ -415,66 +716,32 @@ def run_multimodal_generation(args, client: OpenAI) -> None:
             extra_body["speaker"] = per_req_speaker.strip()
         request_payloads.append({"prompt": prompt, "extra_body": extra_body})
 
+    all_metrics: list[RoundMetrics] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_concurrent_requests) as executor:
-        # Submit multiple completion requests concurrently
         futures = [
             executor.submit(
-                client.chat.completions.create,
-                messages=[
-                    get_system_prompt(),
-                    payload["prompt"],
-                ],
-                model=model_name,
-                modalities=output_modalities,
-                extra_body=payload["extra_body"],
-                stream=args.stream,
+                _worker_sequential_rounds,
+                idx + 1,
+                request_payloads[idx],
+                args,
+                client,
+                output_modalities,
             )
-            for payload in request_payloads
+            for idx in range(num_concurrent_requests)
         ]
+        for fut in futures:
+            all_metrics.extend(fut.result())
 
-        # Wait for all requests to complete and collect results
-        chat_completions = [future.result() for future in concurrent.futures.as_completed(futures)]
+    jsonl_out = getattr(args, "jsonl_out", None)
+    if jsonl_out:
+        out_path = Path(jsonl_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("w", encoding="utf-8") as f:
+            for m in all_metrics:
+                f.write(json.dumps(asdict(m), ensure_ascii=False) + "\n")
 
-    assert len(chat_completions) == num_concurrent_requests
-    count = 0
-    if not args.stream:
-        # Verify all completions succeeded
-        for chat_completion in chat_completions:
-            request_id = getattr(chat_completion, "id", None)
-            for choice in chat_completion.choices:
-                if choice.message.audio:
-                    audio_data = base64.b64decode(choice.message.audio.data)
-                    audio_file_path = make_audio_output_filename(request_id=request_id, index=count)
-                    with open(audio_file_path, "wb") as f:
-                        f.write(audio_data)
-                    print(f"Audio saved to {audio_file_path}")
-                    count += 1
-                elif choice.message.content:
-                    print("Chat completion output from text:", choice.message.content)
-    else:
-        printed_content = False
-        for chat_completion in chat_completions:
-            for chunk in chat_completion:
-                for choice in chunk.choices:
-                    if hasattr(choice, "delta"):
-                        content = getattr(choice.delta, "content", None)
-                    else:
-                        content = None
-
-                    if getattr(chunk, "modality", None) == "audio" and content:
-                        audio_data = base64.b64decode(content)
-                        request_id = getattr(chunk, "id", None)
-                        audio_file_path = make_audio_output_filename(request_id=request_id, index=count)
-                        with open(audio_file_path, "wb") as f:
-                            f.write(audio_data)
-                        print(f"\nAudio saved to {audio_file_path}")
-                        count += 1
-
-                    elif getattr(chunk, "modality", None) == "text":
-                        if not printed_content:
-                            printed_content = True
-                            print("\ncontent:", end="", flush=True)
-                        print(content, end="", flush=True)
+    _print_metrics_summary(all_metrics)
+    return all_metrics
 
 
 def parse_args():
@@ -537,7 +804,30 @@ def parse_args():
         "--num-concurrent-requests",
         type=int,
         default=1,
-        help="Number of concurrent requests to send. Default is 1.",
+        help="Number of concurrent workers; each runs warmup + rounds sequentially.",
+    )
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=1,
+        help="Counted completion rounds per worker after warmup (metrics / JSONL).",
+    )
+    parser.add_argument(
+        "--warmup-rounds",
+        type=int,
+        default=0,
+        help="Rounds per worker excluded from metrics (same idea as benchmark_realtime_ws.py).",
+    )
+    parser.add_argument(
+        "--jsonl-out",
+        type=str,
+        default=None,
+        help="Write one JSON line per recorded round (RoundMetrics fields).",
+    )
+    parser.add_argument(
+        "--no-save-audio",
+        action="store_true",
+        help="Do not write per-chunk WAV files; still decode accumulated audio for RTF when possible.",
     )
     parser.add_argument(
         "--port",
@@ -587,4 +877,6 @@ if __name__ == "__main__":
         api_key="EMPTY",
         base_url=openai_api_base,
     )
-    run_multimodal_generation(args, client)
+    metrics = run_multimodal_generation(args, client)
+    if any(m.error for m in metrics):
+        sys.exit(1)
