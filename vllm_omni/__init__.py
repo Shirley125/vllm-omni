@@ -26,6 +26,16 @@ except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
     # Allow importing vllm_omni without vllm (e.g., documentation builds)
     patch = None  # type: ignore
 
+# Install EngineCore profiler hooks early so both StageEngineCoreProc and
+# upstream EngineCoreProc paths can capture scheduler/engine-core CPU traces.
+try:
+    from vllm_omni.engine.engine_core_cpu_profiler import install as _install_engine_cpu_profiler_hook
+
+    _install_engine_cpu_profiler_hook()
+except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
+    if exc.name != "vllm":
+        raise
+
 # Register custom configs (AutoConfig, AutoTokenizer) as early as possible.
 from vllm_omni.transformers_utils import configs as _configs  # noqa: F401, E402
 
