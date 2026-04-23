@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import signal
 import time
+import types
 from multiprocessing.process import BaseProcess
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,8 @@ from vllm.v1.engine.utils import (
     get_engine_zmq_addresses,
 )
 from vllm.v1.utils import shutdown
+
+from vllm_omni.engine.engine_core_cpu_profiler import install as install_engine_core_cpu_profiler_hook
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -91,6 +94,70 @@ class StageEngineCoreProc(EngineCoreProc):
         super().__init__(*args, **kwargs)
         # CPU-only Kineto trace for the scheduler + engine step (this process), see ``profile()``.
         self._engine_core_torch_profiler: torch.profiler.profile | None = None
+        self._install_model_executor_profile_hook()
+
+    @staticmethod
+    def _extract_profile_control_args(
+        call_args: tuple[Any, ...],
+        call_kwargs: dict[str, Any],
+    ) -> tuple[bool, str | None] | None:
+        """Best-effort parser for model_executor.collective_rpc call signatures."""
+        method = call_kwargs.get("method", call_args[0] if call_args else None)
+        if method != "profile":
+            return None
+
+        rpc_args = call_kwargs.get("args", None)
+        if rpc_args is None:
+            # Common signature: collective_rpc(method, args, kwargs)
+            if len(call_args) >= 2 and isinstance(call_args[1], (tuple, list)):
+                rpc_args = call_args[1]
+            else:
+                # Fallback: positional tail after `method`.
+                rpc_args = call_args[1:]
+
+        if not isinstance(rpc_args, (tuple, list)) or len(rpc_args) == 0:
+            return None
+
+        is_start = bool(rpc_args[0])
+        profile_prefix: str | None = rpc_args[1] if len(rpc_args) > 1 else None
+        return is_start, profile_prefix
+
+    def _install_model_executor_profile_hook(self) -> None:
+        """Wrap model_executor.collective_rpc as a fallback profile interception path.
+
+        Some vLLM versions/paths invoke model_executor.collective_rpc directly from
+        the EngineCoreProc message loop, bypassing StageEngineCoreProc.collective_rpc.
+        This hook guarantees scheduler/engine-core CPU profiling is toggled whenever
+        profile RPCs are dispatched through model_executor.
+        """
+        model_executor = getattr(self, "model_executor", None)
+        if model_executor is None:
+            logger.warning("[engine_core profile] model_executor missing; fallback hook not installed")
+            return
+
+        original = getattr(model_executor, "collective_rpc", None)
+        if not callable(original):
+            logger.warning("[engine_core profile] model_executor.collective_rpc missing; fallback hook not installed")
+            return
+
+        if getattr(original, "_omni_engine_profile_wrapped", False):
+            return
+
+        def _wrapped_collective_rpc(_self: Any, *call_args: Any, **call_kwargs: Any) -> Any:
+            parsed = StageEngineCoreProc._extract_profile_control_args(call_args, call_kwargs)
+            if parsed is None:
+                return original(*call_args, **call_kwargs)
+            is_start, profile_prefix = parsed
+            return self._run_with_engine_cpu_profile(
+                is_start=is_start,
+                profile_prefix=profile_prefix,
+                from_where="model_executor.collective_rpc",
+                run_workers=lambda: original(*call_args, **call_kwargs),
+            )
+
+        _wrapped_collective_rpc._omni_engine_profile_wrapped = True  # type: ignore[attr-defined]
+        model_executor.collective_rpc = types.MethodType(_wrapped_collective_rpc, model_executor)
+        logger.info("[engine_core profile] Installed fallback hook on model_executor.collective_rpc")
 
     def _log_engine_profile_path(self, where: str, is_start: bool) -> tuple[Any, bool]:
         prof_top, prof_cfg, tdir, tdir_is_uri, use_engine_cpu = _engine_profile_flags(self)
@@ -232,6 +299,9 @@ class StageEngineCoreProc(EngineCoreProc):
         """Launch StageEngineCoreProc busy loop in background process."""
         shutdown_requested = False
         maybe_register_config_serialize_by_value()
+        # Ensure EngineCore.collective_rpc/profile are patched in this child
+        # process even when startup bypasses package-level bootstrap hooks.
+        install_engine_core_cpu_profiler_hook()
 
         def signal_handler(signum: int, frame: Any) -> None:
             nonlocal shutdown_requested
