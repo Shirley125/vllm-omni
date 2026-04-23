@@ -42,6 +42,24 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _resolve_engine_profiler_config(engine_core: Any) -> Any:
+    """``ProfilerConfig`` is usually on ``vllm_config``; in some vLLM/omni paths the
+    top-level :class:`VllmConfig` in the engine subprocess does not keep it, while
+    :attr:`ModelExecutor.vllm_config` still has the same user settings as workers.
+    """
+    vllm = getattr(engine_core, "vllm_config", None)
+    if vllm is not None:
+        pc = getattr(vllm, "profiler_config", None)
+        if pc is not None:
+            return pc
+    ex = getattr(engine_core, "model_executor", None)
+    if ex is not None:
+        v2 = getattr(ex, "vllm_config", None)
+        if v2 is not None:
+            return getattr(v2, "profiler_config", None)
+    return None
+
+
 class StageEngineCoreProc(EngineCoreProc):
     """Stage-specific engine core process for vLLM-Omni.
 
@@ -65,11 +83,29 @@ class StageEngineCoreProc(EngineCoreProc):
         We therefore add a second profiler here with **CPU** activity when
         ``profiler_config.profiler == "torch"``.
         """
-        prof_cfg = getattr(self.vllm_config, "profiler_config", None)
+        prof_top = getattr(self.vllm_config, "profiler_config", None)
+        prof_cfg = _resolve_engine_profiler_config(self)
+        tdir = getattr(prof_cfg, "torch_profiler_dir", None) or "" if prof_cfg is not None else ""
+        tdir_is_uri = bool(tdir) and _is_uri_path(tdir)
         use_engine_cpu = (
             prof_cfg is not None
             and getattr(prof_cfg, "profiler", None) == "torch"
-            and not _is_uri_path(getattr(prof_cfg, "torch_profiler_dir", None) or "")
+            and bool(tdir)
+            and not tdir_is_uri
+        )
+        # Always one line: otherwise operators see *no* StageEngineCoreProc log when
+        # the engine snapshot lacks profiler_config (very common) or URI dirs skip CPU trace.
+        logger.info(
+            "[engine_core profile] is_start=%s stage_id=%s vllm_config.profiler_config_set=%s "
+            "resolved_profiler_config_set=%s profiler=%r torch_profiler_dir_set=%s "
+            "use_engine_cpu=%s",
+            is_start,
+            getattr(self.vllm_config.model_config, "stage_id", None),
+            prof_top is not None,
+            prof_cfg is not None,
+            getattr(prof_cfg, "profiler", None) if prof_cfg is not None else None,
+            bool(tdir) and not tdir_is_uri,
+            use_engine_cpu,
         )
         if is_start:
             if use_engine_cpu:
@@ -77,7 +113,7 @@ class StageEngineCoreProc(EngineCoreProc):
             try:
                 super().profile(is_start, profile_prefix)
             except Exception:
-                if use_engine_cpu:
+                if use_engine_cpu or self._engine_core_torch_profiler is not None:
                     self._stop_engine_core_cpu_profiler()
                 raise
         else:
