@@ -11,6 +11,7 @@ import os
 import signal
 import time
 from multiprocessing.process import BaseProcess
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import msgspec
@@ -60,6 +61,24 @@ def _resolve_engine_profiler_config(engine_core: Any) -> Any:
     return None
 
 
+def _engine_profile_flags(engine_core: Any) -> tuple[Any, Any, str, bool, bool]:
+    """Returns (prof_top, prof_cfg, tdir, tdir_is_uri, use_engine_cpu)."""
+    prof_top = getattr(engine_core.vllm_config, "profiler_config", None)
+    prof_cfg = _resolve_engine_profiler_config(engine_core)
+    if prof_cfg is not None:
+        tdir = getattr(prof_cfg, "torch_profiler_dir", None) or ""
+    else:
+        tdir = ""
+    tdir_is_uri = bool(tdir) and _is_uri_path(tdir)
+    use_engine_cpu = (
+        prof_cfg is not None
+        and getattr(prof_cfg, "profiler", None) == "torch"
+        and bool(tdir)
+        and not tdir_is_uri
+    )
+    return prof_top, prof_cfg, tdir, tdir_is_uri, use_engine_cpu
+
+
 class StageEngineCoreProc(EngineCoreProc):
     """Stage-specific engine core process for vLLM-Omni.
 
@@ -73,6 +92,67 @@ class StageEngineCoreProc(EngineCoreProc):
         # CPU-only Kineto trace for the scheduler + engine step (this process), see ``profile()``.
         self._engine_core_torch_profiler: torch.profiler.profile | None = None
 
+    def _log_engine_profile_path(self, where: str, is_start: bool) -> tuple[Any, bool]:
+        prof_top, prof_cfg, tdir, tdir_is_uri, use_engine_cpu = _engine_profile_flags(self)
+        logger.info(
+            "[engine_core profile] from=%s is_start=%s stage_id=%s vllm_config.profiler_config_set=%s "
+            "resolved_profiler_config_set=%s profiler=%r torch_profiler_dir_set=%s use_engine_cpu=%s",
+            where,
+            is_start,
+            getattr(self.vllm_config.model_config, "stage_id", None),
+            prof_top is not None,
+            prof_cfg is not None,
+            getattr(prof_cfg, "profiler", None) if prof_cfg is not None else None,
+            bool(tdir) and not tdir_is_uri,
+            use_engine_cpu,
+        )
+        return prof_cfg, use_engine_cpu
+
+    def _run_with_engine_cpu_profile(
+        self,
+        is_start: bool,
+        profile_prefix: str | None,
+        from_where: str,
+        run_workers: Callable[[], Any],
+    ) -> Any:
+        """``/start_profile`` / ``omni.start_profile`` use ``collective_rpc(method=\\\"profile\\\")``,
+        which vLLM implements as *only* ``model_executor.collective_rpc`` and **never** calls
+        :meth:`EngineCore.profile`. We must wrap the same path the API uses.
+        """
+        prof_cfg, use_engine_cpu = self._log_engine_profile_path(from_where, is_start)
+        if is_start:
+            if use_engine_cpu:
+                self._start_engine_core_cpu_profiler(prof_cfg, profile_prefix)
+            try:
+                return run_workers()
+            except Exception:
+                if use_engine_cpu or self._engine_core_torch_profiler is not None:
+                    self._stop_engine_core_cpu_profiler()
+                raise
+        else:
+            out = run_workers()
+            if use_engine_cpu or self._engine_core_torch_profiler is not None:
+                self._stop_engine_core_cpu_profiler()
+            return out
+
+    def collective_rpc(
+        self,
+        method: str | Any,
+        timeout: float | None = None,
+        args: tuple = (),
+        kwargs: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        # Omni ``start_profile`` / ``stop_profile`` → ``collective_rpc(\\\"profile\\\", ...)`` only.
+        if method == "profile" and isinstance(args, tuple) and len(args) > 0:
+            is_start = bool(args[0])
+            prof_prefix: str | None = args[1] if len(args) > 1 else None
+
+            def _run() -> list[Any]:
+                return super(StageEngineCoreProc, self).collective_rpc(method, timeout, args, kwargs or {})
+
+            return self._run_with_engine_cpu_profile(is_start, prof_prefix, "collective_rpc", _run)
+        return super().collective_rpc(method, timeout, args, kwargs or {})
+
     def profile(self, is_start: bool = True, profile_prefix: str | None = None) -> None:
         """Start/stop torch profiler in this process for scheduler (CPU) + worker (GPU) traces.
 
@@ -82,44 +162,14 @@ class StageEngineCoreProc(EngineCoreProc):
         **torch profiler running in the EngineCore process**, not in worker traces.
         We therefore add a second profiler here with **CPU** activity when
         ``profiler_config.profiler == "torch"``.
+
+        Note: HTTP ``/start_profile`` does **not** call this; it uses :meth:`collective_rpc` instead.
         """
-        prof_top = getattr(self.vllm_config, "profiler_config", None)
-        prof_cfg = _resolve_engine_profiler_config(self)
-        tdir = getattr(prof_cfg, "torch_profiler_dir", None) or "" if prof_cfg is not None else ""
-        tdir_is_uri = bool(tdir) and _is_uri_path(tdir)
-        use_engine_cpu = (
-            prof_cfg is not None
-            and getattr(prof_cfg, "profiler", None) == "torch"
-            and bool(tdir)
-            and not tdir_is_uri
-        )
-        # Always one line: otherwise operators see *no* StageEngineCoreProc log when
-        # the engine snapshot lacks profiler_config (very common) or URI dirs skip CPU trace.
-        logger.info(
-            "[engine_core profile] is_start=%s stage_id=%s vllm_config.profiler_config_set=%s "
-            "resolved_profiler_config_set=%s profiler=%r torch_profiler_dir_set=%s "
-            "use_engine_cpu=%s",
-            is_start,
-            getattr(self.vllm_config.model_config, "stage_id", None),
-            prof_top is not None,
-            prof_cfg is not None,
-            getattr(prof_cfg, "profiler", None) if prof_cfg is not None else None,
-            bool(tdir) and not tdir_is_uri,
-            use_engine_cpu,
-        )
-        if is_start:
-            if use_engine_cpu:
-                self._start_engine_core_cpu_profiler(prof_cfg, profile_prefix)
-            try:
-                super().profile(is_start, profile_prefix)
-            except Exception:
-                if use_engine_cpu or self._engine_core_torch_profiler is not None:
-                    self._stop_engine_core_cpu_profiler()
-                raise
-        else:
-            super().profile(is_start, profile_prefix)
-            if use_engine_cpu or self._engine_core_torch_profiler is not None:
-                self._stop_engine_core_cpu_profiler()
+
+        def _run() -> None:
+            return super(StageEngineCoreProc, self).profile(is_start, profile_prefix)
+
+        self._run_with_engine_cpu_profile(is_start, profile_prefix, "EngineCore.profile_utility", _run)
 
     def _start_engine_core_cpu_profiler(self, prof_cfg: Any, profile_prefix: str | None) -> None:
         if self._engine_core_torch_profiler is not None:
