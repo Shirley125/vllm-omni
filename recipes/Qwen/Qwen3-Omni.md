@@ -1,4 +1,4 @@
-# Qwen3-Omni for multimodal chat on 1x A100 80GB
+# Qwen3-Omni for multimodal chat
 
 ## Summary
 
