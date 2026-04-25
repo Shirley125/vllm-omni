@@ -1,4 +1,4 @@
-# Qwen3-TTS for text-to-speech on 1x H100/A100 80GB
+# Qwen3-TTS for text-to-speech 
 
 ## Summary
 
