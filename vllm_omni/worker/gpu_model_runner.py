@@ -1298,6 +1298,7 @@ class OmniGPUModelRunner(GPUModelRunner):
         # from scheduler cached infos on every step.
         if hasattr(self.model, "has_preprocess") or hasattr(self.model, "enable_update_additional_information"):
             if self.vllm_config.model_config.async_chunk:
+                # 会放到cpu里？
                 self._update_additional_information(scheduler_output)
 
         if hasattr(self.model, "has_preprocess") and self.model.has_preprocess:
@@ -1508,13 +1509,16 @@ class OmniGPUModelRunner(GPUModelRunner):
     def _update_streaming_input_additional_info(self, new_req_data, req_id):
         # For streaming input prefill case only. Update buffer from last segment input
         cached_additional_info = self.model_intermediate_buffer.get(req_id, {})
+        print(f"cwj _update_streaming_input_additional_info cached_additional_info = {cached_additional_info}")
         if cached_additional_info:
             payload_info = getattr(new_req_data, "additional_information", None)
             inc_info = deserialize_additional_information(payload_info)
+            print(f"cwj _update_streaming_input_additional_info inc_info = {payload_info}")
             if isinstance(inc_info, dict) and inc_info:
                 accumulated_keys: set[tuple[str, str]] = set()
                 if hasattr(self, "model") and hasattr(self.model, "streaming_accumulated_keys"):
                     accumulated_keys = self.model.streaming_accumulated_keys
+                    logger.info(f"cwj accumulated_keys = {accumulated_keys}")
                 merged_info = dict(cached_additional_info)
                 for key, value in inc_info.items():
                     if isinstance(value, dict):
@@ -1526,8 +1530,10 @@ class OmniGPUModelRunner(GPUModelRunner):
                                 old_tensor = merged_sub.get(sk)
                                 if old_tensor is None:
                                     merged_sub[sk] = inc_tensor
+                                    logger.info(f"cwj _update_streaming_input_additional_info ({key},{sk}) shape = {inc_tensor.shape}")
                                 else:
                                     merged_sub[sk] = torch.cat((old_tensor, inc_tensor), dim=0)
+                                    logger.info(f"cwj _update_streaming_input_additional_info({key},{sk}) shape = {merged_sub[sk] .shape}")
                             else:
                                 merged_sub[sk] = sv
                         merged_info[key] = merged_sub

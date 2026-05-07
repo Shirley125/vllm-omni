@@ -214,13 +214,14 @@ def _get_streaming_talker_tokens(
 ) -> tuple[list[int], list[int], list[int], list[int]]:
     """Return streaming token slices and merged token views for thinker->talker.
        e.g. For the second streaming input request:
-       merged_sequences: [input_prompt 1, output_tokens 1[:-1], input_prompt 2, output_tokens 2]
-      thinker_input_ids: [input_prompt 1, output_tokens 1[:-1], input_prompt 2]
+       delete the last token because it will align with embedding/hidden shape
     Returns:
         inc_prompt: prompt token delta for this segment.
         inc_output: output token delta for this segment.
         merged_sequences: full thinker_sequences to send downstream.
+        [input_prompt 1, output_tokens 1[:-1], input_prompt 2, output_tokens 2]
         thinker_input_ids: full thinker_input_ids paired with merged_sequences.
+        [input_prompt 1, output_tokens 1[:-1], input_prompt 2]
     """
     state = _get_qwen3_streaming_state(request_id, streaming_context).thinker2talker
     if new_prompt_len_snapshot:
@@ -236,8 +237,6 @@ def _get_streaming_talker_tokens(
     merged_sequences = cached_sequences + delta_sequences
     thinker_input_ids = cached_sequences + inc_prompt
 
-    # Persist history for next segment. Drop the latest sampled token to keep
-    # thinker_input_ids / thinker_sequences alignment with next-step append.
     cached_sequences.extend(delta_sequences[:-1])
 
     state.last_prompt_len = cur_prompt_len
@@ -330,6 +329,10 @@ def thinker2talker_async_chunk(
             "ids": {"all": all_token_ids, "prompt": prompt_token_ids},
             "meta": {"finished": torch.tensor(is_finished, dtype=torch.bool)},
         }
+        logger.info(
+            f"cwj chunk id = {chunk_id} prefill thinker2talker thinker_emb.shape = {thinker_emb.shape} "
+            f"thinker_hid.shape = {thinker_hid.shape} "
+            f"all_token_ids = {request.all_token_ids} seq len = {len(request.all_token_ids)},prompt_token_ids = {request.prompt_token_ids}, prompt len = {len(request.prompt_token_ids)}")
         talker_additional_info = payload
         speaker = extract_speaker_from_request(request)
         if speaker is not None:
@@ -373,13 +376,37 @@ def thinker2talker_async_chunk(
             talker_additional_info["language"] = language
 
         if output_token_ids:
-            talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("ids", "output")]
-            talker_additional_info["embed"] = {"decode": thinker_emb.detach().cpu()}
-            talker_additional_info["ids"] = {"output": output_token_ids}
+            # 第二轮streaming input prefill走这个分支? 需要传embed prefill， hidden output。
+            # 还需要考虑更新ids all, prompt
+            if thinker_emb.shape[0] > 1 and request.resumable:
+                talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("hidden_states","output"), ("ids", "all"), ("ids", "prompt")]
+                talker_additional_info["embed"] = {"prefill": thinker_emb.detach().cpu()}
+                talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
+                talker_additional_info["ids"] = {"all": _ensure_list(request.all_token_ids), "prompt": _ensure_list(request.prompt_token_ids)}
+                logger.info(
+                    f"cwj chunk id = {chunk_id} prefill thinker2talker thinker_emb.shape = {thinker_emb.shape}, "
+                    f" thinker_hid shape = {thinker_hid.shape}  output_token_ids = {output_token_ids}, "
+                    f"all_token_ids = {request.all_token_ids} seq len = {len(request.all_token_ids)},prompt_token_ids = {request.prompt_token_ids}, prompt len = {len(request.prompt_token_ids)}")
+            else:
+                talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("hidden_states","output"), ("ids", "output")]
+                talker_additional_info["embed"] = {"decode": thinker_emb.detach().cpu()}
+                talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
+                talker_additional_info["ids"] = {"output": output_token_ids}
+                logger.info(f"cwj chunk id = {chunk_id} decode thinker2talker thinker_emb.shape = {thinker_emb.shape}, "
+                            f"thinker_hid shape = {thinker_hid.shape} output_token_ids = {output_token_ids}, "
+                            f"all_token_ids = {request.all_token_ids} seq len = {len(request.all_token_ids)},prompt_token_ids = {request.prompt_token_ids}, prompt len = {len(request.prompt_token_ids)}")
         else:
+            if not is_finished:
+            # 正常情况下不会走这里吧？
+                return None
+            talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("hidden_states", "output")]
             # When prefilling a chunked thinker, thinker_hidden_states needs to be updated.
-            talker_additional_info["embed"] = {"prefill": thinker_emb.detach().cpu()}
+            talker_additional_info["embed"] = {"decode": thinker_emb.detach().cpu()}
             talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
+            logger.info(f"cwj chunk id = {chunk_id} decode thinker2talker thinker_emb.shape = {thinker_emb.shape}, "
+                        f"thinker_hid shape = {thinker_hid.shape}")
+
+
     return talker_additional_info
 
 
@@ -481,6 +508,8 @@ def thinker2talker(
             },
         }
         info = payload
+        logger.info(f"cwj thinker2talker thinker_emb.shape = {thinker_emb.shape} "
+                  f"all_token_ids = {thinker_sequences} seq len = {len(thinker_sequences)},prompt_token_ids = {thinker_input_ids}, prompt len = {len(thinker_input_ids)}")
         speaker = extract_speaker_from_prompt(prompt, index=i)
         if speaker is not None:
             info["speaker"] = speaker
@@ -558,19 +587,20 @@ def talker2code2wav_async_chunk(
 
     chunk_length = length % chunk_size_config
     if chunk_length != 0 and not is_finished:
+        logger.info(f"cwj code2wav chunk_length = {chunk_length}, cannot transfer")
         return None
 
     context_length = chunk_length if chunk_length != 0 else chunk_size_config
     # ensure left context does not exceed available length
     left_context_size = max(0, min(length - context_length, left_context_size_config))
     end_index = min(length, left_context_size + context_length)
-
     codes = (
         torch.tensor(transfer_manager.code_prompt_token_ids[request_id][-end_index:])
         .transpose(0, 1)
         .reshape(-1)
         .tolist()
     )
+    logger.info(f"cwj talker2code2wav end index = {end_index}, codes = {codes}")
 
     return {
         "codes": {"audio": codes},

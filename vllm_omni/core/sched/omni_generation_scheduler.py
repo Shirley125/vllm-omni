@@ -145,7 +145,7 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
                 # Pop the finished request from waiting queue and don't schedule it
                 self.waiting.pop_request()
                 continue
-
+            logger.info(f"cwj stage2 waiting req prompt = {request.prompt_token_ids}")
             # async_chunk: wait for the first upstream chunk (don't start with placeholders).
             if self.chunk_transfer_adapter is not None and len(request.prompt_token_ids) == 0:
                 if request.request_id in self.chunk_transfer_adapter.finished_requests:
@@ -409,7 +409,7 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
 
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = sampled_token_ids[req_index] if sampled_token_ids else []
-
+            logger.info(f"cwj stage 2 update from output generated_token_ids = {generated_token_ids}")
             scheduled_spec_token_ids = scheduler_output.scheduled_spec_decode_tokens.get(req_id)
             if scheduled_spec_token_ids and generated_token_ids:
                 num_draft_tokens = len(scheduled_spec_token_ids)
@@ -462,7 +462,7 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
                 # (does not affect protocol)
                 request.stop_reason = request.stop_reason  # or "generation_done"
                 stopped = True
-
+            logger.info(f"cwj stage 2 update from output status = {request.status}")
             if stopped:
                 routed_experts = self._get_routed_experts(request)
                 finish_reason = request.get_finished_reason()
@@ -476,7 +476,6 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
                         )
                 if status_before_stop == RequestStatus.WAITING_FOR_CHUNK:
                     stopped_running_reqs.add(request)
-                    stopped_preempted_reqs.add(request)
                 else:
                     stopped_running_reqs.add(request)
 

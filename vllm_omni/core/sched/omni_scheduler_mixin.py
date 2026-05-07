@@ -13,6 +13,9 @@ class OmniSchedulerMixin:
         update: StreamingUpdate,
     ) -> None:
         """For streaming input: Replace an existing streaming session payload with the latest update."""
+        print(f"cwj stage id {self.vllm_config.model_config.stage_id} _replace_session_with_streaming_update,"
+                  f"update.prompt_token_ids = {update.prompt_token_ids}")
+        self.chunk_transfer_adapter.finished_requests.discard(session.request_id)
         session._output_token_ids.clear()
         session._all_token_ids.clear()
         new_prompt = update.prompt_token_ids or ()

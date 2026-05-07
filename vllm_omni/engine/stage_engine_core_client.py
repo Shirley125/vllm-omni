@@ -266,6 +266,7 @@ class StageEngineCoreClientBase:
             self.replica_id,
             request.request_id,
         )
+        print(f"cwj add req {request}")
         await super().add_request_async(request)
 
     # ==================== Stage Methods ====================

@@ -227,6 +227,8 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 new_list.append(omni_nr)
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
+            if self.vllm_config.model_config.stage_id != 0:
+                logger.info(f"cwj stage 1 scheduler_output.scheduled_new_reqs = {new_list}")
             if self.chunk_transfer_adapter:
                 self.chunk_transfer_adapter.postprocess_scheduler_output(scheduler_output, self.requests)
             # Add information about requests needing KV cache transfer
@@ -239,10 +241,14 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         # Wrap in omni scheduler output to carry transfer metadata.
         base_fields = SchedulerOutput.__dataclass_fields__.keys()
         base_data = {name: getattr(scheduler_output, name) for name in base_fields}
-        return OmniSchedulerOutput(
+        res = OmniSchedulerOutput(
             **base_data,
             finished_requests_needing_kv_transfer=finished_reqs,
         )
+        if self.vllm_config.model_config.stage_id == 1:
+            logger.info(f"cwj stage 1 num scheduled tokens = {res.num_scheduled_tokens}")
+        return res
+
 
     def update_from_output(
         self,
@@ -321,7 +327,8 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
 
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = sampled_token_ids[req_index] if sampled_token_ids else []
-
+            if self.vllm_config.model_config.stage_id ==1:
+                logger.info(f"cwj update from output generated token = {generated_token_ids}")
             scheduled_spec_token_ids = scheduler_output.scheduled_spec_decode_tokens.get(req_id)
             if scheduled_spec_token_ids and generated_token_ids:
                 num_draft_tokens = len(scheduled_spec_token_ids)
@@ -394,6 +401,8 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 # Capture finish_reason BEFORE _handle_stopped_request, which may
                 # reset the status to WAITING for streaming requests that continue.
                 finish_reason = request.get_finished_reason()
+                logger.info(f"cwj stage id = {self.vllm_config.model_config.stage_id} "
+                            f"stopped finished reason {finish_reason}")
                 is_segment_finished = request.is_finished() and request.resumable
                 finished = self._handle_stopped_request(request)
                 if finished:
@@ -404,7 +413,7 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                     # In async chunk mode, request may be in either queue.
                     # Remove from both to avoid stale queue entries.
                     stopped_running_reqs.add(request)
-                    stopped_preempted_reqs.add(request)
+                    #stopped_preempted_reqs.add(request)
                 else:
                     stopped_preempted_reqs.add(request)
 
@@ -439,7 +448,8 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                     )
                 )
                 if self.chunk_transfer_adapter is not None:
-                    self.chunk_transfer_adapter.save_async(pooler_output, request)
+                    logger.info(f"cwj is_segment_finished = {is_segment_finished} stage id = {self.vllm_config.model_config.stage_id}")
+                    self.chunk_transfer_adapter.save_async(pooler_output, request, is_segment_finished)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
                 assert not prompt_logprobs_tensors
@@ -583,7 +593,17 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         """
         req_id = session.request_id
         self._new_prompt_len_snapshot[req_id] = len(update.prompt_token_ids)
+        outstanding_async_tokens = getattr(session, "num_output_placeholders", 0)
+        if outstanding_async_tokens > 0:
+            # Async scheduling may already have sampled the previous
+            # segment's next token. Drop that late token instead of
+            # appending it to the freshly replaced streaming segment.
+            session.discard_latest_async_tokens = True
+            session.num_computed_tokens -= session.num_output_placeholders
+            session.num_output_placeholders = 0
+            session.spec_token_ids = []
         if self.vllm_config.model_config.stage_id != 0:
+            logger.info("cwj stage id 1 update streaming update")
             self._replace_session_with_streaming_update(session, update)
 
         else:

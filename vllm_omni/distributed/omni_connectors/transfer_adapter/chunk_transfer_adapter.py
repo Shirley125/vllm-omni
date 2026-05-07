@@ -106,6 +106,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self,
         pooling_output: torch.Tensor | None = None,
         request: Request | None = None,
+        is_segment_finished: bool = False,
     ):
         """Build and enqueue one chunk for asynchronous sending.
 
@@ -119,7 +120,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         task = {
             "pooling_output": pooling_output,
             "request": request,
-            "is_finished": request.is_finished(),
+            "is_finished": request.is_finished() or is_segment_finished,
         }
         self._pending_save_reqs.append(task)
         with self._save_cond:
@@ -149,12 +150,13 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         payload_data, size = result
 
         if payload_data:
+            logger.info(f"cwj get key = {connector_get_key}")
             # Update connector state
             self.get_req_chunk[req_id] += 1
 
             meta = payload_data.get("meta", {})
             if self.model_mode == "ar":
-                merged_payload = self._update_request_payload(external_req_id, payload_data)
+                merged_payload = self._update_request_payload(chunk_id, external_req_id, payload_data)
                 request.additional_information = merged_payload
                 if meta.get("finished"):
                     self.finished_requests.add(req_id)
@@ -188,12 +190,13 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
 
             # Mark as finished for consumption
             self._finished_load_reqs.add(req_id)
+            logger.info(f"[Stage-{stage_id}] self._finished_load_reqs = {self._finished_load_reqs}, chunk_id = {chunk_id}")
             logger.debug(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
             return True
 
         return False
 
-    def _update_request_payload(self, req_id: str, payload_data: dict[str, Any]) -> dict[str, Any]:
+    def _update_request_payload(self, chunk_id, req_id: str, payload_data: dict[str, Any]) -> dict[str, Any]:
         """Update the stored payload for *req_id* with the latest chunk."""
         if req_id not in self.request_payload:
             self.request_payload[req_id] = payload_data
@@ -212,13 +215,17 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                 if type_key == "meta" and qual == "finished":
                     continue
                 if (type_key, qual) in override_keys:
+                    if isinstance(value, torch.Tensor):
+                        logger.info(f"cwj get chunk chunk_id = {chunk_id} ({type_key},{qual}) shape = {value.shape}")
                     continue
                 if isinstance(value, torch.Tensor) and qual in origin_sub:
                     new_val[qual] = torch.cat([origin_sub[qual], value], dim=0)
+                    logger.info(f"cwj get chunk_id = {chunk_id} get chunk ({type_key},{qual}) shape = {new_val[qual].shape}")
                 elif isinstance(value, list) and qual in origin_sub:
                     new_val[qual] = origin_sub[qual] + value
 
         self.request_payload[req_id] = payload_data
+        logger.info(f"cwj get chunk_id = {chunk_id} get chunk payload_data = {payload_data}")
         return payload_data
 
     def _send_single_request(self, task: dict):
@@ -254,8 +261,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             put_key=connector_put_key,
             data=payload_data,
         )
-
         if success:
+            logger.info(f"cwj put key = {connector_put_key}")
             self.put_req_chunk[external_req_id] += 1
             logger.debug(f"[Stage-{stage_id}] Sent {connector_put_key}")
             finished_flag = payload_data.get("meta", {}).get("finished", payload_data.get("finished"))
@@ -330,9 +337,10 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         """
         if external_req_id is None:
             external_req_id = self.request_ids_mapping.get(request_id, request_id)
-
+        """
         self.cleanup_receiver(request_id)
         self.cleanup_sender(external_req_id)
+        """
 
     ########################################################################
     # Schedule Helper
@@ -346,6 +354,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         """
         Process pending chunks for waiting and running queues.
         """
+        logger.info(f"cwj process_pending_chunks _finished_load_reqs = {self._finished_load_reqs}")
         if self.connector.stage_id == 0:
             return
         self._process_chunk_queue(
@@ -412,6 +421,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                     # of schedule, but have not scheduled
                     continue
                 if request.request_id in self.finished_requests:
+                    request.additional_information = None
                     continue
                 # Requests that waiting for chunk
                 self.load_async(request)
@@ -422,6 +432,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                     finished_load_reqs.remove(request.request_id)
                     self.requests_with_ready_chunks.add(request.request_id)
                     continue
+                logger.info(f"cwj req status: {request.status} stage id = {self.connector.stage_id}, "
+                            f"get chunk = {self.get_req_chunk[request.request_id]}")
             queue.remove(request)
             self.requests_origin_status[request.request_id] = target_status
             waiting_for_chunk_list.append(request)

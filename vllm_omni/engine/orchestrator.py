@@ -270,7 +270,7 @@ class Orchestrator:
         stage_id = 0
         request_id = msg["request_id"]
         request = msg["prompt"]
-
+        final_stage_id = msg["final_stage_id"]
         req_state = self.request_states.get(request_id)
         if req_state is None:
             logger.warning(
@@ -293,6 +293,9 @@ class Orchestrator:
             request,
             prompt_text=msg.get("output_prompt_text"),
         )
+
+        if self.async_chunk and stage_id == 0 and final_stage_id > 0:
+            await self._prewarm_async_chunk_stages(request_id, request, req_state)
 
     async def _handle_add_companion(self, msg: dict[str, Any]) -> None:
         """Handle an add_companion_request message: submit companion to stage 0."""
@@ -973,6 +976,7 @@ class Orchestrator:
                 from vllm_omni.distributed.omni_connectors.adapter import compute_talker_prompt_ids_length
 
                 try:
+                    #对于streaming input这里要处理prompt_token_ids
                     next_prompt_len = max(1, compute_talker_prompt_ids_length(prompt_token_ids))
                 except Exception:
                     next_prompt_len = max(1, len(prompt_token_ids))
@@ -992,6 +996,7 @@ class Orchestrator:
                     prompt=base_input,
                     params=params,
                     model_config=next_pool.stage_vllm_config.model_config,
+                    resumable=req_state.streaming.enabled,
                 )
                 request.external_req_id = request.request_id
                 await next_pool.submit_initial(request_id, req_state, request, prompt_text=None)
