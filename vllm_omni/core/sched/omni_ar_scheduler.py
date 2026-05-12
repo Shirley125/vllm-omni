@@ -583,6 +583,17 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         """
         req_id = session.request_id
         self._new_prompt_len_snapshot[req_id] = len(update.prompt_token_ids)
+        num_output_placeholders = getattr(session, "num_output_placeholders", 0)
+        if num_output_placeholders > 0:
+            # In async scheduling, placeholders are tokens scheduled ahead
+            # whose sampled ids have not been applied to the request yet.
+            # Cut streaming input segments at the confirmed token length;
+            # otherwise a late token from the previous segment can leak into
+            # the next segment and introduce audio artifacts between segments.
+            session.discard_latest_async_tokens = True
+            session.num_computed_tokens -= session.num_output_placeholders
+            session.num_output_placeholders = 0
+            session.spec_token_ids = []
         if self.vllm_config.model_config.stage_id != 0:
             self._replace_session_with_streaming_update(session, update)
 
