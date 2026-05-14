@@ -997,7 +997,17 @@ class Qwen3OmniMoeForConditionalGeneration(
                 return self.tts_pad_embed.to(device)
             update_dict.setdefault("meta", {})["eos_emitted"] = True
             return self.tts_eos_embed.to(device)
+        if thinker_decode_embed is not None:
+            logger.info(f"cwj thinker_decode_embed.shape = {thinker_decode_embed.shape}")
+        else:
+            logger.info(f"cwj thinker_decode_embed is none")
 
+        logger.info(f"cwj qwen3 preprocess decode start_index = {start_index}"
+                    f" thinker_output_token_ids ={thinker_output_token_ids}, output len = {len(thinker_output_token_ids)}")
+        if cached_thinker_decode_embeds is not None:
+            logger.info(f"cwj cached_thinker_decode_embeds.shape = {cached_thinker_decode_embeds.shape}")
+        else:
+            logger.info(f"cwj cached_thinker_decode_embeds is none")
         if cached_thinker_decode_embeds is not None and start_index < cached_thinker_decode_embeds.shape[0]:
             cached_thinker_decode_embeds = cached_thinker_decode_embeds.to(device)
             thinker_embed = cached_thinker_decode_embeds[start_index]
