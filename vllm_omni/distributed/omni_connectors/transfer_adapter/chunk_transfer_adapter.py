@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import importlib
+import time
 from collections import defaultdict, deque
 from typing import Any
 
@@ -53,9 +54,11 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self.put_req_chunk: dict[str, int] = defaultdict(int)
         self.get_req_chunk: dict[str, int] = defaultdict(int)
         self.finished_requests: set[str] = set()
+        self.segment_finished_requests: set[str] = set()
         self.request_payload = {}
         self.code_prompt_token_ids: dict[str, list[torch.Tensor]] = defaultdict(list)
         self.request_ids_mapping: dict[str, str] = {}
+        self.first_audio_frame_logged: set[str] = set()
 
         self.waiting_for_chunk_waiting_requests: deque[Any] = deque()
         self.waiting_for_chunk_running_requests: deque[Any] = deque()
@@ -117,10 +120,15 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             pooling_output: Partial pooling output dictionary
             request: Request object
         """
+        is_finished = request.is_finished()
+        # A fully finished request also finishes the current streaming segment;
+        # the inverse is not true.
+        is_segment_finished = is_segment_finished or is_finished
         task = {
             "pooling_output": pooling_output,
             "request": request,
-            "is_finished": request.is_finished() or is_segment_finished,
+            "is_finished": is_finished,
+            "is_segment_finished": is_segment_finished,
         }
         self._pending_save_reqs.append(task)
         with self._save_cond:
@@ -155,16 +163,30 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             self.get_req_chunk[req_id] += 1
 
             meta = payload_data.get("meta", {})
+            is_finished = meta.get("finished")
+            is_segment_finished = meta.get("is_segment_finished")
             if self.model_mode == "ar":
                 merged_payload = self._update_request_payload(chunk_id, external_req_id, payload_data)
                 request.additional_information = merged_payload
-                if meta.get("finished"):
+                if is_finished:
                     self.finished_requests.add(req_id)
+                if is_segment_finished:
+                    self.segment_finished_requests.add(req_id)
             else:
-                if meta.get("finished"):
+                if is_finished:
                     self.finished_requests.add(req_id)
+                if is_segment_finished:
+                    self.segment_finished_requests.add(req_id)
 
                 new_ids = payload_data.get("codes", {}).get("audio", [])
+                if new_ids and req_id not in self.first_audio_frame_logged:
+                    received_at = time.time()
+                    logger.info(
+                        f"[Stage-{stage_id}] First audio frame received for req_id={req_id}, "
+                        f"external_req_id={external_req_id}, chunk_id={chunk_id}, "
+                        f"received_at={received_at:.6f}"
+                    )
+                    self.first_audio_frame_logged.add(req_id)
                 request.prompt_token_ids = new_ids
                 prev_info = getattr(request, "additional_information", None)
                 info = dict(prev_info) if isinstance(prev_info, dict) else {}
@@ -185,7 +207,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                 request.num_computed_tokens = 0
 
                 # Empty chunk with more data expected: keep polling.
-                if not new_ids and not meta.get("finished"):
+                if not new_ids and not is_finished and not is_segment_finished:
                     return True
 
             # Mark as finished for consumption
@@ -212,7 +234,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             if not isinstance(origin_sub, dict):
                 continue
             for qual, value in new_val.items():
-                if type_key == "meta" and qual == "finished":
+                if type_key == "meta" and qual in {"finished", "is_segment_finished"}:
                     continue
                 if (type_key, qual) in override_keys:
                     if isinstance(value, torch.Tensor):
@@ -233,6 +255,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         pooling_output = unflatten_payload(raw_po) if isinstance(raw_po, dict) else raw_po
         request = task["request"]
         is_finished = task["is_finished"]
+        is_segment_finished = task["is_segment_finished"]
         stage_id = self.connector.stage_id
         next_stage_id = stage_id + 1
         external_req_id = request.external_req_id
@@ -246,7 +269,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                     transfer_manager=self,
                     pooling_output=pooling_output,
                     request=request,
-                    is_finished=is_finished,
+                    # Existing processors use is_finished as a flush signal.
+                    is_finished=is_segment_finished,
                 )
 
             except Exception as e:
@@ -254,6 +278,10 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
 
         if not payload_data:
             return
+        if isinstance(payload_data, dict):
+            meta = payload_data.setdefault("meta", {})
+            meta["finished"] = torch.tensor(is_finished, dtype=torch.bool)
+            meta["is_segment_finished"] = torch.tensor(is_segment_finished, dtype=torch.bool)
 
         success, size, metadata = self.connector.put(
             from_stage=str(stage_id),
@@ -277,7 +305,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             if is_payload_finished:
                 self.cleanup(request.request_id, external_req_id)
 
-        if is_finished:
+        if is_segment_finished:
             self.code_prompt_token_ids.pop(external_req_id, None)
             cached_ic = getattr(self, "_cached_ic", None)
             if cached_ic is not None:
@@ -297,10 +325,12 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         Idempotent: calling with an already-cleaned or unknown id is safe.
         """
         self.finished_requests.discard(request_id)
+        self.segment_finished_requests.discard(request_id)
         self.get_req_chunk.pop(request_id, None)
         self.requests_with_ready_chunks.discard(request_id)
         self.request_ids_mapping.pop(request_id, None)
         self.requests_origin_status.pop(request_id, None)
+        self.first_audio_frame_logged.discard(request_id)
 
         self._cancelled_load_reqs.add(request_id)
         self._finished_load_reqs.discard(request_id)
@@ -416,11 +446,19 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         queue_snapshot = list(queue)
         for request in queue_snapshot:
             if request.status != RequestStatus.WAITING_FOR_CHUNK:
+                if request.request_id in finished_load_reqs:
+                    request.status = target_status
+                    finished_load_reqs.remove(request.request_id)
+                    self.requests_with_ready_chunks.add(request.request_id)
+                    continue
                 if request.request_id in self.requests_with_ready_chunks:
                     # Requests that have loaded chunk from last round
                     # of schedule, but have not scheduled
                     continue
                 if request.request_id in self.finished_requests:
+                    request.additional_information = None
+                    continue
+                if request.request_id in self.segment_finished_requests:
                     request.additional_information = None
                     continue
                 # Requests that waiting for chunk
