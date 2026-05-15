@@ -593,6 +593,26 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
 
         return engine_core_outputs
 
+    def _handle_stopped_request(self, request: Request) -> bool:
+        """Return True if finished (can be False for resumable requests)."""
+        logger.info(f"cwj stage id 2"
+                    f" handle stopped request resumable: {request.resumable}")
+        if not request.resumable:
+            return True
+
+        if request.streaming_queue:
+            update = request.streaming_queue.popleft()
+            if update is None:
+                # Streaming request finished.
+                return True
+            self._update_request_as_session(request, update)
+        else:
+            request.status = RequestStatus.WAITING_FOR_STREAMING_REQ
+            self.num_waiting_for_streaming_input += 1
+
+        self._enqueue_waiting_request(request)
+        return False
+
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         """
         Override: Just replace the existing session with the next streaming update.
