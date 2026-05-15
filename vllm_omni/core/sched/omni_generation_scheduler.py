@@ -149,7 +149,8 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
             logger.info(f"cwj stage2 waiting req prompt = {request.prompt_token_ids}")
             # async_chunk: wait for the first upstream chunk (don't start with placeholders).
             if self.chunk_transfer_adapter is not None and len(request.prompt_token_ids) == 0:
-                if request.request_id in self.chunk_transfer_adapter.finished_requests:
+                if (request.request_id in self.chunk_transfer_adapter.finished_requests
+                        or request.request_id in self.chunk_transfer_adapter.segment_finished_requests):
                     request.prompt_token_ids.append(0)
                     try:
                         request._all_token_ids.append(0)  # type: ignore[attr-defined]
@@ -454,7 +455,8 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
                 or (self.chunk_transfer_adapter is None and request.num_computed_tokens >= request.num_prompt_tokens)
                 or (
                     self.chunk_transfer_adapter is not None
-                    and request.request_id in self.chunk_transfer_adapter.finished_requests
+                    and (request.request_id in self.chunk_transfer_adapter.finished_requests
+                    or request.request_id in self.chunk_transfer_adapter.segment_finished_requests)
                     and request.num_computed_tokens >= len(request.prompt_token_ids)
                 )
             ):
