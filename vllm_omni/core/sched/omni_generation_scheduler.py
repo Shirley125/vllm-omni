@@ -90,7 +90,8 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
             if required_tokens <= 0:
                 if (
                     self.chunk_transfer_adapter is not None
-                    and request.request_id in self.chunk_transfer_adapter.finished_requests
+                    and (request.request_id in self.chunk_transfer_adapter.finished_requests
+                    or request.request_id in self.chunk_transfer_adapter.segment_finished_requests)
                 ):
                     # Upstream may finish with no terminal tokens; append one pad token so we can emit FINISHED.
                     if len(request.prompt_token_ids) <= num_computed_tokens:
