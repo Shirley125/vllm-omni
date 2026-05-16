@@ -999,13 +999,15 @@ class Orchestrator:
                 base_input["prompt_token_ids"] = [0] * next_prompt_len
                 base_input["multi_modal_data"] = None
                 base_input["mm_processor_kwargs"] = None
-
+                downstream_resumable = bool(
+                    getattr(stage0_request, "resumable", req_state.streaming.enabled)
+                )
                 request = build_engine_core_request_from_tokens(
                     request_id=request_id,
                     prompt=base_input,
                     params=params,
                     model_config=next_pool.stage_vllm_config.model_config,
-                    resumable=req_state.streaming.enabled,
+                    resumable=downstream_resumable,
                 )
                 request.external_req_id = request.request_id
                 await next_pool.submit_initial(request_id, req_state, request, prompt_text=None)

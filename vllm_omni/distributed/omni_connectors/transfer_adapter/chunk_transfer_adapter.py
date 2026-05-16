@@ -168,13 +168,11 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                 merged_payload = self._update_request_payload(chunk_id, external_req_id, payload_data)
                 request.additional_information = merged_payload
                 if is_finished:
-                    request.resumable = False
                     self.finished_requests.add(req_id)
                 if is_segment_finished:
                     self.segment_finished_requests.add(req_id)
             else:
                 if is_finished:
-                    request.resumable = False
                     self.finished_requests.add(req_id)
                 if is_segment_finished:
                     self.segment_finished_requests.add(req_id)
