@@ -591,6 +591,15 @@ class Orchestrator:
         req_id = output.request_id
         finished = output.finished
         submit_ts = req_state.stage_submit_ts.get(stage_id)
+        logger.info(
+            "cwj route_output stage=%s req=%s output.finished=%s final_stage_id=%s final_msg_finished=%s final_output=%s",
+            stage_id,
+            req_id,
+            output.finished,
+            req_state.final_stage_id,
+            output.finished and stage_id == req_state.final_stage_id,
+            self.stage_pools[stage_id].final_output,
+        )
 
         if finished and self._cfg_tracker.is_companion(req_id):
             await self._handle_cfg_companion_ready(req_id)
