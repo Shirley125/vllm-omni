@@ -401,10 +401,11 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 # Capture finish_reason BEFORE _handle_stopped_request, which may
                 # reset the status to WAITING for streaming requests that continue.
                 finish_reason = request.get_finished_reason()
-                logger.info(f"cwj stage id = {self.vllm_config.model_config.stage_id} "
-                            f"stopped finished reason {finish_reason}")
                 is_segment_finished = request.is_finished() and request.resumable
                 finished = self._handle_stopped_request(request)
+                logger.info(f"cwj stage id = {self.vllm_config.model_config.stage_id} "
+                            f"stopped finished reason {finish_reason} is_segment_finished = {is_segment_finished} "
+                            f"finished = {finished}")
                 if finished:
                     kv_transfer_params = self._free_request(request)
                 if status_before_stop == RequestStatus.RUNNING:
