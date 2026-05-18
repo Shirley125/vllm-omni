@@ -775,8 +775,6 @@ class Qwen3OmniMoeForConditionalGeneration(
             voice_type = self.default_tts_text_spk_type
         else:
             voice_type = str(voice_type).lower().strip()
-        start_index = meta.get("num_processed_tokens", 0)
-        end_index = start_index + input_embeds.shape[0]
         # Read thinker outputs for prefill
         thinker_prefill_embed = embed.get("cached_prefill_embed")
         if not isinstance(thinker_prefill_embed, torch.Tensor):
@@ -784,6 +782,8 @@ class Qwen3OmniMoeForConditionalGeneration(
         thinker_prefill_hidden = hs.get("cached_prefill_hidden")
         if not isinstance(thinker_prefill_hidden, torch.Tensor):
             thinker_prefill_hidden = hs["output"]
+        start_index = meta.get("num_processed_tokens", 0)
+        end_index = start_index + thinker_prefill_embed.shape[0]
         thinker_sequence_embeds = thinker_prefill_embed.to(
             device=self._module_device(self.talker), dtype=torch.bfloat16
         )  # Tensor [P,H]
