@@ -800,7 +800,8 @@ class Qwen3OmniMoeForConditionalGeneration(
             if ids.get("prompt") is None
             else torch.as_tensor(ids["prompt"], device=self._module_device(self.talker))
         )
-        logger.info(f"cwj qwen3 before preprocess prefill prompt ={thinker_chatml_ids}, prompt len = {len(thinker_chatml_ids)}"
+        logger.info(f"cwj qwen3 before start_index = {start_index}, end_index ={end_index} "
+                    f" preprocess prefill prompt ={thinker_chatml_ids}, prompt len = {len(thinker_chatml_ids)}"
               f"seq = {thinker_sequences}, seq len = {len(thinker_sequences)}, "
               f"thinker_sequence_embeds.shape = {thinker_sequence_embeds.shape}, thinker_hidden_states.shape = {thinker_hidden_states.shape}")
 
