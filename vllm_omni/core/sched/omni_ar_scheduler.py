@@ -192,6 +192,18 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if self.chunk_transfer_adapter:
             self.chunk_transfer_adapter.process_pending_chunks(self.waiting, self.running)
+        if self.vllm_config.model_config.stage_id == 1:
+            for request in [*list(self.waiting), *list(self.running)]:
+                logger.info(
+                    "cwj stage 1 before schedule req=%s status=%s prompt_len=%s all_len=%s "
+                    "num_prompt_tokens=%s num_computed_tokens=%s",
+                    request.request_id,
+                    request.status,
+                    len(request.prompt_token_ids),
+                    len(getattr(request, "_all_token_ids", [])),
+                    getattr(request, "num_prompt_tokens", None),
+                    request.num_computed_tokens,
+                )
 
         try:
             scheduler_output = super().schedule()
