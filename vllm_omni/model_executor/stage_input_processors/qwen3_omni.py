@@ -572,6 +572,16 @@ def talker2code2wav_async_chunk(
     if isinstance(code_predictor_codes, torch.Tensor):
         if not code_predictor_codes.any():
             return None
+        sampling_params = getattr(request, "sampling_params", None)
+        stop_token_ids = set(getattr(sampling_params, "stop_token_ids", None) or [])
+        stop_token_id = getattr(sampling_params, "stop_token_id", None)
+        if stop_token_id is not None:
+            stop_token_ids.add(stop_token_id)
+        first_codebook = int(code_predictor_codes[0, 0].item())
+        logger.info(f"cwj talker2code2wav code predictor = {code_predictor_codes}, first_codebook = {first_codebook}")
+        if first_codebook in stop_token_ids:
+            logger.info("skip stop-token codec frame: first_codebook=%s", first_codebook)
+            return None
     else:
         code_tensor = torch.tensor(code_predictor_codes, dtype=torch.long)
         if not code_tensor.any():
@@ -594,6 +604,8 @@ def talker2code2wav_async_chunk(
     # ensure left context does not exceed available length
     left_context_size = max(0, min(length - context_length, left_context_size_config))
     end_index = min(length, left_context_size + context_length)
+    if first_segment:
+        end_index -= 1
     codes = (
         torch.tensor(transfer_manager.code_prompt_token_ids[request_id][-end_index:])
         .transpose(0, 1)
