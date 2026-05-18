@@ -598,6 +598,7 @@ def talker2code2wav(
         codec_codes = (
             mm["codes"]["audio"][-seq_len:].to(torch.long).transpose(0, 1).cpu().to(torch.long).reshape(-1).tolist()
         )  # 16, seq_len
+        logger.info(f"cwj talker2code2wav codec_codes = {codec_codes}, len = {len(codec_codes)}")
         code2wav_inputs.append(
             OmniTokensPrompt(
                 prompt_token_ids=codec_codes,
