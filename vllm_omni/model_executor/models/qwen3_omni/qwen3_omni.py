@@ -803,7 +803,7 @@ class Qwen3OmniMoeForConditionalGeneration(
               f"thinker_sequence_embeds.shape = {thinker_sequence_embeds.shape}, thinker_hidden_states.shape = {thinker_hidden_states.shape}")
 
         def _dump_tensor_first_10_cols(name: str, tensor: torch.Tensor) -> None:
-            path = f"/tmp/talker_preprocess_prefill_{name}_{os.getpid()}_{time.time_ns()}.txt"
+            path = f"/tmp/async_talker_preprocess_prefill_{name}_{os.getpid()}_{time.time_ns()}.txt"
             preview = tensor.detach().float().cpu()[:, :10]
             with open(path, "w", encoding="utf-8") as f:
                 f.write(f"shape={tuple(tensor.shape)} dtype={tensor.dtype} device={tensor.device}\n")
