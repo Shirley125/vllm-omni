@@ -3,6 +3,8 @@
 # Copyright 2025 The Qwen team.
 """Inference-only Qwen3-Omni-Moe unified model (thinker + talker + code2wav)."""
 
+import os
+import time
 import asyncio
 from collections.abc import AsyncGenerator, Iterable
 from functools import cached_property
@@ -799,6 +801,17 @@ class Qwen3OmniMoeForConditionalGeneration(
         logger.info(f"cwj qwen3 preprocess prefill prompt ={thinker_chatml_ids}, prompt len = {len(thinker_chatml_ids)}"
               f"seq = {thinker_sequences}, seq len = {len(thinker_sequences)}, "
               f"thinker_sequence_embeds.shape = {thinker_sequence_embeds.shape}, thinker_hidden_states.shape = {thinker_hidden_states.shape}")
+
+        def _dump_tensor_first_10_cols(name: str, tensor: torch.Tensor) -> None:
+            path = f"/tmp/talker_preprocess_prefill_{name}_{os.getpid()}_{time.time_ns()}.txt"
+            preview = tensor.detach().float().cpu()[:, :10]
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"shape={tuple(tensor.shape)} dtype={tensor.dtype} device={tensor.device}\n")
+                for row in preview.tolist():
+                    f.write(" ".join(f"{value:.8g}" for value in row) + "\n")
+
+        _dump_tensor_first_10_cols("thinker_sequence_embeds", thinker_sequence_embeds)
+        _dump_tensor_first_10_cols("thinker_hidden_states", thinker_hidden_states)
 
         tts_bos_thinker = embed["tts_bos"].to(device=self._module_device(self.talker), dtype=torch.bfloat16)
         tts_eos_thinker = embed["tts_eos"].to(device=self._module_device(self.talker), dtype=torch.bfloat16)
