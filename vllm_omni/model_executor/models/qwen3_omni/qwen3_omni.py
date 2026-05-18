@@ -690,6 +690,8 @@ class Qwen3OmniMoeForConditionalGeneration(
             last_talker_hidden, text_step, update_dict = self.talker_preprocess_decode(
                 input_ids, input_embeds, update_dict, payload
             )
+            logger.info(f"cwj qwen3 preprocess decode input_ids = {input_ids}, input_embeds = {input_embeds} "
+                        f"last_talker_hidden = {last_talker_hidden} text_step={text_step}")
             update_dict["mtp_inputs"] = last_talker_hidden, text_step
 
         update_dict.setdefault("meta", {})["num_processed_tokens"] = meta.get("num_processed_tokens", 0) + span_len
@@ -801,17 +803,6 @@ class Qwen3OmniMoeForConditionalGeneration(
         logger.info(f"cwj qwen3 preprocess prefill prompt ={thinker_chatml_ids}, prompt len = {len(thinker_chatml_ids)}"
               f"seq = {thinker_sequences}, seq len = {len(thinker_sequences)}, "
               f"thinker_sequence_embeds.shape = {thinker_sequence_embeds.shape}, thinker_hidden_states.shape = {thinker_hidden_states.shape}")
-
-        def _dump_tensor_first_10_cols(name: str, tensor: torch.Tensor) -> None:
-            path = f"/tmp/async_talker_preprocess_prefill_{name}_{os.getpid()}_{time.time_ns()}.txt"
-            preview = tensor.detach().float().cpu()[:, :10]
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(f"shape={tuple(tensor.shape)} dtype={tensor.dtype} device={tensor.device}\n")
-                for row in preview.tolist():
-                    f.write(" ".join(f"{value:.8g}" for value in row) + "\n")
-
-        _dump_tensor_first_10_cols("thinker_sequence_embeds", thinker_sequence_embeds)
-        _dump_tensor_first_10_cols("thinker_hidden_states", thinker_hidden_states)
 
         tts_bos_thinker = embed["tts_bos"].to(device=self._module_device(self.talker), dtype=torch.bfloat16)
         tts_eos_thinker = embed["tts_eos"].to(device=self._module_device(self.talker), dtype=torch.bfloat16)
