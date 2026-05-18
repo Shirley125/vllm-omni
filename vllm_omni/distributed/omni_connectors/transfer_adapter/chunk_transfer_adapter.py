@@ -167,6 +167,18 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             if self.model_mode == "ar":
                 merged_payload = self._update_request_payload(chunk_id, external_req_id, payload_data)
                 request.additional_information = merged_payload
+                from vllm_omni.distributed.omni_connectors.adapter import compute_talker_prompt_ids_length
+
+                try:
+                    ids = merged_payload.get("ids", {})
+                    prompt_token_ids = ids.get("prompt", None)
+                    if prompt_token_ids:
+                        # 对于streaming input这里要处理prompt_token_ids
+                        next_prompt_len = max(1, compute_talker_prompt_ids_length(prompt_token_ids))
+                        request.prompt_token_ids = [0] * next_prompt_len
+                except Exception:
+                    next_prompt_len = max(1, len(prompt_token_ids))
+
                 if is_finished:
                     self.finished_requests.add(req_id)
                 if is_segment_finished:
