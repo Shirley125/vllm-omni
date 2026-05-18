@@ -688,6 +688,8 @@ class Qwen3OmniMoeForConditionalGeneration(
             last_talker_hidden, text_step, update_dict = self.talker_preprocess_decode(
                 input_ids, input_embeds, update_dict, payload
             )
+            logger.info(f"cwj qwen3 preprocess decode input_ids = {input_ids}, input_embeds = {input_embeds} "
+                        f"last_talker_hidden = {last_talker_hidden} text_step={text_step}")
             update_dict["mtp_inputs"] = last_talker_hidden, text_step
 
         update_dict.setdefault("meta", {})["num_processed_tokens"] = meta.get("num_processed_tokens", 0) + span_len
