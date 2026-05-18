@@ -176,7 +176,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                         # 对于streaming input这里要处理prompt_token_ids
                         next_prompt_len = max(1, compute_talker_prompt_ids_length(prompt_token_ids))
                         request.prompt_token_ids = [0] * next_prompt_len
-                        logger.info(f"cwj stage 1 update prompt len = {next_prompt_len}")
+                        logger.info(f"cwj stage 1 update prompt len = {next_prompt_len},"
+                                    f"add info prompt len = {len(prompt_token_ids)}")
                 except Exception:
                     next_prompt_len = max(1, len(prompt_token_ids))
 
