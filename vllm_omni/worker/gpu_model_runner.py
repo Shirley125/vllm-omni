@@ -1316,7 +1316,9 @@ class OmniGPUModelRunner(GPUModelRunner):
                 sched_tokens = int(num_scheduled_tokens_np[req_index])
                 s, e = start_offset, start_offset + sched_tokens
                 span_len = int(e) - int(s)
-
+                logger.info(f"cwj gpu model runner preprocess start_offset = {start_offset} "
+                            f"sched_tokens = {sched_tokens}, input ids = {input_ids}, "
+                            f"len input ids = {len(input_ids)}")
                 # call the custom process function
                 req_infos["request_id"] = req_id
                 embed_slice = inputs_embeds[s:e] if inputs_embeds is not None else None
