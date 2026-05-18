@@ -255,7 +255,9 @@ class Qwen3OmniMoeTalkerForConditionalGeneration(
         if inputs_embeds is None and input_ids is not None:
             inputs_embeds = self.embed_input_ids(input_ids)
             input_ids = None
-
+        logger.info(f"cwj talker forward input_ids = {input_ids}, positions = {positions},"
+                    f"intermediate_tensors = {intermediate_tensors},"
+                    f"inputs_embeds = {inputs_embeds}")
         talker_hidden_states, _ = self.language_model.model(
             input_ids,
             positions,
@@ -263,7 +265,7 @@ class Qwen3OmniMoeTalkerForConditionalGeneration(
             inputs_embeds=inputs_embeds,
             **kwargs,
         )
-
+        logger.info(f"cwj talker forward talker_hidden_states = {talker_hidden_states}")
         return talker_hidden_states
 
     def compute_logits(
