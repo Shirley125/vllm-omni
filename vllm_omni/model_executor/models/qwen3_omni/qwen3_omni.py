@@ -933,7 +933,6 @@ class Qwen3OmniMoeForConditionalGeneration(
                 embed_updates["cached_prefill_embed"] = cached_embed.detach()
                 meta = payload.setdefault("meta", {})
                 meta["prefill_consumed_text_tokens"] = 1
-                meta["eos_emitted"] = False
 
         cached_hidden = _to_cache_tensor(hs.get("cached_prefill_hidden"))
         had_cached_hidden = cached_hidden is not None
@@ -948,6 +947,7 @@ class Qwen3OmniMoeForConditionalGeneration(
             _append_cached(embed, "cached_prefill_embed", _to_cache_tensor(embed.get("prefill")), embed_updates)
             meta = payload.setdefault("meta", {})
             meta["decode_flag"] = False
+            meta["eos_emitted"] = False
             meta["prefill_consumed_text_tokens"] = 1
         _append_cached(embed, "cached_prefill_embed", _to_cache_tensor(embed.get("decode")), embed_updates)
         if had_cached_hidden:
@@ -964,6 +964,7 @@ class Qwen3OmniMoeForConditionalGeneration(
         Cache thinker embeds for decode stage.
         """
         thinker_decode_embeds = embed.get("decode", None)
+        logger.info(f"cwj thinker_decode_embeds = {thinker_decode_embeds}")
         if thinker_decode_embeds is not None:
             cached_thinker_decode_embeds = embed.get("cached_decode", None)
             if cached_thinker_decode_embeds is None:
