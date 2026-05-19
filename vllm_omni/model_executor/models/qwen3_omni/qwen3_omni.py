@@ -932,7 +932,8 @@ class Qwen3OmniMoeForConditionalGeneration(
                 logger.info(f"cwj cached_prefill_embed shape = {cached_embed.shape}")
                 embed_updates["cached_prefill_embed"] = cached_embed.detach()
                 meta = payload.setdefault("meta", {})
-                meta["prefill_consumed_text_tokens"] = 1
+                meta["prefill_consumed_text_tokens"] = 0
+                meta["eos_emitted"] = False
 
         cached_hidden = _to_cache_tensor(hs.get("cached_prefill_hidden"))
         had_cached_hidden = cached_hidden is not None
@@ -1094,7 +1095,7 @@ class Qwen3OmniMoeForConditionalGeneration(
             logger.info(f"cwj cached_thinker_decode_embeds.shape = {cached_thinker_decode_embeds.shape}")
         else:
             logger.info(f"cwj cached_thinker_decode_embeds is none")
-        if start_index >= len(thinker_output_token_ids) - 1:
+        if start_index >= len(thinker_output_token_ids):
             # When the tokens output by the thinker are exhausted, an EOS token needs to be appended.
             # Use the finished_flag to mark that all tokens output by thinker have been consumed.
             if meta.get("eos_emitted", False):

@@ -343,7 +343,6 @@ def thinker2talker_async_chunk(
         if transfer_manager.request_payload.get(request_id) is None:
             if not is_finished:
                 transfer_manager.request_payload[request_id] = talker_additional_info
-                return None
         else:
             save_payload = transfer_manager.request_payload.pop(request_id)
             talker_additional_info["embed"]["prefill"] = torch.cat(
