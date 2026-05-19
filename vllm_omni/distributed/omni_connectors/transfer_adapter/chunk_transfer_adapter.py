@@ -355,6 +355,10 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         self.request_payload.pop(external_req_id, None)
         self.code_prompt_token_ids.pop(external_req_id, None)
 
+        pending_prefills = getattr(self, "_pending_streaming_prefills", None)
+        if pending_prefills is not None:
+            pending_prefills.pop(external_req_id, None)
+
         cached_ic = getattr(self, "_cached_ic", None)
         if cached_ic is not None:
             cached_ic.pop(external_req_id, None)

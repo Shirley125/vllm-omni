@@ -381,7 +381,6 @@ def thinker2talker_async_chunk(
             # 第二轮streaming input prefill走这个分支? 需要传embed prefill， hidden output。
             # 还需要考虑更新ids all, prompt
             if thinker_emb.shape[0] > 1 and request.resumable:
-                talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("hidden_states","output"), ("ids", "all"), ("ids", "prompt")]
                 talker_additional_info["embed"] = {"prefill": thinker_emb.detach().cpu()}
                 talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
                 talker_additional_info["ids"] = {"all": _ensure_list(request.all_token_ids), "prompt": _ensure_list(request.prompt_token_ids)}
@@ -389,11 +388,42 @@ def thinker2talker_async_chunk(
                     f"cwj chunk id = {chunk_id} prefill thinker2talker thinker_emb.shape = {thinker_emb.shape}, "
                     f" thinker_hid shape = {thinker_hid.shape}  output_token_ids = {output_token_ids}, "
                     f"all_token_ids = {request.all_token_ids} seq len = {len(request.all_token_ids)},prompt_token_ids = {request.prompt_token_ids}, prompt len = {len(request.prompt_token_ids)}")
+                pending_prefills = getattr(transfer_manager, "_pending_streaming_prefills", None)
+                if pending_prefills is None:
+                    pending_prefills = {}
+                    transfer_manager._pending_streaming_prefills = pending_prefills
+                save_payload = pending_prefills.pop(request_id, None)
+                if save_payload is None and not is_finished:
+                    pending_prefills[request_id] = talker_additional_info
+                    logger.info("cwj cache streaming prefill req=%s chunk_id=%s", request_id, chunk_id)
+                    return None
             else:
-                talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("hidden_states","output"), ("ids", "output")]
-                talker_additional_info["embed"] = {"decode": thinker_emb.detach().cpu()}
-                talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
-                talker_additional_info["ids"] = {"output": output_token_ids}
+                pending_prefills = getattr(transfer_manager, "_pending_streaming_prefills", None)
+                save_payload = pending_prefills.pop(request_id, None) if pending_prefills is not None else None
+                if save_payload is not None:
+                    saved_prefill = save_payload.get("embed", {}).get("prefill")
+                    saved_output = save_payload.get("hidden_states", {}).get("output")
+                    current_prefill = thinker_emb.detach().cpu()
+                    current_output = thinker_hid.detach().cpu()
+                    talker_additional_info["embed"] = {
+                        "prefill": torch.cat((saved_prefill, current_prefill), dim=0)
+                    }
+                    talker_additional_info["hidden_states"] = {
+                        "output": torch.cat((saved_output, current_output), dim=0)
+                    }
+                    talker_additional_info["ids"] = save_payload.get("ids", {})
+                    logger.info(
+                        "cwj flush streaming prefill with decode req=%s chunk_id=%s prefill_shape=%s output_shape=%s",
+                        request_id,
+                        chunk_id,
+                        talker_additional_info["embed"]["prefill"].shape,
+                        talker_additional_info["hidden_states"]["output"].shape,
+                    )
+                else:
+                    talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("hidden_states","output"), ("ids", "output")]
+                    talker_additional_info["embed"] = {"decode": thinker_emb.detach().cpu()}
+                    talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
+                    talker_additional_info["ids"] = {"output": output_token_ids}
                 logger.info(f"cwj chunk id = {chunk_id} decode thinker2talker thinker_emb.shape = {thinker_emb.shape}, "
                             f"thinker_hid shape = {thinker_hid.shape} output_token_ids = {output_token_ids}, "
                             f"all_token_ids = {request.all_token_ids} seq len = {len(request.all_token_ids)},prompt_token_ids = {request.prompt_token_ids}, prompt len = {len(request.prompt_token_ids)}")
