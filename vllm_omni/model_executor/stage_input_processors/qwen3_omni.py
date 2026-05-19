@@ -429,10 +429,9 @@ def thinker2talker_async_chunk(
                             f"all_token_ids = {request.all_token_ids} seq len = {len(request.all_token_ids)},prompt_token_ids = {request.prompt_token_ids}, prompt len = {len(request.prompt_token_ids)}")
         else:
             if not is_finished:
-            # 正常情况下不会走这里吧？
+                # do not send async chunk mode placeholder token or embedding/hidden of the stop token
                 return None
             talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("hidden_states", "output")]
-            # When prefilling a chunked thinker, thinker_hidden_states needs to be updated.
             talker_additional_info["embed"] = {"decode": thinker_emb.detach().cpu()}
             talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
             logger.info(f"cwj chunk id = {chunk_id} decode thinker2talker thinker_emb.shape = {thinker_emb.shape}, "

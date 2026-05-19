@@ -1096,7 +1096,7 @@ class Qwen3OmniMoeForConditionalGeneration(
             logger.info(f"cwj cached_thinker_decode_embeds.shape = {cached_thinker_decode_embeds.shape}")
         else:
             logger.info(f"cwj cached_thinker_decode_embeds is none")
-        if start_index >= len(thinker_output_token_ids):
+        if start_index >= len(thinker_output_token_ids) or thinker_decode_embed is None:
             # When the tokens output by the thinker are exhausted, an EOS token needs to be appended.
             # Use the finished_flag to mark that all tokens output by thinker have been consumed.
             if meta.get("eos_emitted", False):
