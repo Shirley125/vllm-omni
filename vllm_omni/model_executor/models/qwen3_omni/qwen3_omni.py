@@ -932,7 +932,7 @@ class Qwen3OmniMoeForConditionalGeneration(
                 logger.info(f"cwj cached_prefill_embed shape = {cached_embed.shape}")
                 embed_updates["cached_prefill_embed"] = cached_embed.detach()
                 meta = payload.setdefault("meta", {})
-                meta["prefill_consumed_text_tokens"] = 0
+                meta["prefill_consumed_text_tokens"] = 1
                 meta["eos_emitted"] = False
 
         cached_hidden = _to_cache_tensor(hs.get("cached_prefill_hidden"))
@@ -948,7 +948,7 @@ class Qwen3OmniMoeForConditionalGeneration(
             _append_cached(embed, "cached_prefill_embed", _to_cache_tensor(embed.get("prefill")), embed_updates)
             meta = payload.setdefault("meta", {})
             meta["decode_flag"] = False
-            meta["prefill_consumed_text_tokens"] = 0
+            meta["prefill_consumed_text_tokens"] = 1
         _append_cached(embed, "cached_prefill_embed", _to_cache_tensor(embed.get("decode")), embed_updates)
         if had_cached_hidden:
             _append_cached(hs, "cached_prefill_hidden", _to_cache_tensor(hs.get("output")), hs_updates)

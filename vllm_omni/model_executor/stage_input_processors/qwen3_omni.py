@@ -329,6 +329,8 @@ def thinker2talker_async_chunk(
             "ids": {"all": all_token_ids, "prompt": prompt_token_ids},
             "meta": {"finished": torch.tensor(is_finished, dtype=torch.bool)},
         }
+        logger.info(f"cwj bos = {thinker_embed.get("tts_bos")} eos = {thinker_embed.get("tts_eos")} "
+                    f"pad= {thinker_embed.get("tts_pad")}")
         logger.info(
             f"cwj chunk id = {chunk_id} prefill thinker2talker thinker_emb.shape = {thinker_emb.shape} "
             f"thinker_hid.shape = {thinker_hid.shape} "
