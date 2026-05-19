@@ -833,6 +833,9 @@ class Qwen3OmniMoeForConditionalGeneration(
             tts_eos_thinker=tts_eos_thinker,
             tts_pad_thinker=tts_pad_thinker,
         )
+        logger.info(
+            f"cwj qwen3 after preprocess req_input_ids = {req_input_ids},req_input_ids len = {len(req_input_ids)},"
+            f"req_embeds = {req_embeds}, req_embeds shape = {req_embeds.shape}")
 
         # Queue trailing_text_hidden for decode (drop first for next steps),
         try:
