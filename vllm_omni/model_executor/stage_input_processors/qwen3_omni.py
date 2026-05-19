@@ -604,8 +604,6 @@ def talker2code2wav_async_chunk(
     # ensure left context does not exceed available length
     left_context_size = max(0, min(length - context_length, left_context_size_config))
     end_index = min(length, left_context_size + context_length)
-    if first_segment:
-        end_index -= 1
     codes = (
         torch.tensor(transfer_manager.code_prompt_token_ids[request_id][-end_index:])
         .transpose(0, 1)
