@@ -329,12 +329,6 @@ def thinker2talker_async_chunk(
             "ids": {"all": all_token_ids, "prompt": prompt_token_ids},
             "meta": {"finished": torch.tensor(is_finished, dtype=torch.bool)},
         }
-        logger.info(f"cwj bos = {thinker_embed.get("tts_bos")} eos = {thinker_embed.get("tts_eos")} "
-                    f"pad= {thinker_embed.get("tts_pad")}")
-        logger.info(
-            f"cwj chunk id = {chunk_id} prefill thinker2talker thinker_emb.shape = {thinker_emb.shape} "
-            f"thinker_hid.shape = {thinker_hid.shape} "
-            f"all_token_ids = {request.all_token_ids} seq len = {len(request.all_token_ids)},prompt_token_ids = {request.prompt_token_ids}, prompt len = {len(request.prompt_token_ids)}")
         talker_additional_info = payload
         speaker = extract_speaker_from_request(request)
         if speaker is not None:
@@ -384,10 +378,6 @@ def thinker2talker_async_chunk(
                 talker_additional_info["embed"] = {"prefill": thinker_emb.detach().cpu()}
                 talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
                 talker_additional_info["ids"] = {"all": _ensure_list(request.all_token_ids), "prompt": _ensure_list(request.prompt_token_ids)}
-                logger.info(
-                    f"cwj chunk id = {chunk_id} prefill thinker2talker thinker_emb.shape = {thinker_emb.shape}, "
-                    f" thinker_hid shape = {thinker_hid.shape}  output_token_ids = {output_token_ids}, "
-                    f"all_token_ids = {request.all_token_ids} seq len = {len(request.all_token_ids)},prompt_token_ids = {request.prompt_token_ids}, prompt len = {len(request.prompt_token_ids)}")
                 pending_prefills = getattr(transfer_manager, "_pending_streaming_prefills", None)
                 if pending_prefills is None:
                     pending_prefills = {}
@@ -395,7 +385,6 @@ def thinker2talker_async_chunk(
                 save_payload = pending_prefills.pop(request_id, None)
                 if save_payload is None and not is_finished:
                     pending_prefills[request_id] = talker_additional_info
-                    logger.info("cwj cache streaming prefill req=%s chunk_id=%s", request_id, chunk_id)
                     return None
             else:
                 pending_prefills = getattr(transfer_manager, "_pending_streaming_prefills", None)
@@ -412,21 +401,11 @@ def thinker2talker_async_chunk(
                         "output": torch.cat((saved_output, current_output), dim=0)
                     }
                     talker_additional_info["ids"] = save_payload.get("ids", {})
-                    logger.info(
-                        "cwj flush streaming prefill with decode req=%s chunk_id=%s prefill_shape=%s output_shape=%s",
-                        request_id,
-                        chunk_id,
-                        talker_additional_info["embed"]["prefill"].shape,
-                        talker_additional_info["hidden_states"]["output"].shape,
-                    )
                 else:
                     talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("hidden_states","output"), ("ids", "output")]
                     talker_additional_info["embed"] = {"decode": thinker_emb.detach().cpu()}
                     talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
                     talker_additional_info["ids"] = {"output": output_token_ids}
-                logger.info(f"cwj chunk id = {chunk_id} decode thinker2talker thinker_emb.shape = {thinker_emb.shape}, "
-                            f"thinker_hid shape = {thinker_hid.shape} output_token_ids = {output_token_ids}, "
-                            f"all_token_ids = {request.all_token_ids} seq len = {len(request.all_token_ids)},prompt_token_ids = {request.prompt_token_ids}, prompt len = {len(request.prompt_token_ids)}")
         else:
             if not is_finished:
                 # do not send async chunk mode placeholder token or embedding/hidden of the stop token
@@ -434,8 +413,6 @@ def thinker2talker_async_chunk(
             talker_additional_info["meta"]["override_keys"] = [("embed", "decode"), ("hidden_states", "output")]
             talker_additional_info["embed"] = {"decode": thinker_emb.detach().cpu()}
             talker_additional_info["hidden_states"] = {"output": thinker_hid.detach().cpu()}
-            logger.info(f"cwj chunk id = {chunk_id} decode thinker2talker thinker_emb.shape = {thinker_emb.shape}, "
-                        f"thinker_hid shape = {thinker_hid.shape}")
 
 
     return talker_additional_info
@@ -539,8 +516,6 @@ def thinker2talker(
             },
         }
         info = payload
-        logger.info(f"cwj thinker2talker thinker_emb.shape = {thinker_emb.shape} "
-                  f"all_token_ids = {thinker_sequences} seq len = {len(thinker_sequences)},prompt_token_ids = {thinker_input_ids}, prompt len = {len(thinker_input_ids)}")
         speaker = extract_speaker_from_prompt(prompt, index=i)
         if speaker is not None:
             info["speaker"] = speaker
@@ -609,7 +584,6 @@ def talker2code2wav_async_chunk(
         if stop_token_id is not None:
             stop_token_ids.add(stop_token_id)
         first_codebook = int(code_predictor_codes[0, 0].item())
-        logger.info(f"cwj talker2code2wav code predictor = {code_predictor_codes}, first_codebook = {first_codebook}")
         if first_codebook in stop_token_ids:
             logger.info("skip stop-token codec frame: first_codebook=%s", first_codebook)
             return None
@@ -628,7 +602,6 @@ def talker2code2wav_async_chunk(
 
     chunk_length = length % chunk_size_config
     if chunk_length != 0 and not is_finished:
-        logger.info(f"cwj code2wav chunk_length = {chunk_length}, cannot transfer")
         return None
 
     context_length = chunk_length if chunk_length != 0 else chunk_size_config
@@ -641,7 +614,6 @@ def talker2code2wav_async_chunk(
         .reshape(-1)
         .tolist()
     )
-    logger.info(f"cwj talker2code2wav end index = {end_index}, codes = {codes}")
 
     return {
         "codes": {"audio": codes},

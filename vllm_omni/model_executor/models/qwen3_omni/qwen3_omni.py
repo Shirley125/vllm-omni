@@ -654,7 +654,6 @@ class Qwen3OmniMoeForConditionalGeneration(
         """
         payload: OmniPayload = info_dict
         meta = payload.setdefault("meta", {})
-        print(f"cwj talker_preprocess meta: {meta}")
         # Ensure we have base embeddings when only ids are provided
         if input_embeds is None and input_ids is not None:
             input_embeds = self.talker.embed_input_ids(input_ids)
@@ -683,15 +682,10 @@ class Qwen3OmniMoeForConditionalGeneration(
                 if prefill_consumed_text_tokens is None:
                     raise RuntimeError("Missing prefill_consumed_text_tokens for talker decode handoff.")
                 meta["num_processed_tokens"] = prefill_consumed_text_tokens
-                logger.info(f"cwj num_processed_tokens: {prefill_consumed_text_tokens}")
                 update_dict.setdefault("meta", {})["decode_flag"] = True
-            logger.info(f"cwj before talker_preprocess_decode input_ids = {input_ids}"
-                        f"input_embeds = {input_embeds}")
             last_talker_hidden, text_step, update_dict = self.talker_preprocess_decode(
                 input_ids, input_embeds, update_dict, payload
             )
-            logger.info(f"cwj qwen3 preprocess decode input_ids = {input_ids}, input_embeds = {input_embeds} "
-                        f"last_talker_hidden = {last_talker_hidden} text_step={text_step}")
             update_dict["mtp_inputs"] = last_talker_hidden, text_step
 
         update_dict.setdefault("meta", {})["num_processed_tokens"] = meta.get("num_processed_tokens", 0) + span_len
@@ -800,11 +794,6 @@ class Qwen3OmniMoeForConditionalGeneration(
             if ids.get("prompt") is None
             else torch.as_tensor(ids["prompt"], device=self._module_device(self.talker))
         )
-        logger.info(f"cwj qwen3 before start_index = {start_index}, end_index ={end_index} "
-                    f" preprocess prefill prompt ={thinker_chatml_ids}, prompt len = {len(thinker_chatml_ids)}"
-              f"seq = {thinker_sequences}, seq len = {len(thinker_sequences)}, "
-              f"thinker_sequence_embeds.shape = {thinker_sequence_embeds.shape}, thinker_hidden_states.shape = {thinker_hidden_states.shape}")
-
         tts_bos_thinker = embed["tts_bos"].to(device=self._module_device(self.talker), dtype=torch.bfloat16)
         tts_eos_thinker = embed["tts_eos"].to(device=self._module_device(self.talker), dtype=torch.bfloat16)
         tts_pad_thinker = embed["tts_pad"].to(device=self._module_device(self.talker), dtype=torch.bfloat16)
@@ -850,8 +839,6 @@ class Qwen3OmniMoeForConditionalGeneration(
             tts_eos_thinker=tts_eos_thinker,
             tts_pad_thinker=tts_pad_thinker,
         )
-        logger.info(f"cwj qwen3 after preprocess req_input_ids = {req_input_ids},req_input_ids len = {len(req_input_ids)},"
-                    f"req_embeds = {req_embeds}, req_embeds shape = {req_embeds.shape}")
         # Queue trailing_text_hidden for decode (drop first for next steps),
         try:
             if isinstance(trailing_text_hidden, torch.Tensor) and trailing_text_hidden.numel() > 0:
@@ -911,12 +898,10 @@ class Qwen3OmniMoeForConditionalGeneration(
             if increment is None:
                 return
             cached = _to_cache_tensor(section.get(cache_key))
-            logger.info(f"cwj cache_key = {cache_key} increment shape = {increment.shape} cached.shape[0] = {cached.shape[0]}")
             if cached is None:
                 merged = increment
             else:
                 merged = torch.cat([cached, increment], dim=0)
-                logger.info(f"cwj cache_key = {cache_key} merge = increment + cached")
             section[cache_key] = merged
             update_section[cache_key] = merged.detach()
 
@@ -929,7 +914,6 @@ class Qwen3OmniMoeForConditionalGeneration(
             cached_embed = _to_cache_tensor(embed.get("prefill"))
             if cached_embed is not None:
                 embed["cached_prefill_embed"] = cached_embed
-                logger.info(f"cwj cached_prefill_embed shape = {cached_embed.shape}")
                 embed_updates["cached_prefill_embed"] = cached_embed.detach()
                 meta = payload.setdefault("meta", {})
                 meta["prefill_consumed_text_tokens"] = 1
@@ -940,7 +924,6 @@ class Qwen3OmniMoeForConditionalGeneration(
             cached_hidden = _to_cache_tensor(hs.get("output"))
             if cached_hidden is not None:
                 hs["cached_prefill_hidden"] = cached_hidden
-                logger.info(f"cwj cached_prefill_hidden shape = {cached_hidden.shape}")
                 hs_updates["cached_prefill_hidden"] = cached_hidden.detach()
 
         if is_prefill and had_cached_embed:
@@ -964,7 +947,6 @@ class Qwen3OmniMoeForConditionalGeneration(
         Cache thinker embeds for decode stage.
         """
         thinker_decode_embeds = embed.get("decode", None)
-        logger.info(f"cwj thinker_decode_embeds = {thinker_decode_embeds}")
         if thinker_decode_embeds is not None:
             cached_thinker_decode_embeds = embed.get("cached_decode", None)
             if cached_thinker_decode_embeds is None:
@@ -1084,18 +1066,7 @@ class Qwen3OmniMoeForConditionalGeneration(
         thinker_decode_embed = embed.get("decode", None)
         start_index = meta.get("num_processed_tokens", 0)
         thinker_output_token_ids = ids.get("output", [])
-        if thinker_decode_embed is not None:
-            logger.info(f"cwj thinker_decode_embed.shape = {thinker_decode_embed.shape}"
-                        f"thinker_decode_embed = {thinker_decode_embed}")
-        else:
-            logger.info(f"cwj thinker_decode_embed is none")
 
-        logger.info(f"cwj qwen3 preprocess decode start_index = {start_index}"
-                    f" thinker_output_token_ids ={thinker_output_token_ids}, output len = {len(thinker_output_token_ids)}")
-        if cached_thinker_decode_embeds is not None:
-            logger.info(f"cwj cached_thinker_decode_embeds.shape = {cached_thinker_decode_embeds.shape}")
-        else:
-            logger.info(f"cwj cached_thinker_decode_embeds is none")
         if start_index >= len(thinker_output_token_ids) or thinker_decode_embed is None:
             # When the tokens output by the thinker are exhausted, an EOS token needs to be appended.
             # Use the finished_flag to mark that all tokens output by thinker have been consumed.

@@ -1316,9 +1316,6 @@ class OmniGPUModelRunner(GPUModelRunner):
                 sched_tokens = int(num_scheduled_tokens_np[req_index])
                 s, e = start_offset, start_offset + sched_tokens
                 span_len = int(e) - int(s)
-                logger.info(f"cwj gpu model runner preprocess start_offset = {start_offset} "
-                            f"sched_tokens = {sched_tokens}, input ids = {input_ids}, "
-                            f"len input ids = {len(input_ids)}")
                 # call the custom process function
                 req_infos["request_id"] = req_id
                 embed_slice = inputs_embeds[s:e] if inputs_embeds is not None else None
@@ -1511,16 +1508,13 @@ class OmniGPUModelRunner(GPUModelRunner):
     def _update_streaming_input_additional_info(self, new_req_data, req_id):
         # For streaming input prefill case only. Update buffer from last segment input
         cached_additional_info = self.model_intermediate_buffer.get(req_id, {})
-        print(f"cwj _update_streaming_input_additional_info cached_additional_info = {cached_additional_info}")
         if cached_additional_info:
             payload_info = getattr(new_req_data, "additional_information", None)
             inc_info = deserialize_additional_information(payload_info)
-            print(f"cwj _update_streaming_input_additional_info inc_info = {payload_info}")
             if isinstance(inc_info, dict) and inc_info:
                 accumulated_keys: set[tuple[str, str]] = set()
                 if hasattr(self, "model") and hasattr(self.model, "streaming_accumulated_keys"):
                     accumulated_keys = self.model.streaming_accumulated_keys
-                    logger.info(f"cwj accumulated_keys = {accumulated_keys}")
                 merged_info = dict(cached_additional_info)
                 for key, value in inc_info.items():
                     if isinstance(value, dict):
@@ -1532,10 +1526,8 @@ class OmniGPUModelRunner(GPUModelRunner):
                                 old_tensor = merged_sub.get(sk)
                                 if old_tensor is None:
                                     merged_sub[sk] = inc_tensor
-                                    logger.info(f"cwj _update_streaming_input_additional_info ({key},{sk}) shape = {inc_tensor.shape}")
                                 else:
                                     merged_sub[sk] = torch.cat((old_tensor, inc_tensor), dim=0)
-                                    logger.info(f"cwj _update_streaming_input_additional_info({key},{sk}) shape = {merged_sub[sk] .shape}")
                             else:
                                 merged_sub[sk] = sv
                         merged_info[key] = merged_sub

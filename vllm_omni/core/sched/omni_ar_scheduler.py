@@ -192,18 +192,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
     def schedule(self) -> SchedulerOutput:  # type: ignore[override]
         if self.chunk_transfer_adapter:
             self.chunk_transfer_adapter.process_pending_chunks(self.waiting, self.running)
-        if self.vllm_config.model_config.stage_id == 1:
-            for request in [*list(self.waiting), *list(self.running)]:
-                logger.info(
-                    "cwj stage 1 before schedule req=%s status=%s prompt_len=%s all_len=%s "
-                    "num_prompt_tokens=%s num_computed_tokens=%s",
-                    request.request_id,
-                    request.status,
-                    len(request.prompt_token_ids),
-                    len(getattr(request, "_all_token_ids", [])),
-                    getattr(request, "num_prompt_tokens", None),
-                    request.num_computed_tokens,
-                )
 
         try:
             scheduler_output = super().schedule()
@@ -239,8 +227,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 new_list.append(omni_nr)
 
             scheduler_output.scheduled_new_reqs = new_list  # type: ignore[assignment]
-            if self.vllm_config.model_config.stage_id != 0:
-                logger.info(f"cwj stage 1 scheduler_output.scheduled_new_reqs = {new_list}")
             if self.chunk_transfer_adapter:
                 self.chunk_transfer_adapter.postprocess_scheduler_output(scheduler_output, self.requests)
             # Add information about requests needing KV cache transfer
@@ -257,8 +243,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
             **base_data,
             finished_requests_needing_kv_transfer=finished_reqs,
         )
-        if self.vllm_config.model_config.stage_id == 1:
-            logger.info(f"cwj stage 1 num scheduled tokens = {res.num_scheduled_tokens}")
         return res
 
 
@@ -339,8 +323,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
 
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = sampled_token_ids[req_index] if sampled_token_ids else []
-            if self.vllm_config.model_config.stage_id ==1:
-                logger.info(f"cwj update from output generated token = {generated_token_ids}")
             scheduled_spec_token_ids = scheduler_output.scheduled_spec_decode_tokens.get(req_id)
             if scheduled_spec_token_ids and generated_token_ids:
                 num_draft_tokens = len(scheduled_spec_token_ids)
@@ -415,9 +397,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 finish_reason = request.get_finished_reason()
                 is_segment_finished = True
                 finished = self._handle_stopped_request(request)
-                logger.info(f"cwj stage id = {self.vllm_config.model_config.stage_id} "
-                            f"stopped finished reason {finish_reason} is_segment_finished = {is_segment_finished} "
-                            f"finished = {finished}")
                 if finished:
                     kv_transfer_params = self._free_request(request)
                 if status_before_stop == RequestStatus.RUNNING:
@@ -461,7 +440,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                     )
                 )
                 if self.chunk_transfer_adapter is not None:
-                    logger.info(f"cwj is_segment_finished = {is_segment_finished} stage id = {self.vllm_config.model_config.stage_id}")
                     self.chunk_transfer_adapter.save_async(pooler_output, request, is_segment_finished)
             else:
                 # Invariant: EngineCore returns no partial prefill outputs.
@@ -581,8 +559,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
 
     def _handle_stopped_request(self, request: Request) -> bool:
         """Return True if finished (can be False for resumable requests)."""
-        logger.info(f"cwj stage id {self.vllm_config.model_config.stage_id}"
-                    f" handle stopped request resumable: {request.resumable}")
         if not request.resumable:
             return True
 
@@ -636,7 +612,6 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
             session.num_output_placeholders = 0
             session.spec_token_ids = []
         if self.vllm_config.model_config.stage_id != 0:
-            logger.info("cwj stage id 1 update streaming update")
             self._replace_session_with_streaming_update(session, update)
 
         else:
