@@ -184,10 +184,10 @@ class Qwen3OmniMoeForConditionalGeneration(
                 ("embed", "tts_pad_projected"),
             }
             # Keys that need to be accumulated across streaming inputs
-            #self.streaming_accumulated_keys: set[tuple[str, str]] = {
-            #    ("embed", "prefill"),
-            #    ("hidden_states", "output"),
-            #}
+            self.streaming_accumulated_keys: set[tuple[str, str]] = {
+                ("embed", "prefill"),
+                ("hidden_states", "output"),
+            }
 
         elif self.model_stage == "code2wav":
             self.enable_update_additional_information = True
@@ -1062,7 +1062,6 @@ class Qwen3OmniMoeForConditionalGeneration(
         ids = payload.get("ids", {})
 
         cached_thinker_decode_embeds = embed.get("cached_decode", None)
-        # thinker_decode_embed只会有增量？
         thinker_decode_embed = embed.get("decode", None)
         start_index = meta.get("num_processed_tokens", 0)
         thinker_output_token_ids = ids.get("output", [])
@@ -1096,34 +1095,35 @@ class Qwen3OmniMoeForConditionalGeneration(
 
         last_talker_hidden = None
         text_step = None
-
-        if self.vllm_config.model_config.async_chunk:
-            text_step = self._thinker_decode_to_talker_decode(payload, input_ids.device, update_dict)
-        else:
-            q_tail = hs.get("trailing_text", None)
-            if isinstance(q_tail, torch.Tensor) and q_tail.numel() > 0:
-                use_vec = q_tail[0:1, :]
-                new_q_tail = (
-                    q_tail[1:, :].detach()
-                    if q_tail.shape[0] > 1
-                    else self.tts_pad_embed.to(input_embeds.device, dtype=input_embeds.dtype)
-                )
-                text_step = use_vec.to(input_embeds.device, dtype=input_embeds.dtype)
-                update_dict.setdefault("hidden_states", {})["trailing_text"] = new_q_tail
+        try:
+            if self.vllm_config.model_config.async_chunk:
+                text_step = self._thinker_decode_to_talker_decode(payload, input_ids.device, update_dict)
             else:
-                text_step = self.tts_pad_embed.to(input_embeds.device, dtype=input_embeds.dtype)
+                q_tail = hs.get("trailing_text", None)
+                if isinstance(q_tail, torch.Tensor) and q_tail.numel() > 0:
+                    use_vec = q_tail[0:1, :]
+                    new_q_tail = (
+                        q_tail[1:, :].detach()
+                        if q_tail.shape[0] > 1
+                        else self.tts_pad_embed.to(input_embeds.device, dtype=input_embeds.dtype)
+                    )
+                    text_step = use_vec.to(input_embeds.device, dtype=input_embeds.dtype)
+                    update_dict.setdefault("hidden_states", {})["trailing_text"] = new_q_tail
+                else:
+                    text_step = self.tts_pad_embed.to(input_embeds.device, dtype=input_embeds.dtype)
 
-        last_talker_hidden_tensor = hs.get("last")
-        if last_talker_hidden_tensor is not None:
-            last_talker_hidden = last_talker_hidden_tensor.to(input_embeds.device, dtype=input_embeds.dtype)
-            last_talker_hidden = last_talker_hidden.reshape(*last_talker_hidden.shape[-2:])  # [1, hidden_size]
-        else:
-            last_talker_hidden = torch.zeros(
-                (1, self.talker_config.text_config.hidden_size),
-                device=input_embeds.device,
-                dtype=input_embeds.dtype,
-            )
-
+            last_talker_hidden_tensor = hs.get("last")
+            if last_talker_hidden_tensor is not None:
+                last_talker_hidden = last_talker_hidden_tensor.to(input_embeds.device, dtype=input_embeds.dtype)
+                last_talker_hidden = last_talker_hidden.reshape(*last_talker_hidden.shape[-2:])  # [1, hidden_size]
+            else:
+                last_talker_hidden = torch.zeros(
+                    (1, self.talker_config.text_config.hidden_size),
+                    device=input_embeds.device,
+                    dtype=input_embeds.dtype,
+                )
+        except Exception as e:
+            logger.error(f"Error in decode: {e}")
 
         return last_talker_hidden, text_step, update_dict
 

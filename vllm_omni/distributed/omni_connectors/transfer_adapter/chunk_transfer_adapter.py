@@ -220,7 +220,6 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
 
             # Mark as finished for consumption
             self._finished_load_reqs.add(req_id)
-            logger.info(f"[Stage-{stage_id}] self._finished_load_reqs = {self._finished_load_reqs}, chunk_id = {chunk_id}")
             logger.debug(f"[Stage-{stage_id}] Received one chunk for key {connector_get_key}")
             return True
 
@@ -373,10 +372,8 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         """
         if external_req_id is None:
             external_req_id = self.request_ids_mapping.get(request_id, request_id)
-        """
         self.cleanup_receiver(request_id)
         self.cleanup_sender(external_req_id)
-        """
 
     ########################################################################
     # Schedule Helper

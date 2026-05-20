@@ -410,6 +410,7 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
 
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = sampled_token_ids[req_index] if sampled_token_ids else []
+
             scheduled_spec_token_ids = scheduler_output.scheduled_spec_decode_tokens.get(req_id)
             if scheduled_spec_token_ids and generated_token_ids:
                 num_draft_tokens = len(scheduled_spec_token_ids)
@@ -463,6 +464,7 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
                 # (does not affect protocol)
                 request.stop_reason = request.stop_reason  # or "generation_done"
                 stopped = True
+
             if stopped:
                 routed_experts = self._get_routed_experts(request)
                 finish_reason = request.get_finished_reason()
@@ -476,6 +478,7 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
                         )
                 if status_before_stop == RequestStatus.WAITING_FOR_CHUNK:
                     stopped_running_reqs.add(request)
+                    #stopped_preempted_reqs.add(request)
                 else:
                     stopped_running_reqs.add(request)
 
@@ -589,24 +592,6 @@ class OmniGenerationScheduler(OmniSchedulerMixin, VLLMScheduler):
             eco.scheduler_stats = stats
 
         return engine_core_outputs
-
-    def _handle_stopped_request(self, request: Request) -> bool:
-        """Return True if finished (can be False for resumable requests)."""
-        if not request.resumable:
-            return True
-
-        if request.streaming_queue:
-            update = request.streaming_queue.popleft()
-            if update is None:
-                # Streaming request finished.
-                return True
-            self._update_request_as_session(request, update)
-        else:
-            request.status = RequestStatus.WAITING_FOR_STREAMING_REQ
-            self.num_waiting_for_streaming_input += 1
-
-        self._enqueue_waiting_request(request)
-        return False
 
     def _update_request_as_session(self, session: Request, update: StreamingUpdate) -> None:
         """

@@ -585,7 +585,7 @@ def talker2code2wav_async_chunk(
             stop_token_ids.add(stop_token_id)
         first_codebook = int(code_predictor_codes[0, 0].item())
         if first_codebook in stop_token_ids:
-            logger.info("skip stop-token codec frame: first_codebook=%s", first_codebook)
+            logger.debug("skip stop-token codec frame: first_codebook=%s", first_codebook)
             return None
     else:
         code_tensor = torch.tensor(code_predictor_codes, dtype=torch.long)
