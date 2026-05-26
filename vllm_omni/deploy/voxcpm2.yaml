@@ -6,14 +6,14 @@
 #   * enforce_eager=true because the talker's KV-cache save/restore loop is
 #     not cudagraph-compatible (captured separately via voxcpm2_talker's own
 #     _CapturedGraph path).
-#   * max_num_seqs=4 matches the legacy max_batch_size=4 contract: concurrent
-#     requests are supported via per-request StaticKVCache save/restore.
+#   * max_num_seqs=8 keeps the decode tail large enough to benefit from
+#     batched CFM while staying within the legacy single-GPU serving contract.
 async_chunk: false
 dtype: bfloat16
 
 stages:
   - stage_id: 0
-    max_num_seqs: 4
+    max_num_seqs: 8
     gpu_memory_utilization: 0.9
     enforce_eager: true
     trust_remote_code: true

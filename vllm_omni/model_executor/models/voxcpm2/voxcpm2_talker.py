@@ -789,7 +789,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         token_offset = 0
         residual_inputs: list[torch.Tensor] = []
         residual_positions: list[torch.Tensor] = []
-        req_metas: list[tuple] = []
+        req_metas: list[tuple[_RequestState, bool, dict]] = []
 
         for req_id, is_prefill, _req_embeds, n in self._pending_requests:
             state = self._switch_to_request(req_id)
@@ -839,19 +839,30 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             self._perf.stop("residual_fwd")
 
             # Phase 3: per-request LocDiT + update
-            offset = 0
-            for idx, (state, is_prefill, meta) in enumerate(req_metas):
-                n = residual_inputs[idx].shape[0]
-                res_out = batch_out[offset : offset + n]
-                offset += n
+            can_batch_decode_tail = (
+                bool(req_metas)
+                and all(not is_prefill for _, is_prefill, _ in req_metas)
+                and all(x.shape[0] == 1 for x in residual_inputs)
+            )
+            if can_batch_decode_tail:
+                self._finish_decode_batch(req_metas, batch_out)
+                for state, _, _ in req_metas:
+                    self._results_queue.append((state.request_id, state.precomputed_stop_logits))
+                    self._audio_queue.append((state.request_id, self._collect_audio(state)))
+            else:
+                offset = 0
+                for idx, (state, is_prefill, meta) in enumerate(req_metas):
+                    n = residual_inputs[idx].shape[0]
+                    res_out = batch_out[offset : offset + n]
+                    offset += n
 
-                if is_prefill:
-                    self._finish_prefill(state, meta, res_out, dev)
-                else:
-                    self._finish_decode(state, meta, res_out, dev)
+                    if is_prefill:
+                        self._finish_prefill(state, meta, res_out, dev)
+                    else:
+                        self._finish_decode(state, meta, res_out, dev)
 
-                self._results_queue.append((state.request_id, state.precomputed_stop_logits))
-                self._audio_queue.append((state.request_id, self._collect_audio(state)))
+                    self._results_queue.append((state.request_id, state.precomputed_stop_logits))
+                    self._audio_queue.append((state.request_id, self._collect_audio(state)))
 
         self._pending_requests.clear()
         self._flush_deferred_cleanup()
@@ -932,7 +943,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         prefix_feat_cond = meta["prefix_feat_cond"]
         residual_hidden = res_out[-1:, :]
 
-        state.precomputed_stop_logits = tts.stop_head(tts.stop_actn(tts.stop_proj(lm_hidden))).detach()
+        stop_logits = tts.stop_head(tts.stop_actn(tts.stop_proj(lm_hidden))).detach()
         dit_h = torch.cat([tts.lm_to_dit_proj(lm_hidden), tts.res_to_dit_proj(residual_hidden)], dim=-1)
 
         self._setup_cfm_buffers()
@@ -944,10 +955,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         with torch.no_grad():
             curr_embed = tts.enc_to_lm_proj(tts.feat_encoder(pred_feat.unsqueeze(1))).squeeze(1)
 
-        state.curr_embed_for_next = curr_embed.detach()
-        state.prev_feat_embed = curr_embed.detach()
-        state.curr_prefix_feat_cond = pred_feat[0].detach()
-        state.last_audio_patch_gpu = pred_feat.detach()
+        self._commit_decode_state(state, stop_logits, curr_embed, pred_feat)
         state.decode_step_count = 0
         state.request_start_time = time.perf_counter()
         state.prefill_completed = True
@@ -975,15 +983,52 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         pred_feat = self._run_cfm(dit_h, pfc.transpose(1, 2).contiguous())
         next_embed = tts.enc_to_lm_proj(tts.feat_encoder(pred_feat.unsqueeze(1))).squeeze(1)
 
-        state.precomputed_stop_logits = stop_fn(lm_h).detach()
-        state.curr_embed_for_next = next_embed.detach()
-        state.prev_feat_embed = next_embed.detach()
-        state.curr_prefix_feat_cond = pred_feat[0].detach()
-        state.last_audio_patch_gpu = pred_feat.detach()
+        self._commit_decode_state(state, stop_fn(lm_h).detach(), next_embed, pred_feat)
 
         self._perf.stop("decode_step")
         if _ENABLE_PROFILING and state.decode_step_count % 20 == 0:
             logger.info("Step %d[%s]:\n%s", state.decode_step_count, state.request_id, self._perf.breakdown())
+
+    def _finish_decode_batch(self, req_metas: list[tuple], batch_out: torch.Tensor):
+        self._perf.start("decode_step")
+        tts = self.tts
+        states = [state for state, _, _ in req_metas]
+        lm_h = torch.cat([meta["new_lm_hidden"] for _, _, meta in req_metas], dim=0)
+
+        dit_proj = getattr(self, "_compiled_dit_proj", None) or self._dit_proj_fn
+        stop_fn = getattr(self, "_compiled_stop_fn", None) or self._stop_fn
+
+        dit_h = dit_proj(lm_h, batch_out)
+        pfc = torch.cat(
+            [
+                state.curr_prefix_feat_cond.to(self._side_dtype).unsqueeze(0)
+                if state.curr_prefix_feat_cond.ndim == 2
+                else state.curr_prefix_feat_cond.to(self._side_dtype)
+                for state in states
+            ],
+            dim=0,
+        )
+        pred_feat = self._run_cfm(dit_h, pfc.transpose(1, 2).contiguous())
+        next_embed = tts.enc_to_lm_proj(tts.feat_encoder(pred_feat.unsqueeze(1))).squeeze(1)
+        stop_logits = stop_fn(lm_h).detach()
+
+        for i, state in enumerate(states):
+            self._commit_decode_state(state, stop_logits[i : i + 1], next_embed[i : i + 1], pred_feat[i : i + 1])
+
+        self._perf.stop("decode_step")
+
+    @staticmethod
+    def _commit_decode_state(
+        state: _RequestState,
+        stop_logits: torch.Tensor,
+        next_embed: torch.Tensor,
+        pred_feat: torch.Tensor,
+    ) -> None:
+        state.precomputed_stop_logits = stop_logits
+        state.curr_embed_for_next = next_embed.detach()
+        state.prev_feat_embed = next_embed.detach()
+        state.curr_prefix_feat_cond = pred_feat[0].detach()
+        state.last_audio_patch_gpu = pred_feat.detach()
 
     # -------------------- audio collection --------------------
 
