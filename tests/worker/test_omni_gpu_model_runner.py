@@ -212,6 +212,33 @@ def test_talker_mtp_forward_cpu_empty_batch_noop(monkeypatch):
     assert torch.allclose(inputs_embeds, before)
 
 
+def test_qwen3_downstream_placeholder_mrope_expands_to_prompt_embed_len(monkeypatch):
+    import vllm_omni.worker.gpu_model_runner as mod
+
+    runner = object.__new__(OmniGPUModelRunner)
+    runner.model_config = SimpleNamespace(
+        model_arch="Qwen3OmniMoeForConditionalGeneration",
+        model_stage="talker",
+        hf_config=SimpleNamespace(),
+    )
+
+    req_state = DummyReqState()
+    req_state.prompt_token_ids = []
+    req_state.prompt_embeds = torch.zeros((81, 4), dtype=torch.float32)
+    req_state.mrope_positions = torch.empty((3, 0), dtype=torch.long)
+    req_state.mrope_position_delta = 0
+
+    def fake_positions(input_tokens, **kwargs):
+        assert len(input_tokens) == 81
+        return torch.arange(81, dtype=torch.long).view(1, -1).expand(3, -1), 0
+
+    monkeypatch.setattr(mod.MRotaryEmbedding, "get_input_positions_tensor", fake_positions)
+
+    OmniGPUModelRunner._ensure_downstream_placeholder_mrope_positions(runner, req_state)
+
+    assert req_state.mrope_positions.shape == (3, 81)
+
+
 def test_talker_mtp_forward_ignores_default_sampling_seed_without_request_marker(monkeypatch):
     import vllm_omni.worker.gpu_model_runner as mod
 

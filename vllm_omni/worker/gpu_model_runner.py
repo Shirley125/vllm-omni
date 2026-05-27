@@ -13,6 +13,7 @@ from vllm.model_executor.models.interfaces import supports_mrope
 from vllm.model_executor.models.interfaces_base import VllmModelForPooling
 from vllm.sampling_params import SamplingType
 from vllm.tracing import instrument
+from vllm.utils import length_from_prompt_token_ids_or_embeds
 from vllm.utils.import_utils import LazyLoader
 from vllm.utils.math_utils import cdiv
 from vllm.v1.spec_decode.dflash import DFlashProposer
@@ -191,6 +192,48 @@ class OmniGPUModelRunner(GPUModelRunner):
                 use_audio_in_video=use_audio_in_video,
             )
 
+        self._ensure_downstream_placeholder_mrope_positions(req_state)
+
+    def _ensure_downstream_placeholder_mrope_positions(
+        self,
+        req_state: CachedRequestState,
+    ) -> None:
+        if req_state.mrope_positions is None:
+            return
+
+        model_stage = getattr(self.model_config, "model_stage", None)
+        model_arch = getattr(self.model_config, "model_arch", None)
+        if (
+            model_arch != "Qwen3OmniMoeForConditionalGeneration"
+            or model_stage not in {"talker", "code2wav"}
+        ):
+            return
+
+        prompt_len = length_from_prompt_token_ids_or_embeds(
+            req_state.prompt_token_ids,
+            req_state.prompt_embeds,
+        )
+        mrope_len = int(req_state.mrope_positions.shape[1])
+        if prompt_len > mrope_len:
+            # Downstream Qwen3-Omni streaming stages may receive placeholder
+            # prompt slots while the real tensors live in model_intermediate_buffer.
+            # Their M-RoPE positions are plain text positions and must cover
+            # the logical prompt length used by the scheduler.
+            prompt_tokens = list(req_state.prompt_token_ids or [])
+            if len(prompt_tokens) < prompt_len:
+                prompt_tokens.extend([0] * (prompt_len - len(prompt_tokens)))
+            req_state.mrope_positions, req_state.mrope_position_delta = (
+                MRotaryEmbedding.get_input_positions_tensor(
+                    prompt_tokens,
+                    hf_config=self.model_config.hf_config,
+                    image_grid_thw=[],
+                    video_grid_thw=[],
+                    second_per_grid_ts=[],
+                    audio_feature_lengths=[],
+                    use_audio_in_video=False,
+                )
+            )
+
     def _calc_mrope_positions(self, scheduler_output: "SchedulerOutput"):
         """Calculate M-RoPE positions for scheduled tokens.
 
@@ -203,6 +246,11 @@ class OmniGPUModelRunner(GPUModelRunner):
         class attribute.  When set, ``get_mrope_input_positions`` is expected
         to return positions covering **both** prefill and decode tokens.
         """
+        for req_id in self.input_batch.req_ids:
+            req = self.requests.get(req_id)
+            if req is not None:
+                self._ensure_downstream_placeholder_mrope_positions(req)
+
         # Run upstream logic (handles prompt positions + linear decode fallback)
         super()._calc_mrope_positions(scheduler_output)
 
