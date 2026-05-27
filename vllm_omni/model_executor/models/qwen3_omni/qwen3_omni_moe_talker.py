@@ -287,6 +287,15 @@ class Qwen3OmniMoeTalkerForConditionalGeneration(
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Embed codec input IDs."""
+        if input_ids.numel() > 0:
+            logger.info(
+                "cwj talker.embed_input_ids: shape=%s dtype=%s min=%d max=%d unique=%d",
+                tuple(input_ids.shape),
+                input_ids.dtype,
+                int(input_ids.min().item()),
+                int(input_ids.max().item()),
+                int(input_ids.unique().numel()),
+            )
         return self.language_model.embed_input_ids(input_ids)
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -392,4 +401,27 @@ class Qwen3OmniMoeModel(Qwen3MoeLLMForCausalLM):
         input_ids: torch.Tensor,
     ) -> torch.Tensor:
         """Embed codec input IDs."""
+        vocab = self.model.codec_embedding.num_embeddings
+        if input_ids.numel() > 0:
+            min_id = int(input_ids.min().item())
+            max_id = int(input_ids.max().item())
+            if max_id >= vocab or min_id < 0:
+                bad_mask = (input_ids >= vocab) | (input_ids < 0)
+                n_bad = int(bad_mask.sum().item())
+                bad_vals = input_ids[bad_mask][:16].tolist()
+                logger.error(
+                    "codec_embedding OOB: vocab=%d shape=%s min=%d max=%d "
+                    "n_bad=%d first_bad=%s full_ids[:64]=%s",
+                    vocab,
+                    tuple(input_ids.shape),
+                    min_id,
+                    max_id,
+                    n_bad,
+                    bad_vals,
+                    input_ids.flatten()[:64].tolist(),
+                )
+                # Clamp to keep the forward alive so we can observe full
+                # downstream context. Output audio quality is destroyed,
+                # this is a diagnostic-only path.
+                input_ids = input_ids.clamp(0, vocab - 1)
         return self.model.codec_embedding(input_ids)
