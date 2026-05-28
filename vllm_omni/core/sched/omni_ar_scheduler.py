@@ -249,6 +249,33 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
             for nr in scheduler_output.scheduled_new_reqs:
                 req_id = getattr(nr, "req_id", None)
                 request = self.requests.get(req_id) if req_id else None
+                stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
+                if stage_id == 1:
+                    logger.info(
+                        "cwj talker scheduled_new_req req=%s nr_prompt_len=%s nr_num_computed=%s "
+                        "nr_block_ids_lens=%s request_exists=%s status=%s resumable=%s "
+                        "prompt_len=%s num_prompt=%s num_computed=%s num_tokens=%s "
+                        "num_output_placeholders=%s output_len=%s streaming_queue_len=%s "
+                        "in_running=%s in_waiting=%s in_skipped=%s has_additional_info=%s",
+                        req_id,
+                        len(getattr(nr, "prompt_token_ids", None) or []),
+                        getattr(nr, "num_computed_tokens", None),
+                        [len(block_ids) for block_ids in getattr(nr, "block_ids", ())],
+                        request is not None,
+                        getattr(request, "status", None) if request is not None else None,
+                        getattr(request, "resumable", None) if request is not None else None,
+                        len(getattr(request, "prompt_token_ids", None) or []) if request is not None else None,
+                        getattr(request, "num_prompt_tokens", None) if request is not None else None,
+                        getattr(request, "num_computed_tokens", None) if request is not None else None,
+                        getattr(request, "num_tokens", None) if request is not None else None,
+                        getattr(request, "num_output_placeholders", None) if request is not None else None,
+                        len(getattr(request, "output_token_ids", None) or []) if request is not None else None,
+                        len(getattr(request, "streaming_queue", None) or []) if request is not None else None,
+                        request in self.running if request is not None else None,
+                        request in self.waiting if request is not None else None,
+                        request in self.skipped_waiting if request is not None else None,
+                        bool(getattr(request, "additional_information", None)) if request is not None else None,
+                    )
                 # Build omni entry preserving all base fields
                 omni_nr = OmniNewRequestData(
                     req_id=nr.req_id,

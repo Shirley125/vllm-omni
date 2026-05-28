@@ -229,6 +229,29 @@ def construct_next_stage_streaming_input_prompt(payload_data: dict[str, Any], re
     try:
         ids = payload_data.get("ids", {})
         prompt_token_ids = ids.get("prompt", None)
+        req_id = getattr(request, "request_id", None)
+        prompt_len_before = len(getattr(request, "prompt_token_ids", None) or [])
+        all_len_before = len(getattr(request, "_all_token_ids", None) or [])
+        output_len_before = len(getattr(request, "_output_token_ids", None) or [])
+        num_prompt_before = getattr(request, "num_prompt_tokens", None)
+        num_computed_before = getattr(request, "num_computed_tokens", None)
+        logger.info(
+            "cwj construct_next_stage_streaming_input_prompt enter req=%s ids_keys=%s "
+            "payload_prompt_len=%s payload_all_len=%s prompt_len_before=%s "
+            "num_prompt_before=%s num_computed_before=%s num_tokens_before=%s "
+            "all_len_before=%s output_len_before=%s status=%s",
+            req_id,
+            list(ids.keys()) if isinstance(ids, dict) else type(ids).__name__,
+            len(prompt_token_ids) if prompt_token_ids is not None else None,
+            len(ids.get("all", []) or []) if isinstance(ids, dict) else None,
+            prompt_len_before,
+            num_prompt_before,
+            num_computed_before,
+            getattr(request, "num_tokens", None),
+            all_len_before,
+            output_len_before,
+            getattr(request, "status", None),
+        )
         if prompt_token_ids:
             num_computed_tokens = request.num_computed_tokens
             kept_output_tokens = request._all_token_ids[request.num_prompt_tokens : num_computed_tokens]
@@ -239,11 +262,49 @@ def construct_next_stage_streaming_input_prompt(payload_data: dict[str, Any], re
             request.prompt_token_ids.extend(kept_output_tokens)
             next_prompt_len = max(1, compute_talker_prompt_ids_length(prompt_token_ids))
             new_prompt = [0] * next_prompt_len
+            logger.info(
+                "cwj construct_next_stage_streaming_input_prompt build req=%s kept_output_len=%s "
+                "next_prompt_len=%s new_prompt_len=%s prompt_tail=%s",
+                req_id,
+                len(kept_output_tokens),
+                next_prompt_len,
+                len(new_prompt),
+                list(prompt_token_ids[-8:]) if hasattr(prompt_token_ids, "__getitem__") else None,
+            )
             request._all_token_ids.extend(new_prompt or ())
             request.prompt_token_ids.extend(new_prompt or ())
             request.update_block_hashes()
             request.num_prompt_tokens = len(request.prompt_token_ids)
+            logger.info(
+                "cwj construct_next_stage_streaming_input_prompt exit req=%s prompt_len_after=%s "
+                "num_prompt_after=%s num_computed_after=%s num_tokens_after=%s "
+                "all_len_after=%s output_len_after=%s status=%s",
+                req_id,
+                len(getattr(request, "prompt_token_ids", None) or []),
+                getattr(request, "num_prompt_tokens", None),
+                getattr(request, "num_computed_tokens", None),
+                getattr(request, "num_tokens", None),
+                len(getattr(request, "_all_token_ids", None) or []),
+                len(getattr(request, "_output_token_ids", None) or []),
+                getattr(request, "status", None),
+            )
+        else:
+            logger.info(
+                "cwj construct_next_stage_streaming_input_prompt skip req=%s reason=no_ids_prompt "
+                "ids_keys=%s prompt_len=%s num_computed=%s num_tokens=%s status=%s",
+                req_id,
+                list(ids.keys()) if isinstance(ids, dict) else type(ids).__name__,
+                prompt_len_before,
+                num_computed_before,
+                getattr(request, "num_tokens", None),
+                getattr(request, "status", None),
+            )
     except Exception:
         if prompt_token_ids is not None:
             next_prompt_len = max(1, len(prompt_token_ids))
             request.prompt_token_ids = [0] * next_prompt_len
+            logger.exception(
+                "cwj construct_next_stage_streaming_input_prompt fallback req=%s next_prompt_len=%s",
+                getattr(request, "request_id", None),
+                next_prompt_len,
+            )

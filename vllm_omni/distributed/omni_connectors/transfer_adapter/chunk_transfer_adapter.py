@@ -204,6 +204,33 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             payload_segment_finished = self._is_truthy_scalar(meta.get("is_segment_finished"))
             if self.model_mode == "ar":
                 request.additional_information = payload_data
+                ids = payload_data.get("ids", {})
+                embed = payload_data.get("embed", {})
+                logger.info(
+                    "cwj poll_chunk ar stage=%s req=%s external_req=%s chunk_id=%s "
+                    "finished=%s segment_finished=%s ids_keys=%s embed_keys=%s "
+                    "has_prompt=%s has_prefill=%s has_decode=%s request_status=%s "
+                    "prompt_len=%s num_prompt=%s num_computed=%s num_tokens=%s output_len=%s "
+                    "will_construct=%s",
+                    stage_id,
+                    req_id,
+                    external_req_id,
+                    chunk_id,
+                    payload_finished,
+                    payload_segment_finished,
+                    list(ids.keys()) if isinstance(ids, dict) else type(ids).__name__,
+                    list(embed.keys()) if isinstance(embed, dict) else type(embed).__name__,
+                    bool(ids.get("prompt")) if isinstance(ids, dict) else False,
+                    embed.get("prefill") is not None if isinstance(embed, dict) else False,
+                    embed.get("decode") is not None if isinstance(embed, dict) else False,
+                    request.status,
+                    len(request.prompt_token_ids or []),
+                    getattr(request, "num_prompt_tokens", None),
+                    getattr(request, "num_computed_tokens", None),
+                    getattr(request, "num_tokens", None),
+                    len(getattr(request, "output_token_ids", []) or []),
+                    chunk_id > 0 and request.resumable,
+                )
                 if chunk_id > 0 and request.resumable:
                     # For new streaming input segment, we should update prompt from payload
                     construct_next_stage_streaming_input_prompt(payload_data, request)
