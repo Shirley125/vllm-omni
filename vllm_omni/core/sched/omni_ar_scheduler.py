@@ -647,6 +647,17 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
 
         Discards the last sampled output token from the prior input chunk at stage 0.
         """
+        if self.vllm_config.model_config.stage_id == 0:
+            logger.info(
+                "cwj update_session req=%s status=%s update_prompt_len=%s "
+                "before_num_tokens=%s before_num_computed=%s before_output_len=%s",
+                session.request_id,
+                session.status,
+                len(update.prompt_token_ids or []),
+                session.num_tokens,
+                session.num_computed_tokens,
+                len(session.output_token_ids),
+            )
         req_id = session.request_id
         self._new_prompt_len_snapshot[req_id] = len(update.prompt_token_ids)
         outstanding_async_tokens = getattr(session, "num_output_placeholders", 0)
