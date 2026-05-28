@@ -111,6 +111,24 @@ def _as_tensor_or_none(value: Any) -> torch.Tensor | None:
     return None
 
 
+def _cwj_shape(value: Any) -> tuple[int, ...] | None:
+    return tuple(value.shape) if isinstance(value, torch.Tensor) else None
+
+
+def _cwj_len(value: Any) -> int | None:
+    try:
+        return len(value)
+    except TypeError:
+        return None
+
+
+def _cwj_tail(value: Any, n: int = 8) -> list[Any] | Any:
+    try:
+        return list(value[-n:])
+    except Exception:
+        return value
+
+
 def _is_valid_qwen3_codec_token_id(token_id: Any) -> bool:
     try:
         token_id = int(token_id)
@@ -292,19 +310,45 @@ def _construct_thinker2talker_streaming_input_async_chunk(
     finished = torch.tensor(is_finished, dtype=torch.bool)
     emb_cpu = thinker_emb.detach().cpu()
     hid_cpu = thinker_hid.detach().cpu()
+    all_token_ids = _ensure_list(getattr(request, "all_token_ids", []) or [])
+    prompt_token_ids = _ensure_list(getattr(request, "prompt_token_ids", []) or [])
+    logger.info(
+        "cwj streaming_t2t req=%s finished=%s output_len=%s emb_shape=%s hid_shape=%s "
+        "all_len=%s prompt_len=%s num_computed=%s",
+        request_id,
+        is_finished,
+        _cwj_len(output_token_ids),
+        _cwj_shape(thinker_emb),
+        _cwj_shape(thinker_hid),
+        _cwj_len(all_token_ids),
+        _cwj_len(prompt_token_ids),
+        getattr(request, "num_computed_tokens", None),
+    )
 
     if output_token_ids:
         if thinker_emb.shape[0] > 1:
             # if thinker_emb.shape[0] > 1, new streaming input segment is added
             # and will transfer prefill embeddings and hidden states to talker.
             new_prompt_len = thinker_emb.shape[0]
+            all_tail = _ensure_list(request.all_token_ids[-new_prompt_len - 1 :])
+            prompt_tail = _ensure_list(request.prompt_token_ids[-new_prompt_len:])
+            logger.info(
+                "cwj streaming_t2t cache_prefill req=%s new_prompt_len=%s all_tail_len=%s "
+                "prompt_tail_len=%s all_tail=%s prompt_tail=%s",
+                request_id,
+                new_prompt_len,
+                _cwj_len(all_tail),
+                _cwj_len(prompt_tail),
+                _cwj_tail(all_tail),
+                _cwj_tail(prompt_tail),
+            )
             payload = OmniPayloadStruct(
                 meta=MetaStruct(finished=finished),
                 embed=EmbeddingsStruct(prefill=emb_cpu),
                 hidden_states=HiddenStatesStruct(output=hid_cpu),
                 ids=IdsStruct(
-                    all=_ensure_list(request.all_token_ids[-new_prompt_len - 1 :]),
-                    prompt=_ensure_list(request.prompt_token_ids[-new_prompt_len:]),
+                    all=all_tail,
+                    prompt=prompt_tail,
                 ),
                 speaker=speaker,
                 language=language,
@@ -314,6 +358,11 @@ def _construct_thinker2talker_streaming_input_async_chunk(
                 pending_prefills = {}
                 transfer_manager._pending_streaming_prefills = pending_prefills
             pending_prefills[request_id] = to_dict(payload)
+            logger.info(
+                "cwj streaming_t2t cached_prefill req=%s pending_count=%s",
+                request_id,
+                len(pending_prefills),
+            )
             return None
         else:
             pending_prefills = getattr(transfer_manager, "_pending_streaming_prefills", None)
@@ -322,10 +371,28 @@ def _construct_thinker2talker_streaming_input_async_chunk(
                 saved_prefill = save_payload.get("embed", {}).get("prefill")
                 saved_output = save_payload.get("hidden_states", {}).get("output")
                 if isinstance(saved_prefill, torch.Tensor) and isinstance(saved_output, torch.Tensor):
+                    merged_prefill = torch.cat((saved_prefill, emb_cpu), dim=0)
+                    merged_output = torch.cat((saved_output, hid_cpu), dim=0)
+                    saved_ids = save_payload.get("ids", {})
+                    logger.info(
+                        "cwj streaming_t2t flush_prefill req=%s saved_prefill_shape=%s decode_emb_shape=%s "
+                        "merged_prefill_shape=%s saved_output_shape=%s decode_hid_shape=%s merged_output_shape=%s "
+                        "ids_all_len=%s ids_prompt_len=%s output_len=%s",
+                        request_id,
+                        _cwj_shape(saved_prefill),
+                        _cwj_shape(emb_cpu),
+                        _cwj_shape(merged_prefill),
+                        _cwj_shape(saved_output),
+                        _cwj_shape(hid_cpu),
+                        _cwj_shape(merged_output),
+                        _cwj_len(saved_ids.get("all")) if isinstance(saved_ids, dict) else None,
+                        _cwj_len(saved_ids.get("prompt")) if isinstance(saved_ids, dict) else None,
+                        _cwj_len(output_token_ids),
+                    )
                     return OmniPayloadStruct(
                         meta=MetaStruct(finished=finished),
-                        embed=EmbeddingsStruct(prefill=torch.cat((saved_prefill, emb_cpu), dim=0)),
-                        hidden_states=HiddenStatesStruct(output=torch.cat((saved_output, hid_cpu), dim=0)),
+                        embed=EmbeddingsStruct(prefill=merged_prefill),
+                        hidden_states=HiddenStatesStruct(output=merged_output),
                         ids=IdsStruct(
                             all=save_payload.get("ids", {}).get("all"),
                             prompt=save_payload.get("ids", {}).get("prompt"),
@@ -333,6 +400,14 @@ def _construct_thinker2talker_streaming_input_async_chunk(
                         speaker=speaker,
                         language=language,
                     )
+            logger.info(
+                "cwj streaming_t2t decode_only req=%s emb_shape=%s hid_shape=%s output_len=%s has_saved_prefill=%s",
+                request_id,
+                _cwj_shape(emb_cpu),
+                _cwj_shape(hid_cpu),
+                _cwj_len(output_token_ids),
+                save_payload is not None,
+            )
             return OmniPayloadStruct(
                 meta=MetaStruct(
                     finished=finished,
@@ -346,7 +421,19 @@ def _construct_thinker2talker_streaming_input_async_chunk(
     else:
         if not is_finished:
             # do not send async chunk mode placeholder token or embedding/hidden of the stop token
+            logger.info(
+                "cwj streaming_t2t return_none req=%s reason=no_output_not_finished emb_shape=%s hid_shape=%s",
+                request_id,
+                _cwj_shape(emb_cpu),
+                _cwj_shape(hid_cpu),
+            )
             return None
+        logger.info(
+            "cwj streaming_t2t finished_decode req=%s emb_shape=%s hid_shape=%s",
+            request_id,
+            _cwj_shape(emb_cpu),
+            _cwj_shape(hid_cpu),
+        )
         return OmniPayloadStruct(
             meta=MetaStruct(finished=finished),
             embed=EmbeddingsStruct(decode=emb_cpu),
@@ -478,6 +565,20 @@ def thinker2talker_async_chunk(
         return None
     speaker = extract_speaker_from_request(request)
     language = extract_language_from_request(request)
+    logger.info(
+        "cwj thinker2talker_async_chunk req=%s chunk_id=%s resumable=%s finished=%s "
+        "emb_shape=%s hid_shape=%s all_len=%s prompt_len=%s output_len=%s num_computed=%s",
+        request_id,
+        chunk_id,
+        getattr(request, "resumable", None),
+        is_finished,
+        _cwj_shape(thinker_emb),
+        _cwj_shape(thinker_hid),
+        _cwj_len(_ensure_list(getattr(request, "all_token_ids", []) or [])),
+        _cwj_len(_ensure_list(getattr(request, "prompt_token_ids", []) or [])),
+        _cwj_len(_ensure_list(getattr(request, "output_token_ids", []) or [])),
+        getattr(request, "num_computed_tokens", None),
+    )
 
     def _maybe_cpu(t: Any) -> torch.Tensor | None:
         return t.detach().cpu() if isinstance(t, torch.Tensor) else None
@@ -498,21 +599,57 @@ def thinker2talker_async_chunk(
             speaker=speaker,
             language=language,
         )
+        logger.info(
+            "cwj thinker2talker_async_chunk chunk0_payload req=%s prefill_shape=%s hidden_shape=%s "
+            "all_len=%s prompt_len=%s tts_bos_shape=%s tts_eos_shape=%s tts_pad_shape=%s finished=%s",
+            request_id,
+            _cwj_shape(payload.embed.prefill),
+            _cwj_shape(payload.hidden_states.output),
+            _cwj_len(all_token_ids),
+            _cwj_len(prompt_token_ids),
+            _cwj_shape(payload.embed.tts_bos),
+            _cwj_shape(payload.embed.tts_eos),
+            _cwj_shape(payload.embed.tts_pad),
+            is_finished,
+        )
         if transfer_manager.request_payload.get(request_id) is None:
             if not is_finished:
                 transfer_manager.request_payload[request_id] = to_dict(payload)
+                logger.info("cwj thinker2talker_async_chunk store_chunk0 req=%s", request_id)
                 return None
         else:
             save_payload = transfer_manager.request_payload.pop(request_id)
+            saved_prefill = save_payload.get("embed", {}).get("prefill")
+            saved_output = save_payload.get("hidden_states", {}).get("output")
             payload.embed.prefill = torch.cat(
-                (save_payload.get("embed", {}).get("prefill"), payload.embed.prefill), dim=0
+                (saved_prefill, payload.embed.prefill), dim=0
             )
             payload.hidden_states.output = torch.cat(
-                (save_payload.get("hidden_states", {}).get("output"), payload.hidden_states.output), dim=0
+                (saved_output, payload.hidden_states.output), dim=0
             )
             prefill_shape = payload.embed.prefill.shape[0]
+            logger.info(
+                "cwj thinker2talker_async_chunk merge_chunk0 req=%s saved_prefill_shape=%s "
+                "current_prefill_shape=%s merged_prefill_shape=%s saved_output_shape=%s "
+                "current_output_shape=%s merged_output_shape=%s prompt_len=%s finished=%s",
+                request_id,
+                _cwj_shape(saved_prefill),
+                _cwj_shape(thinker_emb),
+                _cwj_shape(payload.embed.prefill),
+                _cwj_shape(saved_output),
+                _cwj_shape(thinker_hid),
+                _cwj_shape(payload.hidden_states.output),
+                _cwj_len(prompt_token_ids),
+                is_finished,
+            )
             if not is_finished and prefill_shape <= len(prompt_token_ids):
                 transfer_manager.request_payload[request_id] = to_dict(payload)
+                logger.info(
+                    "cwj thinker2talker_async_chunk re_store_chunk0 req=%s prefill_shape=%s prompt_len=%s",
+                    request_id,
+                    prefill_shape,
+                    len(prompt_token_ids),
+                )
                 return None
     else:
         if request.resumable:
@@ -535,6 +672,12 @@ def thinker2talker_async_chunk(
             embed=EmbeddingsStruct(decode=thinker_emb.detach().cpu()),
             speaker=speaker,
             language=language,
+        )
+        logger.info(
+            "cwj thinker2talker_async_chunk decode_payload req=%s decode_shape=%s finished=%s",
+            request_id,
+            _cwj_shape(payload.embed.decode),
+            is_finished,
         )
     return payload
 
@@ -845,6 +988,17 @@ def talker2code2wav_async_chunk(
         if stop_token_id is not None:
             stop_token_ids.add(stop_token_id)
         first_codebook = int(code_predictor_codes[0, 0].item())
+        logger.info(
+            "cwj talker2code2wav_async_chunk req=%s finished=%s codes_shape=%s first_codebook=%s "
+            "stop_ids=%s chunk_size=%s left_context_cfg=%s",
+            request.external_req_id,
+            is_finished,
+            _cwj_shape(code_predictor_codes),
+            first_codebook,
+            sorted(stop_token_ids),
+            chunk_size_config,
+            left_context_size_config,
+        )
         if first_codebook in stop_token_ids:
             logger.debug("skip stop-token codec frame: first_codebook=%s", first_codebook)
             return None
@@ -863,6 +1017,13 @@ def talker2code2wav_async_chunk(
 
     chunk_length = length % chunk_size_config
     if chunk_length != 0 and not is_finished:
+        logger.info(
+            "cwj talker2code2wav_async_chunk wait req=%s length=%s chunk_length=%s chunk_size=%s",
+            request_id,
+            length,
+            chunk_length,
+            chunk_size_config,
+        )
         return None
 
     context_length = chunk_length if chunk_length != 0 else chunk_size_config
@@ -871,6 +1032,19 @@ def talker2code2wav_async_chunk(
     end_index = min(length, left_context_size + context_length)
 
     codes = torch.tensor(transfer_manager.code_prompt_token_ids[request_id][-end_index:]).transpose(0, 1).reshape(-1)
+    logger.info(
+        "cwj talker2code2wav_async_chunk emit req=%s length=%s chunk_length=%s context_length=%s "
+        "left_context=%s end_index=%s codes_shape=%s codes_head=%s finished=%s",
+        request_id,
+        length,
+        chunk_length,
+        context_length,
+        left_context_size,
+        end_index,
+        _cwj_shape(codes),
+        codes[:16].tolist(),
+        is_finished,
+    )
 
     return OmniPayloadStruct(
         codes=CodesStruct(audio=codes),
