@@ -443,6 +443,10 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 finish_reason = request.get_finished_reason()
                 is_segment_finished = request.is_finished() and request.resumable
                 finished = self._handle_stopped_request(request)
+                if is_segment_finished and not finished:
+                    request.discard_latest_async_tokens = True
+                    request.num_output_placeholders = 0
+                    request.spec_token_ids = []
                 if finished:
                     kv_transfer_params = self._free_request(request)
                 if status_before_stop == RequestStatus.RUNNING:
