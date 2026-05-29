@@ -237,11 +237,13 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
 
                 if payload_finished:
                     self.finished_requests.add(req_id)
+                    request.resumable = False
                 if payload_segment_finished:
                     self.segment_finished_requests.add(req_id)
             else:
                 if payload_finished:
                     self.finished_requests.add(req_id)
+                    request.resumable = False
                 if payload_segment_finished:
                     self.segment_finished_requests.add(req_id)
 
