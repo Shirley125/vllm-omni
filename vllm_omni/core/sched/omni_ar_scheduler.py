@@ -225,7 +225,31 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
             )
 
         if self.chunk_transfer_adapter:
+            if getattr(self.vllm_config.model_config, "stage_id", None) == 1:
+                logger.info(
+                    "cwj ar_schedule before_process stage=1 waiting_len=%s running_len=%s "
+                    "running_ids=%s waiting_ids=%s segment_finished=%s ready=%s finished_load=%s",
+                    len(self.waiting),
+                    len(self.running),
+                    [getattr(req, "request_id", None) for req in self.running],
+                    [getattr(req, "request_id", None) for req in list(self.waiting)],
+                    list(self.chunk_transfer_adapter.segment_finished_requests),
+                    list(self.chunk_transfer_adapter.requests_with_ready_chunks),
+                    list(self.chunk_transfer_adapter._finished_load_reqs),
+                )
             self.chunk_transfer_adapter.process_pending_chunks(self.waiting, self.running)
+            if getattr(self.vllm_config.model_config, "stage_id", None) == 1:
+                logger.info(
+                    "cwj ar_schedule after_process stage=1 waiting_len=%s running_len=%s "
+                    "running_ids=%s waiting_ids=%s segment_finished=%s ready=%s finished_load=%s",
+                    len(self.waiting),
+                    len(self.running),
+                    [getattr(req, "request_id", None) for req in self.running],
+                    [getattr(req, "request_id", None) for req in list(self.waiting)],
+                    list(self.chunk_transfer_adapter.segment_finished_requests),
+                    list(self.chunk_transfer_adapter.requests_with_ready_chunks),
+                    list(self.chunk_transfer_adapter._finished_load_reqs),
+                )
 
         try:
             scheduler_output = super().schedule()
@@ -237,6 +261,18 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                     self.running,
                     scheduler_requests=self.requests,
                 )
+                if getattr(self.vllm_config.model_config, "stage_id", None) == 1:
+                    logger.info(
+                        "cwj ar_schedule after_restore stage=1 waiting_len=%s running_len=%s "
+                        "running_ids=%s waiting_ids=%s segment_finished=%s ready=%s finished_load=%s",
+                        len(self.waiting),
+                        len(self.running),
+                        [getattr(req, "request_id", None) for req in self.running],
+                        [getattr(req, "request_id", None) for req in list(self.waiting)],
+                        list(self.chunk_transfer_adapter.segment_finished_requests),
+                        list(self.chunk_transfer_adapter.requests_with_ready_chunks),
+                        list(self.chunk_transfer_adapter._finished_load_reqs),
+                    )
             if self.input_coordinator:
                 self.input_coordinator.restore_queues(self.waiting, self.running)
         try:
@@ -251,12 +287,15 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 request = self.requests.get(req_id) if req_id else None
                 stage_id = getattr(self.vllm_config.model_config, "stage_id", None)
                 if stage_id == 1:
+                    adapter = self.chunk_transfer_adapter
                     logger.info(
                         "cwj talker scheduled_new_req req=%s nr_prompt_len=%s nr_num_computed=%s "
                         "nr_block_ids_lens=%s request_exists=%s status=%s resumable=%s "
                         "prompt_len=%s num_prompt=%s num_computed=%s num_tokens=%s "
                         "num_output_placeholders=%s output_len=%s streaming_queue_len=%s "
-                        "in_running=%s in_waiting=%s in_skipped=%s has_additional_info=%s",
+                        "in_running=%s in_waiting=%s in_skipped=%s has_additional_info=%s "
+                        "in_segment_finished=%s in_ready=%s in_finished_load=%s "
+                        "origin_status=%s",
                         req_id,
                         len(getattr(nr, "prompt_token_ids", None) or []),
                         getattr(nr, "num_computed_tokens", None),
@@ -275,6 +314,26 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                         request in self.waiting if request is not None else None,
                         request in self.skipped_waiting if request is not None else None,
                         bool(getattr(request, "additional_information", None)) if request is not None else None,
+                        (
+                            req_id in adapter.segment_finished_requests
+                            if adapter is not None and req_id is not None
+                            else None
+                        ),
+                        (
+                            req_id in adapter.requests_with_ready_chunks
+                            if adapter is not None and req_id is not None
+                            else None
+                        ),
+                        (
+                            req_id in adapter._finished_load_reqs
+                            if adapter is not None and req_id is not None
+                            else None
+                        ),
+                        (
+                            adapter.requests_origin_status.get(req_id)
+                            if adapter is not None and req_id is not None
+                            else None
+                        ),
                     )
                 # Build omni entry preserving all base fields
                 omni_nr = OmniNewRequestData(
@@ -471,6 +530,25 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 is_segment_finished = request.is_finished() and request.resumable
                 finished = self._handle_stopped_request(request)
                 if is_segment_finished and not finished:
+                    if self.chunk_transfer_adapter:
+                        if self.vllm_config.model_config.stage_id != 0:
+                            # Downstream async-chunk stages receive real payloads from the
+                            # connector. This update only resumes polling for the next segment.
+                            before_discard = request.request_id in self.chunk_transfer_adapter.segment_finished_requests
+                            self.chunk_transfer_adapter.segment_finished_requests.discard(request.request_id)
+                            logger.info(
+                                "cwj ar_segment_done_discard stage=%s req=%s "
+                                "before_discard=%s after_discard=%s status=%s "
+                                "num_computed=%s num_tokens=%s output_len=%s",
+                                self.vllm_config.model_config.stage_id,
+                                request.request_id,
+                                before_discard,
+                                request.request_id in self.chunk_transfer_adapter.segment_finished_requests,
+                                request.status,
+                                request.num_computed_tokens,
+                                request.num_tokens,
+                                len(request.output_token_ids),
+                            )
                     request.discard_latest_async_tokens = True
                     request.num_output_placeholders = 0
                     request.spec_token_ids = []

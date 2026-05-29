@@ -441,6 +441,22 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
         """
         if self.connector.stage_id == 0:
             return
+        if self.connector.stage_id == 1:
+            logger.info(
+                "cwj chunk_process begin stage=%s waiting_len=%s running_len=%s "
+                "wait_chunk_waiting=%s wait_chunk_running=%s ready=%s finished=%s "
+                "segment_finished=%s finished_load=%s running_ids=%s",
+                self.connector.stage_id,
+                len(waiting_queue),
+                len(running_queue),
+                len(self.waiting_for_chunk_waiting_requests),
+                len(self.waiting_for_chunk_running_requests),
+                list(self.requests_with_ready_chunks),
+                list(self.finished_requests),
+                list(self.segment_finished_requests),
+                list(self._finished_load_reqs),
+                [getattr(req, "request_id", None) for req in running_queue],
+            )
         self._process_chunk_queue(
             waiting_queue, self.waiting_for_chunk_waiting_requests, RequestStatus.WAITING, self._finished_load_reqs
         )
@@ -451,6 +467,22 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             request = running_queue.pop()
             request.status = RequestStatus.PREEMPTED
             waiting_queue.prepend_requests([request])
+        if self.connector.stage_id == 1:
+            logger.info(
+                "cwj chunk_process end stage=%s waiting_len=%s running_len=%s "
+                "wait_chunk_waiting=%s wait_chunk_running=%s ready=%s finished=%s "
+                "segment_finished=%s finished_load=%s running_ids=%s",
+                self.connector.stage_id,
+                len(waiting_queue),
+                len(running_queue),
+                len(self.waiting_for_chunk_waiting_requests),
+                len(self.waiting_for_chunk_running_requests),
+                list(self.requests_with_ready_chunks),
+                list(self.finished_requests),
+                list(self.segment_finished_requests),
+                list(self._finished_load_reqs),
+                [getattr(req, "request_id", None) for req in running_queue],
+            )
 
     def restore_queues(
         self,
@@ -473,6 +505,16 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
                 for request in self.waiting_for_chunk_running_requests
                 if scheduler_requests is None or request.request_id in scheduler_requests
             ]
+            if self.connector.stage_id == 1:
+                logger.info(
+                    "cwj chunk_restore stage=%s restoring_running=%s "
+                    "segment_finished=%s ready=%s finished_load=%s",
+                    self.connector.stage_id,
+                    [getattr(req, "request_id", None) for req in live_running_requests],
+                    list(self.segment_finished_requests),
+                    list(self.requests_with_ready_chunks),
+                    list(self._finished_load_reqs),
+                )
             running_queue.extend(live_running_requests)
         self.waiting_for_chunk_running_requests = deque()
 
@@ -517,29 +559,107 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
     ) -> None:
         queue_snapshot = list(queue)
         for request in queue_snapshot:
+            if self.connector.stage_id == 1:
+                logger.info(
+                    "cwj chunk_queue inspect stage=%s target=%s req=%s status=%s "
+                    "in_ready=%s in_finished=%s in_segment_finished=%s in_finished_load=%s "
+                    "prompt_len=%s num_prompt=%s num_computed=%s num_tokens=%s "
+                    "output_len=%s has_additional_info=%s queue_len=%s",
+                    self.connector.stage_id,
+                    target_status,
+                    getattr(request, "request_id", None),
+                    getattr(request, "status", None),
+                    request.request_id in self.requests_with_ready_chunks,
+                    request.request_id in self.finished_requests,
+                    request.request_id in self.segment_finished_requests,
+                    request.request_id in finished_load_reqs,
+                    len(getattr(request, "prompt_token_ids", None) or []),
+                    getattr(request, "num_prompt_tokens", None),
+                    getattr(request, "num_computed_tokens", None),
+                    getattr(request, "num_tokens", None),
+                    len(getattr(request, "output_token_ids", None) or []),
+                    bool(getattr(request, "additional_information", None)),
+                    len(queue),
+                )
             if request.status != RequestStatus.WAITING_FOR_CHUNK:
                 if request.request_id in self.requests_with_ready_chunks:
                     # Requests that have loaded chunk from last round
                     # of schedule, but have not scheduled
+                    if self.connector.stage_id == 1:
+                        logger.info(
+                            "cwj chunk_queue continue_ready stage=%s req=%s status=%s",
+                            self.connector.stage_id,
+                            request.request_id,
+                            request.status,
+                        )
                     continue
                 if request.request_id in self.finished_requests:
                     request.additional_information = None
+                    if self.connector.stage_id == 1:
+                        logger.info(
+                            "cwj chunk_queue continue_finished stage=%s req=%s status=%s",
+                            self.connector.stage_id,
+                            request.request_id,
+                            request.status,
+                        )
                     continue
                 if request.request_id in self.segment_finished_requests:
                     request.additional_information = None
+                    if self.connector.stage_id == 1:
+                        logger.info(
+                            "cwj chunk_queue continue_segment_finished stage=%s req=%s "
+                            "status=%s target=%s prompt_len=%s num_computed=%s "
+                            "output_len=%s",
+                            self.connector.stage_id,
+                            request.request_id,
+                            request.status,
+                            target_status,
+                            len(getattr(request, "prompt_token_ids", None) or []),
+                            getattr(request, "num_computed_tokens", None),
+                            len(getattr(request, "output_token_ids", None) or []),
+                        )
                     continue
                 # Requests that waiting for chunk
                 self.load_async(request)
                 request.status = RequestStatus.WAITING_FOR_CHUNK
+                if self.connector.stage_id == 1:
+                    logger.info(
+                        "cwj chunk_queue load_wait stage=%s req=%s target=%s",
+                        self.connector.stage_id,
+                        request.request_id,
+                        target_status,
+                    )
             else:
                 if request.request_id in finished_load_reqs:
                     request.status = target_status
                     finished_load_reqs.remove(request.request_id)
                     self.requests_with_ready_chunks.add(request.request_id)
+                    if self.connector.stage_id == 1:
+                        logger.info(
+                            "cwj chunk_queue ready stage=%s req=%s target=%s "
+                            "prompt_len=%s num_computed=%s has_additional_info=%s",
+                            self.connector.stage_id,
+                            request.request_id,
+                            target_status,
+                            len(getattr(request, "prompt_token_ids", None) or []),
+                            getattr(request, "num_computed_tokens", None),
+                            bool(getattr(request, "additional_information", None)),
+                        )
                     continue
             queue.remove(request)
             self.requests_origin_status[request.request_id] = target_status
             waiting_for_chunk_list.append(request)
+            if self.connector.stage_id == 1:
+                logger.info(
+                    "cwj chunk_queue parked stage=%s req=%s target=%s status=%s "
+                    "parked_waiting=%s parked_running=%s",
+                    self.connector.stage_id,
+                    request.request_id,
+                    target_status,
+                    request.status,
+                    len(self.waiting_for_chunk_waiting_requests),
+                    len(self.waiting_for_chunk_running_requests),
+                )
 
     def _clear_chunk_ready(self, scheduler_output: Any) -> None:
         if scheduler_output.scheduled_new_reqs:
