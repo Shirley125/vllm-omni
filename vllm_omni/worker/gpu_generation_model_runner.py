@@ -343,6 +343,36 @@ class GPUGenerationModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin
             )
 
         _, multimodal_outputs = self.extract_multimodal_outputs(outputs)
+        if getattr(self.model_config, "model_stage", None) == "code2wav":
+            if isinstance(multimodal_outputs, torch.Tensor):
+                mm_desc = tuple(multimodal_outputs.shape)
+            elif isinstance(multimodal_outputs, list):
+                mm_desc = [
+                    tuple(out.shape) if isinstance(out, torch.Tensor) else type(out).__name__
+                    for out in multimodal_outputs
+                ]
+            elif isinstance(multimodal_outputs, dict):
+                mm_desc = {
+                    key: (
+                        [tuple(x.shape) if isinstance(x, torch.Tensor) else type(x).__name__ for x in value]
+                        if isinstance(value, list)
+                        else tuple(value.shape)
+                        if isinstance(value, torch.Tensor)
+                        else type(value).__name__
+                    )
+                    for key, value in multimodal_outputs.items()
+                }
+            else:
+                mm_desc = type(multimodal_outputs).__name__
+            logger.info(
+                "cwj code2wav forward_output req_ids=%s num_scheduled_tokens=%s output=%s",
+                self.input_batch.req_ids,
+                {
+                    rid: scheduler_output.num_scheduled_tokens.get(rid)
+                    for rid in self.input_batch.req_ids
+                },
+                mm_desc,
+            )
         self.execute_model_state = ExecuteModelState(
             scheduler_output,
             None,
@@ -452,6 +482,16 @@ class GPUGenerationModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin
                 pooler_output.append(mm_payload)
         else:
             raise RuntimeError("Unsupported diffusion output type")
+        if getattr(self.model_config, "model_stage", None) == "code2wav":
+            for rid, payload in zip(self.input_batch.req_ids, pooler_output):
+                if isinstance(payload, dict):
+                    desc = {
+                        key: tuple(value.shape) if isinstance(value, torch.Tensor) else type(value).__name__
+                        for key, value in payload.items()
+                    }
+                else:
+                    desc = type(payload).__name__
+                logger.info("cwj code2wav pooler_output req=%s payload=%s", rid, desc)
         # [Omni] Copy req_id mappings to avoid async scheduling mutation.
         req_ids_output_copy = self.input_batch.req_ids.copy()
         req_id_to_index_output_copy = self.input_batch.req_id_to_index.copy()
