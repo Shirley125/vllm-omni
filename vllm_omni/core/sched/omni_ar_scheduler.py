@@ -788,6 +788,7 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 if session.status == RequestStatus.WAITING_FOR_STREAMING_REQ:
                     self.num_waiting_for_streaming_input -= 1
                 session.status = RequestStatus.WAITING
+                self._enqueue_waiting_request(session)
 
                 if self.log_stats:
                     session.record_event(EngineCoreEventType.QUEUED)
