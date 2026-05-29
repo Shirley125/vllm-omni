@@ -144,7 +144,7 @@ class OmniChunkTransferAdapter(OmniTransferAdapterBase):
             request: Request object
             is_segment_finished: whether the segment of request is finished
         """
-        is_finished = request.is_finished()
+        is_finished = request.is_finished() and not request.resumable
         # A fully finished request also finishes the current streaming segment;
         # the inverse is not true.
         is_segment_finished = is_segment_finished or is_finished
