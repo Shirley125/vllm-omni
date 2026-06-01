@@ -35,7 +35,7 @@ def get_prompt(prompt_type="text"):
 
 
 def get_max_batch_size(size_type="few"):
-    batch_sizes = {"few": 4, "medium": 4, "large": 4}
+    batch_sizes = {"few": 4, "medium": 8, "large": 16}
     return batch_sizes.get(size_type, 4)
 
 
