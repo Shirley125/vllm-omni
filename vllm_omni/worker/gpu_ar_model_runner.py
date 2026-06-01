@@ -44,7 +44,7 @@ from vllm.v1.worker.utils import is_residual_scattered_for_sp
 from vllm_omni.data_entry_keys import flatten_payload
 from vllm_omni.distributed.omni_connectors.kv_transfer_manager import OmniKVTransferManager
 from vllm_omni.outputs import OmniModelRunnerOutput
-from vllm_omni.utils.mm_outputs import build_mm_cpu, to_payload_element
+from vllm_omni.utils.mm_outputs import build_mm_cpu, record_d2h_profile, record_tensor_d2h_profile, to_payload_element
 from vllm_omni.worker.gpu_model_runner import OmniGPUModelRunner
 from vllm_omni.worker.omni_connector_model_runner_mixin import OmniConnectorModelRunnerMixin
 
@@ -140,6 +140,20 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
         if engine_output_type == "audio" and not downstream_req_ids:
             downstream_req_ids = req_ids_output_copy
         return engine_output_type, downstream_req_ids
+
+    @staticmethod
+    def _sparse_mm_req_ids(multimodal_outputs: Any) -> list[str] | None:
+        if not isinstance(multimodal_outputs, dict):
+            return None
+        meta = multimodal_outputs.get("meta")
+        req_ids = None
+        if isinstance(meta, dict):
+            req_ids = meta.get("req_id")
+        if req_ids is None:
+            req_ids = multimodal_outputs.get("meta.req_id")
+        if not isinstance(req_ids, list):
+            return None
+        return [rid for rid in req_ids if isinstance(rid, str)]
 
     def capture_model(self) -> int:
         result = super().capture_model()
@@ -895,16 +909,35 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
         self.kv_connector_output = None
 
         engine_output_type, downstream_req_ids = self._resolve_pooler_payload_req_ids(req_ids_output_copy)
+        sparse_mm_req_ids = self._sparse_mm_req_ids(multimodal_outputs)
+        sparse_mm_index = {rid: i for i, rid in enumerate(sparse_mm_req_ids or [])}
+        if engine_output_type == "audio" and sparse_mm_req_ids is not None:
+            sparse_req_id_set = set(sparse_mm_req_ids)
+            downstream_req_ids = [rid for rid in req_ids_output_copy if rid in sparse_req_id_set]
         needs_pooler_payload = len(downstream_req_ids) > 0
         downstream_req_id_set = set(downstream_req_ids)
         hidden_states_cpu = None
         req_hidden_states_cpu: dict[str, torch.Tensor] | None = None
+        audio_sparse_output = engine_output_type == "audio" and sparse_mm_req_ids is not None
+        audio_sparse_output_empty = audio_sparse_output and not sparse_mm_req_ids
+        if audio_sparse_output_empty:
+            record_d2h_profile("runner.audio_sparse_output_empty", empty=1)
+        skip_empty_sparse_audio_postprocess = bool(getattr(self.model, "_skip_empty_sparse_audio_postprocess", False))
+        needs_postprocess_update = (
+            audio_sparse_output
+            and bool(getattr(self.model, "has_postprocess", False))
+            and not (audio_sparse_output_empty and skip_empty_sparse_audio_postprocess)
+        )
         if needs_pooler_payload:
             num_valid_tokens = min(
                 int(scheduler_output.total_num_scheduled_tokens),
                 int(hidden_states.shape[0]),
             )
-            if len(downstream_req_ids) == len(req_ids_output_copy):
+            if audio_sparse_output:
+                pass
+            elif len(downstream_req_ids) == len(req_ids_output_copy):
+                if hidden_states.is_cuda:
+                    record_tensor_d2h_profile("pooler_hidden_all_d2h", hidden_states[:num_valid_tokens])
                 hidden_states_cpu = hidden_states[:num_valid_tokens].detach().to("cpu").contiguous()
             else:
                 req_hidden_states_cpu = {}
@@ -916,6 +949,7 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
                 dtype=np.int32,
             )
         query_start_loc_cpu = self.query_start_loc.cpu
+
         if self.omni_prefix_cache is not None:
             deferred_mm_cache_keys = self._deferred_prefix_cache_mm_keys()
             if deferred_mm_cache_keys:
@@ -930,11 +964,11 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
                 )
 
         pooler_output: list[dict[str, object]] | None = None
-        if needs_pooler_payload:
+        if needs_pooler_payload or needs_postprocess_update:
             mm_cpu = None
             # Prior to applying the post-processing func, extract
             # the prefix cached hidden states and multimodal states.
-            if self.omni_prefix_cache is not None:
+            if needs_pooler_payload and self.omni_prefix_cache is not None:
                 (
                     combined_hidden_states,
                     combined_multimodal_outputs,
@@ -944,7 +978,7 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
                     scheduler_output.num_scheduled_tokens,
                 )
             # Otherwise we don't have the mm CPU data yet, so we still need to build it
-            if self.omni_prefix_cache is None or combined_multimodal_outputs is None:
+            if needs_pooler_payload and (self.omni_prefix_cache is None or combined_multimodal_outputs is None):
                 mm_cpu = build_mm_cpu(flatten_payload(multimodal_outputs) if multimodal_outputs else multimodal_outputs)
 
             self._process_additional_information_updates(
@@ -954,76 +988,103 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
                 scheduler_output,
                 combined_hidden_states,
                 combined_multimodal_outputs,
-                req_ids_filter=downstream_req_id_set,
+                req_ids_filter=(
+                    downstream_req_id_set
+                    if skip_empty_sparse_audio_postprocess
+                    else None
+                    if audio_sparse_output
+                    else downstream_req_id_set
+                ),
             )
 
-            if req_hidden_states_cpu is not None and combined_hidden_states is None:
-                for rid in downstream_req_ids:
+            if not needs_pooler_payload:
+                pooler_output = None
+            else:
+                if req_hidden_states_cpu is not None and combined_hidden_states is None:
+                    for rid in downstream_req_ids:
+                        idx = req_id_to_index_output_copy[rid]
+                        start = int(query_start_loc_cpu[idx])
+                        sched = int(num_scheduled_tokens_np[idx])
+                        end = start + sched
+                        if hidden_states.is_cuda:
+                            record_tensor_d2h_profile("pooler_hidden_req_d2h", hidden_states[start:end])
+                        req_hidden_states_cpu[rid] = hidden_states[start:end].detach().to("cpu").contiguous()
+
+                pooler_output = []
+                for rid in req_ids_output_copy:
+                    if rid not in downstream_req_id_set:
+                        record_d2h_profile("pooler_empty_request_payload", empty=1)
+                        pooler_output.append({})
+                        continue
                     idx = req_id_to_index_output_copy[rid]
                     start = int(query_start_loc_cpu[idx])
                     sched = int(num_scheduled_tokens_np[idx])
                     end = start + sched
-                    req_hidden_states_cpu[rid] = hidden_states[start:end].detach().to("cpu").contiguous()
-
-            pooler_output = []
-            for rid in req_ids_output_copy:
-                if rid not in downstream_req_id_set:
-                    pooler_output.append({})
-                    continue
-                idx = req_id_to_index_output_copy[rid]
-                start = int(query_start_loc_cpu[idx])
-                sched = int(num_scheduled_tokens_np[idx])
-                end = start + sched
-                # If prefix cache is enabled, we have already split everything
-                # by request and converted the states to CPU tensors
-                if req_hidden_states_cpu is not None and combined_hidden_states is None:
-                    req_hidden_states = req_hidden_states_cpu[rid]
-                else:
-                    req_hidden_states = self._resolve_req_hidden_states(
-                        hidden_states_cpu,
-                        combined_hidden_states,
-                        rid,
-                        start,
-                        end,
-                    )
-                payload: dict[str, object] = {"hidden": req_hidden_states}
-
-                mm_payload: dict[str, object] = {}
-                if combined_multimodal_outputs or mm_cpu:
-                    if combined_multimodal_outputs:
-                        # Prefix cache enabled; all items have already been processed
-                        # and split apart for each request as needed, and all tensors
-                        # have already been detached to the CPU.  Lists are kept as
-                        # passthrough data for consistent behavior in postprocess.
-                        # Recurse into nested dicts so list-valued sub-keys (e.g.
-                        # embed.tts_bos = [tensor]) are unwrapped to bare tensors
-                        # at the leaves; downstream flatten_payload then yields a
-                        # wire-clean dict[str, torch.Tensor].
-                        def _unwrap_lists(v):
-                            if isinstance(v, list):
-                                return v[idx] if idx < len(v) else v[0]
-                            if isinstance(v, dict):
-                                return {k: _unwrap_lists(sv) for k, sv in v.items()}
-                            return v
-
-                        for mm_key in combined_multimodal_outputs.keys():
-                            mm_payload[mm_key] = _unwrap_lists(combined_multimodal_outputs[mm_key][rid])
-
-                    else:
-                        # Prefix cache disabled; we still need to process the data
-                        for mm_key, mm_val in mm_cpu.items():
-                            mm_payload[mm_key] = to_payload_element(
-                                element=mm_val,
-                                idx=idx,
-                                start=start,
-                                end=end,
-                                pass_lists_through=False,
-                                seq_len=seq_len,
+                    payload: dict[str, object] = {}
+                    if not audio_sparse_output:
+                        # If prefix cache is enabled, we have already split everything
+                        # by request and converted the states to CPU tensors.
+                        if req_hidden_states_cpu is not None and combined_hidden_states is None:
+                            req_hidden_states = req_hidden_states_cpu[rid]
+                        else:
+                            req_hidden_states = self._resolve_req_hidden_states(
+                                hidden_states_cpu,
+                                combined_hidden_states,
+                                rid,
+                                start,
+                                end,
                             )
-                    payload.update(mm_payload)
-                # Flatten nested dicts to dotted keys so pooling_output
-                # stays dict[str, torch.Tensor] for msgspec serialization.
-                pooler_output.append(flatten_payload(payload))
+                        payload["hidden"] = req_hidden_states
+
+                    mm_payload: dict[str, object] = {}
+                    if combined_multimodal_outputs or mm_cpu:
+                        if combined_multimodal_outputs:
+                            # Prefix cache enabled; all items have already been processed
+                            # and split apart for each request as needed, and all tensors
+                            # have already been detached to the CPU.  Lists are kept as
+                            # passthrough data for consistent behavior in postprocess.
+                            # Recurse into nested dicts so list-valued sub-keys (e.g.
+                            # embed.tts_bos = [tensor]) are unwrapped to bare tensors
+                            # at the leaves; downstream flatten_payload then yields a
+                            # wire-clean dict[str, torch.Tensor].
+                            def _unwrap_lists(v):
+                                if isinstance(v, list):
+                                    return v[idx] if idx < len(v) else v[0]
+                                if isinstance(v, dict):
+                                    return {k: _unwrap_lists(sv) for k, sv in v.items()}
+                                return v
+
+                            for mm_key in combined_multimodal_outputs.keys():
+                                mm_payload[mm_key] = _unwrap_lists(combined_multimodal_outputs[mm_key][rid])
+
+                        else:
+                            # Prefix cache disabled; we still need to process the data
+                            for mm_key, mm_val in mm_cpu.items():
+                                if mm_key == "meta.req_id":
+                                    continue
+                                if audio_sparse_output and isinstance(mm_val, list):
+                                    sparse_idx = sparse_mm_index.get(rid)
+                                    if sparse_idx is None:
+                                        continue
+                                    if sparse_idx >= len(mm_val):
+                                        continue
+                                    sparse_val = mm_val[sparse_idx]
+                                    mm_payload[mm_key] = (
+                                        sparse_val.clone() if isinstance(sparse_val, torch.Tensor) else sparse_val
+                                    )
+                                    continue
+                                mm_payload[mm_key] = to_payload_element(
+                                    element=mm_val,
+                                    idx=idx,
+                                    start=start,
+                                    end=end,
+                                    pass_lists_through=False,
+                                    seq_len=seq_len,
+                                )
+                        payload.update(mm_payload)
+                    # Flatten nested dicts to dotted keys so pooling_output
+                    # stays dict[str, torch.Tensor] for msgspec serialization.
+                    pooler_output.append(flatten_payload(payload))
 
         if pooler_output and self._should_accumulate_full_payload_output():
             for i, rid in enumerate(req_ids_output_copy):

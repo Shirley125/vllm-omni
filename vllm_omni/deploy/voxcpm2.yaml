@@ -6,14 +6,35 @@
 #   * enforce_eager=true because the talker's KV-cache save/restore loop is
 #     not cudagraph-compatible (captured separately via voxcpm2_talker's own
 #     _CapturedGraph path).
-#   * max_num_seqs=8 keeps the decode tail large enough to benefit from
-#     batched CFM while staying within the legacy single-GPU serving contract.
+#   * max_num_seqs=32 keeps the AR active window large enough for high
+#     concurrency TTS serving without regressing the c64/p500 throughput sweep.
+#   * Batched CFM is enabled by default when the experimental outer CFM CUDA
+#     Graph path is off; this keeps LocDiT attention/GEMM at useful batch sizes.
+#   * VOXCPM2_COALESCE_AUDIO_D2H=1 is default-on and also coalesces sparse
+#     VAE decode outputs before the runner builds per-request payloads.
+#   * VOXCPM2_LOC_DIT_FUSED_QKV defaults on; it is bitwise equivalent and
+#     reduces LocDiT attention projection overhead.
+#   * VOXCPM2_LOC_DIT_FUSED_MLP defaults on; it is bitwise equivalent and
+#     fuses LocDiT gate/up projections into one linear call.
+#   * VOXCPM2_LOC_DIT_SKIP_QKV_CONTIG defaults on; it keeps the FA3 SDPA
+#     backend but avoids materializing q/k/v before attention, with bitwise
+#     acc64 validation and c64/p256 throughput gain.
+#   * VOXCPM2_LOC_DIT_FAST_ROPE=1 is an opt-in LocDiT RoPE experiment. It was
+#     bitwise in 64-request acc and a CFM trajectory microbench, but c64/p500
+#     throughput gain was within run noise, so it is not default-on.
+#   * VOXCPM2_VAE_CUDA_GRAPH=1 is an opt-in experimental path: it can reduce
+#     AudioVAE decode launch overhead, but it is not bitwise equivalent, so keep
+#     it out of the default no-quality-loss configuration.
+#   * AudioVAE decode coarsening (every 3 latent patches) and batched VAE decode
+#     are enabled by default. They are low-drift throughput optimizations, so
+#     VoxCPM2 default output is no longer bitwise-identical to the unoptimized
+#     path, but quality/length checks stayed within the accepted audio threshold.
 async_chunk: false
 dtype: bfloat16
 
 stages:
   - stage_id: 0
-    max_num_seqs: 8
+    max_num_seqs: 32
     gpu_memory_utilization: 0.9
     enforce_eager: true
     trust_remote_code: true
