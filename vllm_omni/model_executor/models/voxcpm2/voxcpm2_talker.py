@@ -108,7 +108,31 @@ class _VoxCPM2RuntimeConfig:
                 continue
             default = getattr(cls(), key)
             values[key] = cls._coerce_value(key, value, default)
-        return cls(**values)
+        return cls(**values)._normalized()
+
+    def _normalized(self) -> _VoxCPM2RuntimeConfig:
+        cfg = self
+        if cfg.enable_batched_cfm and cfg.enable_cfm_cuda_graph:
+            logger.warning(
+                "VoxCPM2 batched CFM and CFM CUDA Graph are mutually exclusive; "
+                "disabling CFM CUDA Graph and keeping batched CFM."
+            )
+            cfg = dataclasses.replace(cfg, enable_cfm_cuda_graph=False)
+        if cfg.enable_cfm_prealloc_output and not cfg.enable_cfm_cuda_graph:
+            logger.warning("VoxCPM2 CFM preallocated output requires CFM CUDA Graph; disabling it.")
+            cfg = dataclasses.replace(cfg, enable_cfm_prealloc_output=False)
+        if cfg.delayed_audio_copy_use_events and not cfg.enable_delayed_audio_copy:
+            logger.warning("VoxCPM2 delayed audio copy events require delayed audio copy; disabling event polling.")
+            cfg = dataclasses.replace(cfg, delayed_audio_copy_use_events=False)
+        if cfg.enable_batched_vae_decode and (
+            cfg.enable_delayed_audio_copy or cfg.audio_emit_every > 1 or cfg.enable_vae_cuda_graph
+        ):
+            logger.warning(
+                "VoxCPM2 batched VAE decode is incompatible with delayed audio copy, "
+                "audio_emit_every > 1, and VAE CUDA Graph; disabling batched VAE decode."
+            )
+            cfg = dataclasses.replace(cfg, enable_batched_vae_decode=False)
+        return cfg
 
     @staticmethod
     def _coerce_value(key: str, value: Any, default: Any) -> Any:
@@ -2410,7 +2434,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
                     else:
                         mm["model_outputs"] = chunks
                     mm["sr"] = [sr for _ in ready_req_ids]
-                    mm["meta"] = {"req_id": ready_req_ids}
+                    mm["meta"] = {"req_id": ready_req_ids, "sparse_audio": ["1"]}
                 elif self._coalesce_audio_d2h and any(audio.is_cuda for audio in audio_by_req.values()):
                     ready_req_ids = list(audio_by_req)
                     chunks = [audio_by_req[req_id].reshape(-1) for req_id in ready_req_ids]
@@ -2425,7 +2449,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             elif self._uses_sparse_audio_outputs():
                 mm["model_outputs"] = []
                 mm["sr"] = []
-                mm["meta"] = {"req_id": []}
+                mm["meta"] = {"req_id": [], "sparse_audio": ["1"]}
             self._audio_queue.clear()
 
         return OmniOutput(text_hidden_states=model_outputs, multimodal_outputs=mm)

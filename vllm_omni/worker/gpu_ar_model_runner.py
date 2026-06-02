@@ -206,13 +206,26 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
             return None
         meta = multimodal_outputs.get("meta")
         req_ids = None
+        sparse_audio = False
         if isinstance(meta, dict):
             req_ids = meta.get("req_id")
+            sparse_audio = GPUARModelRunner._is_sparse_audio_marker(meta.get("sparse_audio"))
         if req_ids is None:
             req_ids = multimodal_outputs.get("meta.req_id")
+            sparse_audio = GPUARModelRunner._is_sparse_audio_marker(multimodal_outputs.get("meta.sparse_audio"))
+        if not sparse_audio:
+            return None
         if not isinstance(req_ids, list):
             return None
         return [rid for rid in req_ids if isinstance(rid, str)]
+
+    @staticmethod
+    def _is_sparse_audio_marker(value: Any) -> bool:
+        if isinstance(value, list):
+            return any(str(item).lower() in ("1", "true", "yes", "on") for item in value)
+        if isinstance(value, str):
+            return value.lower() in ("1", "true", "yes", "on")
+        return bool(value)
 
     def capture_model(self) -> int:
         result = super().capture_model()
@@ -995,8 +1008,6 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
         sparse_mm_req_ids = self._sparse_mm_req_ids(multimodal_outputs)
         sparse_mm_index = {rid: i for i, rid in enumerate(sparse_mm_req_ids or [])}
         if engine_output_type == "audio" and sparse_mm_req_ids is not None:
-            # ``meta.req_id`` carries the sparse request order for ready
-            # multimodal payloads.
             sparse_req_id_set = set(sparse_mm_req_ids)
             downstream_req_ids = [rid for rid in req_ids_output_copy if rid in sparse_req_id_set]
         needs_pooler_payload = len(downstream_req_ids) > 0
@@ -1048,9 +1059,7 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
         pooler_output: list[dict[str, object]] | None = None
         if needs_pooler_payload:
             mm_cpu = None
-            # Prior to applying the post-processing func, extract
-            # the prefix cached hidden states and multimodal states.
-            if needs_pooler_payload and self.omni_prefix_cache is not None:
+            if self.omni_prefix_cache is not None:
                 (
                     combined_hidden_states,
                     combined_multimodal_outputs,
@@ -1060,8 +1069,7 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
                     multimodal_outputs,
                     scheduler_output.num_scheduled_tokens,
                 )
-            # Otherwise we don't have the mm CPU data yet, so we still need to build it
-            if needs_pooler_payload and (self.omni_prefix_cache is None or combined_multimodal_outputs is None):
+            if self.omni_prefix_cache is None or combined_multimodal_outputs is None:
                 mm_cpu = build_mm_cpu(flatten_payload(multimodal_outputs) if multimodal_outputs else multimodal_outputs)
 
             self._process_additional_information_updates(
@@ -1121,13 +1129,19 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
 
                     else:
                         for mm_key, mm_val in mm_cpu.items():
-                            if mm_key == "meta.req_id":
+                            if mm_key in {"meta.req_id", "meta.sparse_audio"}:
                                 continue
                             if audio_sparse_output and isinstance(mm_val, list):
                                 sparse_idx = sparse_mm_index.get(rid)
                                 if sparse_idx is None:
                                     continue
                                 if sparse_idx >= len(mm_val):
+                                    logger.warning(
+                                        "Sparse multimodal payload mismatch for request %s: index %d >= %d.",
+                                        rid,
+                                        sparse_idx,
+                                        len(mm_val),
+                                    )
                                     continue
                                 sparse_val = mm_val[sparse_idx]
                                 mm_payload[mm_key] = (
