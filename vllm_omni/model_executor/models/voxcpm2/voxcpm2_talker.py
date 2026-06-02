@@ -2469,6 +2469,10 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             state.precomputed_stop_logits = None
             state.precomputed_is_stopping = None
             state.last_audio_patch_gpu = None
+            if not hasattr(state, "pending_audio_chunks_gpu"):
+                state.pending_audio_chunks_gpu = []
+            if not hasattr(state, "pending_audio_copies"):
+                state.pending_audio_copies = []
             state.pending_audio_chunks_gpu.clear()
             state.pending_audio_copies.clear()
             state.curr_embed_for_next = None

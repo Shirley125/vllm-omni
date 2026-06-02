@@ -1005,10 +1005,11 @@ class GPUARModelRunner(OmniGPUModelRunner, OmniConnectorModelRunnerMixin):
         audio_sparse_output_empty = audio_sparse_output and not sparse_mm_req_ids
         if audio_sparse_output_empty:
             record_d2h_profile("runner.audio_sparse_output_empty", empty=1)
-        skip_empty_sparse_audio_postprocess = bool(getattr(self.model, "_skip_empty_sparse_audio_postprocess", False))
+        model = getattr(self, "model", None)
+        skip_empty_sparse_audio_postprocess = bool(getattr(model, "_skip_empty_sparse_audio_postprocess", False))
         needs_postprocess_update = (
             audio_sparse_output
-            and bool(getattr(self.model, "has_postprocess", False))
+            and bool(getattr(model, "has_postprocess", False))
             and not (audio_sparse_output_empty and skip_empty_sparse_audio_postprocess)
         )
         needs_scheduled_hidden_payload = needs_pooler_payload and (
