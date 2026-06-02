@@ -2,57 +2,10 @@
 payloads, most of which are shared by the prefix cache / no prefix cache path.
 """
 
-import atexit
-import json
-import os
-from collections import defaultdict
-
 import torch
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
-
-_D2H_PROFILE_ENABLED = os.environ.get("VOXCPM2_D2H_PROFILE", "0") == "1"
-_D2H_PROFILE: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-
-
-def _tensor_nbytes(tensor: torch.Tensor) -> int:
-    return int(tensor.numel()) * int(tensor.element_size())
-
-
-def record_d2h_profile(
-    category: str,
-    *,
-    calls: int = 0,
-    bytes: int = 0,
-    tensors: int = 0,
-    chunks: int = 0,
-    requests: int = 0,
-    empty: int = 0,
-) -> None:
-    if not _D2H_PROFILE_ENABLED:
-        return
-    bucket = _D2H_PROFILE[category]
-    bucket["calls"] += int(calls)
-    bucket["bytes"] += int(bytes)
-    bucket["tensors"] += int(tensors)
-    bucket["chunks"] += int(chunks)
-    bucket["requests"] += int(requests)
-    bucket["empty"] += int(empty)
-
-
-def record_tensor_d2h_profile(category: str, tensor: torch.Tensor, *, calls: int = 1) -> None:
-    record_d2h_profile(category, calls=calls, bytes=_tensor_nbytes(tensor), tensors=1)
-
-
-def _dump_d2h_profile() -> None:
-    if not _D2H_PROFILE_ENABLED or not _D2H_PROFILE:
-        return
-    payload = {category: dict(stats) for category, stats in sorted(_D2H_PROFILE.items())}
-    logger.warning("VOXCPM2_D2H_PROFILE %s", json.dumps(payload, sort_keys=True))
-
-
-atexit.register(_dump_d2h_profile)
 
 
 def build_mm_cpu(multimodal_outputs: dict) -> dict[str, object]:
@@ -75,30 +28,27 @@ def build_mm_cpu(multimodal_outputs: dict) -> dict[str, object]:
 
     if multimodal_outputs:
         for k, v in multimodal_outputs.items():
-            cpu_v = _to_cpu(v, f"build_mm_cpu.{k}")
+            cpu_v = _to_cpu(v)
             if cpu_v is not None:
                 mm_cpu[k] = cpu_v
     return mm_cpu
 
 
-def _to_cpu(value, category: str = "build_mm_cpu"):
+def _to_cpu(value):
     """Recursively detach + move tensors to CPU; preserve dict/list nesting."""
     if isinstance(value, torch.Tensor):
-        if value.is_cuda:
-            record_tensor_d2h_profile(category, value)
         return value.detach().to("cpu").contiguous()
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
-            cpu_v = _to_cpu(v, f"{category}.{k}")
+            cpu_v = _to_cpu(v)
             if cpu_v is not None:
                 out[k] = cpu_v
         return out or None
     if isinstance(value, list):
         if not value:
-            record_d2h_profile(f"{category}.__empty_list__", empty=1)
             return value
-        return [_to_cpu(v, f"{category}[]") for v in value]
+        return [_to_cpu(v) for v in value]
     return value
 
 
@@ -126,12 +76,6 @@ def to_payload_element(
     # Cached per-token tensors are merged elsewhere; here a first dim
     # equal to seq_len means a per-request slice is required.
     if seq_len is not None and isinstance(element, torch.Tensor) and element.shape[0] == seq_len:
-        record_d2h_profile(
-            "pooler_payload.slice_cpu_tensor",
-            calls=1,
-            bytes=_tensor_nbytes(element[start:end]),
-            tensors=1,
-        )
         return element[start:end].contiguous()
     # Every other case is shared between prefix cache (passthrough data)
     # and running a model without prefix caching.
@@ -143,33 +87,13 @@ def to_payload_element(
     elif isinstance(element, list):
         # For lists, clone tensors to avoid cross-request aliasing
         if pass_lists_through:
-            for elem in element:
-                if isinstance(elem, torch.Tensor):
-                    record_d2h_profile(
-                        "pooler_payload.clone_cpu_list_tensor",
-                        calls=1,
-                        bytes=_tensor_nbytes(elem),
-                        tensors=1,
-                    )
             return [elem.clone() if isinstance(elem, torch.Tensor) else elem for elem in element]
         element = element[idx] if idx < len(element) else element[0]
         if isinstance(element, torch.Tensor):
-            record_d2h_profile(
-                "pooler_payload.clone_cpu_list_tensor",
-                calls=1,
-                bytes=_tensor_nbytes(element),
-                tensors=1,
-            )
             element = element.clone()
         return element
     elif isinstance(element, torch.Tensor):
         # List-derived tensor payloads are request-invariant; clone to
         # avoid accidental cross-request aliasing on downstream mutation.
-        record_d2h_profile(
-            "pooler_payload.clone_cpu_tensor",
-            calls=1,
-            bytes=_tensor_nbytes(element),
-            tensors=1,
-        )
         return element.clone()
     return element

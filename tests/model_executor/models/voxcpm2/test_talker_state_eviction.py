@@ -35,6 +35,7 @@ def _make_bare_talker():
     talker._max_batch_size = 4
     talker._active_state_warn_threshold = 512
     talker._active_state_warned = False
+    talker._enable_profiling = False
     talker._audio_emit_every = 1
     talker._vae_decode_every = 1
     talker._enable_delayed_audio_copy = False
