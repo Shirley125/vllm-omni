@@ -823,7 +823,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         self._deterministic_cfm_seed = int(os.environ.get("VOXCPM2_DETERMINISTIC_CFM_SEED", "20260601"))
         self._vae_decode_sr_cond: torch.Tensor | None = None
         self._audio_emit_every = max(1, int(os.environ.get("VOXCPM2_AUDIO_EMIT_EVERY", "1")))
-        self._vae_decode_every = 3
+        self._vae_decode_every = max(1, int(os.environ.get("VOXCPM2_VAE_DECODE_EVERY", "3")))
         self._enable_delayed_audio_copy = os.environ.get("VOXCPM2_DELAYED_AUDIO_COPY", "0") == "1"
         self._delayed_audio_copy_use_events = os.environ.get("VOXCPM2_DELAYED_AUDIO_COPY_EVENTS", "0") == "1"
         self._coalesce_audio_d2h = os.environ.get("VOXCPM2_COALESCE_AUDIO_D2H", "1") == "1"

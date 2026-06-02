@@ -43,6 +43,10 @@ def _make_bare_talker():
     talker._enable_batched_vae_decode = False
     talker._audio_copy_stream = None
     talker._enable_vae_cuda_graph = False
+    talker._enable_cfm_cuda_graph = False
+    talker._enable_cfm_prealloc_output = False
+    talker._enable_batched_cfm = True
+    talker._deterministic_cfm_noise = False
     talker._cfm_buffers = None
     talker._last_audio_output_req_ids = []
     talker._batched_fsq_fusion_max_batch = 32
@@ -338,6 +342,7 @@ class TestDecodeBatchContract:
 
     def test_batch_decode_preserves_per_request_cfm_rng_order(self) -> None:
         talker = self._make_decode_talker()
+        talker._enable_batched_cfm = False
         states = [self._make_decode_state("req-0", 0.0), self._make_decode_state("req-1", 10.0)]
         metas = [
             {"new_lm_hidden": torch.tensor([[1.0, 2.0, 3.0, 4.0]])},
