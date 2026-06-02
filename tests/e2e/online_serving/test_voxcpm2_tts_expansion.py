@@ -23,6 +23,7 @@ os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 MODEL = "openbmb/VoxCPM2"
 DEFAULT_AUDIO_SPEECH_TIMEOUT_S = 300.0
 _MIN_AUDIO_BYTES = 40_000
+MAX_CONCURRENT = 4
 
 REF_AUDIO_URL = load_test_audio_data_url("qwen3_tts/clone_2.wav")
 
@@ -34,18 +35,12 @@ def get_prompt(prompt_type="text"):
     return prompts.get(prompt_type, prompts["text"])
 
 
-def get_max_batch_size(size_type="few"):
-    batch_sizes = {"few": 4, "medium": 8, "large": 16}
-    return batch_sizes.get(size_type, 4)
-
-
 tts_server_params = [
     pytest.param(
         OmniServerParams(
             model=MODEL,
             stage_config_path=get_deploy_config_path("voxcpm2.yaml"),
             server_args=["--trust-remote-code", "--disable-log-stats"],
-            stage_init_timeout=600,
         ),
         id="voxcpm2",
     )
@@ -73,7 +68,7 @@ def test_voice_clone_streaming_001(omni_server, openai_client) -> None:
         "ref_audio": REF_AUDIO_URL,
         "min_audio_bytes": _MIN_AUDIO_BYTES,
     }
-    openai_client.send_audio_speech_request(request_config, request_num=get_max_batch_size("few"))
+    openai_client.send_audio_speech_request(request_config, request_num=MAX_CONCURRENT)
 
 
 @hardware_test(res={"cuda": "L4"}, num_cards=1)
@@ -91,6 +86,7 @@ def test_response_format_001(omni_server, openai_client) -> None:
         "model": omni_server.model,
         "input": get_prompt(),
         "response_format": "pcm",
+        "stream": False,
         "timeout": DEFAULT_AUDIO_SPEECH_TIMEOUT_S,
         "voice": "default",
         "ref_audio": REF_AUDIO_URL,

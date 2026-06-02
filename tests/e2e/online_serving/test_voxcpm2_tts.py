@@ -20,6 +20,7 @@ from tests.helpers.stage_config import get_deploy_config_path
 
 MODEL = "openbmb/VoxCPM2"
 DEFAULT_AUDIO_SPEECH_TIMEOUT_S = 300.0
+MAX_CONCURRENT = 4
 
 # ~0.5 s of 48 kHz mono PCM_16 in WAV (~48k payload + header).
 _MIN_AUDIO_BYTES = 40_000
@@ -33,19 +34,12 @@ def get_prompt(prompt_type="text"):
     return prompts.get(prompt_type, prompts["text"])
 
 
-def get_max_batch_size(size_type="few"):
-    """Concurrent requests; capped at deploy ``max_num_seqs`` (4 for voxcpm2.yaml)."""
-    batch_sizes = {"few": 4, "medium": 8, "large": 16}
-    return batch_sizes.get(size_type, 4)
-
-
 tts_server_params = [
     pytest.param(
         OmniServerParams(
             model=MODEL,
             stage_config_path=get_deploy_config_path("voxcpm2.yaml"),
             server_args=["--trust-remote-code", "--disable-log-stats"],
-            stage_init_timeout=600,
         ),
         id="voxcpm2",
     )
@@ -75,7 +69,7 @@ def test_text_to_audio_001(omni_server, openai_client) -> None:
         "voice": "default",
         "min_audio_bytes": _MIN_AUDIO_BYTES,
     }
-    openai_client.send_audio_speech_request(request_config, request_num=get_max_batch_size("few"))
+    openai_client.send_audio_speech_request(request_config, request_num=MAX_CONCURRENT)
 
 
 @pytest.mark.advanced_model
