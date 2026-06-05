@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from time import time
 from typing import Any
@@ -13,7 +13,7 @@ from vllm.v1.core.sched.async_scheduler import AsyncScheduler as AsyncVLLMSchedu
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.core.sched.scheduler import Scheduler as VLLMScheduler
 from vllm.v1.core.sched.utils import remove_all
-from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
+from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs, FinishReason
 from vllm.v1.metrics.perf import PerfStats
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus, StreamingUpdate
@@ -68,6 +68,8 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         # completes so that kv_ready can be emitted while the request is still
         # alive.  Stopped on the first scheduler step after extraction ack.
         self.pending_stop_after_extraction: set[str] = set()
+
+        self.finished_req_ids_dict = defaultdict(set)
 
         # [Omni] Pre-parse KV transfer criteria
         self.kv_transfer_criteria = self._get_kv_transfer_criteria()
@@ -561,11 +563,17 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
             # Include ids of requests that finished since last outputs
             # were sent.
             for client_index, finished_set in finished_req_ids.items():
-                # Set finished request set in EngineCoreOutputs for this client.
-                if (eco := engine_core_outputs.get(client_index)) is not None:
-                    eco.finished_requests = finished_set
-                else:
-                    engine_core_outputs[client_index] = EngineCoreOutputs(finished_requests=finished_set)
+                eco = engine_core_outputs.get(client_index)
+                if eco is None:
+                    eco = EngineCoreOutputs()
+                    engine_core_outputs[client_index] = eco
+                emitted = {o.request_id for o in eco.outputs}
+                for req_id in finished_set:
+                    if req_id not in emitted:
+                        eco.outputs.append(
+                            EngineCoreOutput(req_id, [], finish_reason=FinishReason.ABORT)
+                        )
+                eco.finished_requests = finished_set
             finished_req_ids.clear()
 
         if (stats := self.make_stats(spec_decoding_stats, kv_connector_stats, cudagraph_stats, perf_stats)) is not None:
