@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from time import time
 from typing import Any
@@ -558,6 +558,10 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
         # outputs in this step.
         engine_core_outputs = {client_index: EngineCoreOutputs(outputs=outs) for client_index, outs in outputs.items()}
 
+        # FIXME: finished_req_ids_dict is unconditionally initialized as
+        # defaultdict(set) in __init__ (not gated by include_finished_set).
+        # This branch is therefore always eligible once any client_index is
+        # populated; revisit when wiring streaming-only / upstream semantics.
         finished_req_ids = self.finished_req_ids_dict
         if finished_req_ids:
             # Include ids of requests that finished since last outputs
@@ -570,9 +574,7 @@ class OmniARScheduler(OmniSchedulerMixin, VLLMScheduler):
                 emitted = {o.request_id for o in eco.outputs}
                 for req_id in finished_set:
                     if req_id not in emitted:
-                        eco.outputs.append(
-                            EngineCoreOutput(req_id, [], finish_reason=FinishReason.ABORT)
-                        )
+                        eco.outputs.append(EngineCoreOutput(req_id, [], finish_reason=FinishReason.ABORT))
                 eco.finished_requests = finished_set
             finished_req_ids.clear()
 
