@@ -76,8 +76,11 @@ class TestStateEvictionContract:
             enable_delayed_audio_copy=True,
         )._normalized()
 
+        # batched CFM + CFM CUDA Graph now coexist as the "batched CFM graph"
+        # path (one graph captured per decode batch size). Preallocated output
+        # only applies to the per-request batch=1 graph, so it is disabled.
         assert cfg.enable_batched_cfm is True
-        assert cfg.enable_cfm_cuda_graph is False
+        assert cfg.enable_cfm_cuda_graph is True
         assert cfg.enable_cfm_prealloc_output is False
         assert cfg.enable_batched_vae_decode is False
         assert cfg.enable_delayed_audio_copy is True

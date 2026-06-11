@@ -70,7 +70,7 @@ class _VoxCPM2RuntimeConfig:
     cfg_cutoff_ratio: float = 1.0
     decode_graph_capture_policy: str = "all"
     enable_vae_cuda_graph: bool = False
-    enable_cfm_cuda_graph: bool = False
+    enable_cfm_cuda_graph: bool = True
     enable_cfm_prealloc_output: bool = False
     enable_batched_cfm: bool = True
     deterministic_cfm_noise: bool = False
@@ -113,11 +113,20 @@ class _VoxCPM2RuntimeConfig:
     def _normalized(self) -> _VoxCPM2RuntimeConfig:
         cfg = self
         if cfg.enable_batched_cfm and cfg.enable_cfm_cuda_graph:
-            logger.warning(
-                "VoxCPM2 batched CFM and CFM CUDA Graph are mutually exclusive; "
-                "disabling CFM CUDA Graph and keeping batched CFM."
+            # Combined mode: a single CUDA Graph captured per decode batch size
+            # runs the whole batch's CFM solve in one replay (batched + graphed).
+            logger.info(
+                "VoxCPM2 batched CFM + CFM CUDA Graph enabled: using batched CFM "
+                "CUDA Graph (one graph per decode batch size)."
             )
-            cfg = dataclasses.replace(cfg, enable_cfm_cuda_graph=False)
+            if cfg.enable_cfm_prealloc_output:
+                # Preallocated output targets the per-request (batch=1) graph path;
+                # the batched graph clones the whole-batch output instead.
+                logger.info(
+                    "VoxCPM2 CFM preallocated output is ignored in batched CFM "
+                    "CUDA Graph mode."
+                )
+                cfg = dataclasses.replace(cfg, enable_cfm_prealloc_output=False)
         if cfg.enable_cfm_prealloc_output and not cfg.enable_cfm_cuda_graph:
             logger.warning("VoxCPM2 CFM preallocated output requires CFM CUDA Graph; disabling it.")
             cfg = dataclasses.replace(cfg, enable_cfm_prealloc_output=False)
@@ -1533,6 +1542,41 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             state.cfm_output_gpu.copy_(graph.output)
         return state.cfm_output_gpu.transpose(1, 2)
 
+    def _run_batched_cfm_cuda_graph(
+        self,
+        states: list[_RequestState],
+        dit_h: torch.Tensor,
+        cond: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run CFM for a whole decode batch through one captured CUDA Graph.
+
+        ``dit_h`` is ``(B, dit_hidden)`` and ``cond`` is
+        ``(B, feat_dim, patch_size)`` where ``B`` is the number of concurrently
+        decoding requests. The graph is captured (and cached) per batch size by
+        :meth:`_get_cfm_cuda_graph`, mirroring the scaffold/residual decode
+        graphs, so dynamic concurrency only pays a one-time capture per size.
+
+        Returns ``(B, patch_size, feat_dim)`` to match :meth:`_run_cfm`.
+        """
+        graph = self._get_cfm_cuda_graph(dit_h, cond)
+        with _NvtxRange("voxcpm2.cfm.graph_copy_mu"):
+            graph.mu.copy_(dit_h)
+        with _NvtxRange("voxcpm2.cfm.graph_copy_cond"):
+            graph.cond.copy_(cond)
+        with _NvtxRange("voxcpm2.cfm.graph_noise"):
+            if self._deterministic_cfm_noise:
+                # Per-request deterministic noise keeps each request's output
+                # independent of how requests are batched together this step.
+                for i, state in enumerate(states):
+                    self._fill_deterministic_cfm_noise(state, graph.noise[i : i + 1])
+            else:
+                graph.noise.normal_()
+        with _NvtxRange("voxcpm2.cfm.graph_replay"):
+            graph.graph.replay()
+        with _NvtxRange("voxcpm2.cfm.graph_output_clone"):
+            # Clone before the next step overwrites the static output buffer.
+            return graph.output.clone().transpose(1, 2)
+
     # -------------------- vllm hooks --------------------
 
     def embed_input_ids(self, input_ids: torch.Tensor, **_: Any) -> torch.Tensor:
@@ -1964,7 +2008,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         dit_proj = getattr(self, "_compiled_dit_proj", None) or self._dit_proj_fn
         stop_fn = getattr(self, "_compiled_stop_fn", None) or self._stop_fn
 
-        if self._enable_batched_cfm and not self._enable_cfm_cuda_graph:
+        if self._enable_batched_cfm:
             states = [state for state, _, _ in req_metas]
             lm_h = torch.cat([meta["new_lm_hidden"] for _, _, meta in req_metas], dim=0)
             pfc = torch.cat(
@@ -1979,7 +2023,10 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             with _NvtxRange("voxcpm2.dit_proj"):
                 dit_h = dit_proj(lm_h, batch_out)
             cond = pfc.transpose(1, 2).contiguous()
-            if self._deterministic_cfm_noise and self._cfm_buffers is not None:
+            if self._enable_cfm_cuda_graph and dit_h.is_cuda:
+                # Batched CFM CUDA Graph: one replay for the whole decode batch.
+                pred_feat = self._run_batched_cfm_cuda_graph(states, dit_h, cond)
+            elif self._deterministic_cfm_noise and self._cfm_buffers is not None:
                 noise = self._cfm_buffers.noise[: dit_h.size(0)]
                 for i, state in enumerate(states):
                     self._fill_deterministic_cfm_noise(state, noise[i : i + 1])
