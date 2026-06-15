@@ -83,13 +83,6 @@ class _VoxCPM2RuntimeConfig:
     enable_batched_vae_decode: bool = True
     enable_batched_fsq_fusion: bool = False
     batched_fsq_fusion_max_batch: int = 32
-    # Bucket CFM CUDA Graphs to a small set of batch sizes (powers of two up to
-    # max_num_seqs). Arbitrary decode concurrencies are padded up to the nearest
-    # bucket, so only a handful of graphs are ever captured.
-    enable_cfm_graph_bucketing: bool = True
-    # Pre-capture all CFM graph buckets once during the first prefill (right after
-    # torch.compile setup) so steady-state decode never pays inline capture cost.
-    cfm_graph_warmup: bool = True
 
     @classmethod
     def from_vllm_config(cls, vllm_config: VllmConfig) -> _VoxCPM2RuntimeConfig:
@@ -941,10 +934,6 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         self._max_cached_graphs = self._max_batch_size
         self._cuda_graph_warmup_steps = 0
         self._cuda_graph_warmup_threshold = 3
-        self._enable_cfm_graph_bucketing = self._runtime_config.enable_cfm_graph_bucketing
-        self._cfm_graph_warmup = self._runtime_config.cfm_graph_warmup
-        self._cfm_graphs_warmed = False
-        self._decode_graph_buckets_cache: list[int] | None = None
 
         self._multichar_zh_split: dict[int, list[int]] | None = None
 
@@ -1419,75 +1408,6 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         graph.graph.replay()
         return graph.output
 
-    def _decode_graph_buckets(self) -> list[int]:
-        """Batch sizes we capture CFM graphs for: powers of two up to the
-        scheduler's max concurrency, always including the max itself.
-
-        Example: max_num_seqs=8 -> [1, 2, 4, 8]; max_num_seqs=6 -> [1, 2, 4, 6].
-        """
-        if self._decode_graph_buckets_cache is not None:
-            return self._decode_graph_buckets_cache
-        max_b = max(1, int(self._max_cached_graphs))
-        if not self._enable_cfm_graph_bucketing:
-            # No bucketing: lookups use exact batch sizes, so warmup must cover
-            # every size to avoid inline capture later.
-            buckets = list(range(1, max_b + 1))
-        else:
-            buckets = []
-            b = 1
-            while b < max_b:
-                buckets.append(b)
-                b *= 2
-            if not buckets or buckets[-1] != max_b:
-                buckets.append(max_b)
-        self._decode_graph_buckets_cache = buckets
-        return buckets
-
-    def _cfm_bucket_for(self, batch_size: int) -> int:
-        """Round ``batch_size`` up to the smallest captured bucket."""
-        if not self._enable_cfm_graph_bucketing:
-            return batch_size
-        for b in self._decode_graph_buckets():
-            if b >= batch_size:
-                return b
-        return self._decode_graph_buckets()[-1]
-
-    def _cfm_dit_hidden(self) -> int:
-        tts = self.tts
-        return tts.lm_to_dit_proj.out_features + tts.res_to_dit_proj.out_features
-
-    def _maybe_warmup_cfm_graphs(self, device: torch.device, dtype: torch.dtype) -> None:
-        """Pre-capture every CFM graph bucket once, from synthetic tensors.
-
-        Called right after torch.compile setup on the first prefill. Because the
-        CFM solver is self-contained (no paged-attention metadata), the graphs
-        depend only on static dims, so we can capture them without real data and
-        amortise all capture cost before steady-state decode.
-        """
-        if (
-            self._cfm_graphs_warmed
-            or not self._cfm_graph_warmup
-            or not self._enable_cfm_cuda_graph
-        ):
-            return
-        # Set the flag first so a capture failure does not retry every step.
-        self._cfm_graphs_warmed = True
-        dit_hidden = self._cfm_dit_hidden()
-        for bucket in self._decode_graph_buckets():
-            if bucket in self._cfm_graphs:
-                continue
-            cond_template = torch.zeros(
-                bucket, self._feat_dim, self._patch_size, device=device, dtype=dtype
-            )
-            self._cfm_graphs[bucket] = self._capture_cfm_graph(
-                None, cond_template, batch_size=bucket, dit_hidden=dit_hidden
-            )
-        logger.info(
-            "VoxCPM2 CFM CUDA Graph warmup captured buckets=%s (bucketing=%s)",
-            sorted(self._cfm_graphs.keys()),
-            self._enable_cfm_graph_bucketing,
-        )
-
     def _capture_cfm_graph(
         self,
         mu: torch.Tensor | None,
@@ -1565,50 +1485,31 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         dit_hidden: int | None = None,
     ) -> _CapturedCFMGraph:
         if mu is not None:
-            req_batch_size = mu.shape[0]
-            dit_hidden = mu.shape[-1]
-            device = mu.device
-            dtype = mu.dtype
+            graph_batch_size = mu.shape[0]
         else:
             assert batch_size is not None
-            assert dit_hidden is not None
-            req_batch_size = batch_size
-            device = cond.device
-            dtype = cond.dtype
-        bucket = self._cfm_bucket_for(req_batch_size)
-        graph = self._cfm_graphs.get(bucket)
+            graph_batch_size = batch_size
+        graph = self._cfm_graphs.get(graph_batch_size)
         if graph is None:
-            # Always capture at the bucket size from a synthetic cond so a single
-            # graph serves every concurrency <= bucket (real rows padded up).
-            cond_template = torch.zeros(
-                bucket, self._feat_dim, self._patch_size, device=device, dtype=dtype
-            )
-            graph = self._capture_cfm_graph(
-                None, cond_template, batch_size=bucket, dit_hidden=dit_hidden
-            )
-            self._cfm_graphs[bucket] = graph
+            graph = self._capture_cfm_graph(mu, cond, batch_size=batch_size, dit_hidden=dit_hidden)
+            self._cfm_graphs[graph_batch_size] = graph
         return graph
 
     def _run_cfm_cuda_graph(self, mu: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        self._maybe_warmup_cfm_graphs(mu.device, mu.dtype)
         graph = self._get_cfm_cuda_graph(mu, cond)
-        b = mu.shape[0]
         with _NvtxRange("voxcpm2.cfm.graph_copy_mu"):
-            graph.mu[:b].copy_(mu)
-        return self._run_cfm_cuda_graph_from_static_mu(graph, cond, batch_size=b)
+            graph.mu.copy_(mu)
+        return self._run_cfm_cuda_graph_from_static_mu(graph, cond)
 
-    def _run_cfm_cuda_graph_from_static_mu(
-        self, graph: _CapturedCFMGraph, cond: torch.Tensor, *, batch_size: int | None = None
-    ) -> torch.Tensor:
-        b = cond.shape[0] if batch_size is None else batch_size
+    def _run_cfm_cuda_graph_from_static_mu(self, graph: _CapturedCFMGraph, cond: torch.Tensor) -> torch.Tensor:
         with _NvtxRange("voxcpm2.cfm.graph_copy_cond"):
-            graph.cond[:b].copy_(cond)
+            graph.cond.copy_(cond)
         with _NvtxRange("voxcpm2.cfm.graph_noise"):
             graph.noise.normal_()
         with _NvtxRange("voxcpm2.cfm.graph_replay"):
             graph.graph.replay()
         with _NvtxRange("voxcpm2.cfm.graph_output_clone"):
-            return graph.output[:b].clone()
+            return graph.output.clone()
 
     def _run_cfm_cuda_graph_to_state_buffer(
         self,
@@ -1616,23 +1517,20 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         mu: torch.Tensor,
         cond: torch.Tensor,
     ) -> torch.Tensor:
-        self._maybe_warmup_cfm_graphs(mu.device, mu.dtype)
         graph = self._get_cfm_cuda_graph(mu, cond)
-        b = mu.shape[0]
         with _NvtxRange("voxcpm2.cfm.graph_copy_mu"):
-            graph.mu[:b].copy_(mu)
+            graph.mu.copy_(mu)
         with _NvtxRange("voxcpm2.cfm.graph_copy_cond"):
-            graph.cond[:b].copy_(cond)
+            graph.cond.copy_(cond)
         with _NvtxRange("voxcpm2.cfm.graph_noise"):
             if self._deterministic_cfm_noise:
-                self._fill_deterministic_cfm_noise(state, graph.noise[:b])
+                self._fill_deterministic_cfm_noise(state, graph.noise)
             else:
                 graph.noise.normal_()
         with _NvtxRange("voxcpm2.cfm.graph_replay"):
             graph.graph.replay()
 
-        graph_output = graph.output[:b]
-        output_shape = graph_output.shape
+        output_shape = graph.output.shape
         if (
             state.cfm_output_gpu is None
             or state.cfm_output_gpu.shape != output_shape
@@ -1641,7 +1539,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         ):
             state.cfm_output_gpu = torch.empty(output_shape, device=graph.output.device, dtype=graph.output.dtype)
         with _NvtxRange("voxcpm2.cfm.graph_output_copy"):
-            state.cfm_output_gpu.copy_(graph_output)
+            state.cfm_output_gpu.copy_(graph.output)
         return state.cfm_output_gpu.transpose(1, 2)
 
     def _run_batched_cfm_cuda_graph(
@@ -1660,13 +1558,11 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
 
         Returns ``(B, patch_size, feat_dim)`` to match :meth:`_run_cfm`.
         """
-        self._maybe_warmup_cfm_graphs(dit_h.device, dit_h.dtype)
         graph = self._get_cfm_cuda_graph(dit_h, cond)
-        b = dit_h.shape[0]
         with _NvtxRange("voxcpm2.cfm.graph_copy_mu"):
-            graph.mu[:b].copy_(dit_h)
+            graph.mu.copy_(dit_h)
         with _NvtxRange("voxcpm2.cfm.graph_copy_cond"):
-            graph.cond[:b].copy_(cond)
+            graph.cond.copy_(cond)
         with _NvtxRange("voxcpm2.cfm.graph_noise"):
             if self._deterministic_cfm_noise:
                 # Per-request deterministic noise keeps each request's output
@@ -1678,9 +1574,8 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         with _NvtxRange("voxcpm2.cfm.graph_replay"):
             graph.graph.replay()
         with _NvtxRange("voxcpm2.cfm.graph_output_clone"):
-            # Clone the real rows (padded bucket rows are discarded) before the
-            # next step overwrites the static output buffer.
-            return graph.output[:b].clone().transpose(1, 2)
+            # Clone before the next step overwrites the static output buffer.
+            return graph.output.clone().transpose(1, 2)
 
     # -------------------- vllm hooks --------------------
 
@@ -1992,19 +1887,17 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             if self._cfm_buffers is not None:
                 if self._enable_cfm_cuda_graph and dit_h.is_cuda:
                     if self._deterministic_cfm_noise and not self._enable_cfm_prealloc_output:
-                        self._maybe_warmup_cfm_graphs(dit_h.device, dit_h.dtype)
                         graph = self._get_cfm_cuda_graph(dit_h, cond)
-                        b = dit_h.shape[0]
                         with _NvtxRange("voxcpm2.cfm.graph_copy_mu"):
-                            graph.mu[:b].copy_(dit_h)
+                            graph.mu.copy_(dit_h)
                         with _NvtxRange("voxcpm2.cfm.graph_copy_cond"):
-                            graph.cond[:b].copy_(cond)
+                            graph.cond.copy_(cond)
                         with _NvtxRange("voxcpm2.cfm.graph_noise"):
-                            self._fill_deterministic_cfm_noise(state, graph.noise[:b])
+                            self._fill_deterministic_cfm_noise(state, graph.noise)
                         with _NvtxRange("voxcpm2.cfm.graph_replay"):
                             graph.graph.replay()
                         with _NvtxRange("voxcpm2.cfm.graph_output_clone"):
-                            return graph.output[:b].clone().transpose(1, 2)
+                            return graph.output.clone().transpose(1, 2)
                     if not self._enable_cfm_prealloc_output:
                         return self._run_cfm_cuda_graph(dit_h, cond).transpose(1, 2)
                     return self._run_cfm_cuda_graph_to_state_buffer(state, dit_h, cond)
@@ -2067,9 +1960,6 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         self._setup_cfm_buffers()
         if self._enable_torch_compile:
             self._setup_torch_compile()
-
-        if self._enable_cfm_cuda_graph and dit_h.is_cuda:
-            self._maybe_warmup_cfm_graphs(dit_h.device, dit_h.dtype)
 
         pred_feat = self._run_cfm_for_state(state, dit_h, prefix_feat_cond.transpose(1, 2).contiguous())
 
