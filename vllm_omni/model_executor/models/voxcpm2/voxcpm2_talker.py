@@ -123,10 +123,7 @@ class _VoxCPM2RuntimeConfig:
             if cfg.enable_cfm_prealloc_output:
                 # Preallocated output targets the per-request (batch=1) graph path;
                 # the batched graph clones the whole-batch output instead.
-                logger.info(
-                    "VoxCPM2 CFM preallocated output is ignored in batched CFM "
-                    "CUDA Graph mode."
-                )
+                logger.info("VoxCPM2 CFM preallocated output is ignored in batched CFM CUDA Graph mode.")
                 cfg = dataclasses.replace(cfg, enable_cfm_prealloc_output=False)
         if cfg.enable_cfm_prealloc_output and not cfg.enable_cfm_cuda_graph:
             logger.warning("VoxCPM2 CFM preallocated output requires CFM CUDA Graph; disabling it.")
@@ -303,6 +300,14 @@ def _encode_raw_audio(
 
 
 @dataclasses.dataclass
+class _PendingStopFlagCopy:
+    host: torch.Tensor
+    index: int
+    event: torch.cuda.Event | None = None
+    source: torch.Tensor | None = None
+
+
+@dataclasses.dataclass
 class _RequestState:
     request_id: str
     curr_embed_for_next: torch.Tensor | None = None
@@ -312,6 +317,7 @@ class _RequestState:
     cfm_output_gpu: torch.Tensor | None = None
     cfm_noise_step: int = 0
     precomputed_stop_logits: torch.Tensor | None = None
+    pending_stop_flag_copy: _PendingStopFlagCopy | None = None
     pending_audio_chunks_gpu: list[torch.Tensor] = dataclasses.field(default_factory=list)
     pending_audio_copies: list[_PendingAudioCopy] = dataclasses.field(default_factory=list)
     pending_vae_latents_gpu: list[torch.Tensor] = dataclasses.field(default_factory=list)
@@ -1029,6 +1035,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             state.pending_audio_chunks_gpu.clear()
             state.pending_audio_copies.clear()
             state.pending_vae_latents_gpu.clear()
+            state.pending_stop_flag_copy = None
             state.cfm_output_gpu = None
         if self._current_request_id == request_id:
             self._current_request_id = None
@@ -1994,10 +2001,13 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             pfc = pfc.unsqueeze(0)
         cond = pfc.transpose(1, 2).contiguous()
 
+        stop_logits = stop_fn(lm_h).detach()
+        if self._uses_sparse_audio_outputs():
+            self._enqueue_stop_flag_copy([state], stop_logits)
+
         dit_h = dit_proj(lm_h, res_h)
         pred_feat = self._run_cfm_for_state(state, dit_h, cond)
         next_embed = tts.enc_to_lm_proj(tts.feat_encoder(pred_feat.unsqueeze(1))).squeeze(1)
-        stop_logits = stop_fn(lm_h).detach()
         self._commit_decode_state(state, stop_logits, next_embed, pred_feat)
 
         self._perf.stop("decode_step")
@@ -2023,6 +2033,11 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
                 ],
                 dim=0,
             )
+            with _NvtxRange("voxcpm2.stop_fn"):
+                stop_logits = stop_fn(lm_h).detach()
+            if self._uses_sparse_audio_outputs():
+                self._enqueue_stop_flag_copy(states, stop_logits)
+
             with _NvtxRange("voxcpm2.dit_proj"):
                 dit_h = dit_proj(lm_h, batch_out)
             cond = pfc.transpose(1, 2).contiguous()
@@ -2049,8 +2064,6 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
                 pred_feat = self._run_cfm(dit_h, cond)
             with _NvtxRange("voxcpm2.feat_encoder_feedback"):
                 next_embed = tts.enc_to_lm_proj(tts.feat_encoder(pred_feat.unsqueeze(1))).squeeze(1)
-            with _NvtxRange("voxcpm2.stop_fn"):
-                stop_logits = stop_fn(lm_h).detach()
 
             for i, state in enumerate(states):
                 self._commit_decode_state(
@@ -2070,16 +2083,43 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             if pfc.ndim == 2:
                 pfc = pfc.unsqueeze(0)
             cond = pfc.transpose(1, 2).contiguous()
+            with _NvtxRange("voxcpm2.stop_fn"):
+                stop_logits = stop_fn(lm_h).detach()
+            if self._uses_sparse_audio_outputs():
+                self._enqueue_stop_flag_copy([state], stop_logits)
             with _NvtxRange("voxcpm2.dit_proj"):
                 dit_h = dit_proj(lm_h, res_h)
             pred_feat = self._run_cfm_for_state(state, dit_h, cond)
             with _NvtxRange("voxcpm2.feat_encoder_feedback"):
                 next_embed = tts.enc_to_lm_proj(tts.feat_encoder(pred_feat.unsqueeze(1))).squeeze(1)
-            with _NvtxRange("voxcpm2.stop_fn"):
-                stop_logits = stop_fn(lm_h).detach()
             self._commit_decode_state(state, stop_logits, next_embed, pred_feat)
 
         self._perf.stop("decode_step")
+
+    def _enqueue_stop_flag_copy(self, states: list[_RequestState], stop_logits: torch.Tensor) -> None:
+        if not states:
+            return
+
+        stop_mask = stop_logits[:, 1] > stop_logits[:, 0]
+        if stop_mask.device.type != current_omni_platform.device_type:
+            stop_mask_cpu = stop_mask.cpu()
+            for i, state in enumerate(states):
+                state.pending_stop_flag_copy = None
+                state.precomputed_is_stopping = bool(stop_mask_cpu[i])
+            return
+
+        source = stop_mask.contiguous()
+        host = torch.empty(source.shape, dtype=source.dtype, device="cpu", pin_memory=True)
+        host.copy_(source, non_blocking=True)
+        event = torch.cuda.Event()
+        event.record(torch.cuda.current_stream(source.device))
+        for i, state in enumerate(states):
+            state.pending_stop_flag_copy = _PendingStopFlagCopy(
+                host=host,
+                index=i,
+                event=event,
+                source=source,
+            )
 
     def _commit_decode_state(
         self,
@@ -2190,9 +2230,26 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
         ):
             return
 
+        synchronized_events: set[int] = set()
+        for state in states:
+            pending_flag = state.pending_stop_flag_copy
+            if pending_flag is None or state.is_stopping or state.precomputed_is_stopping is not None:
+                continue
+            if pending_flag.event is not None:
+                event_id = id(pending_flag.event)
+                if event_id not in synchronized_events:
+                    pending_flag.event.synchronize()
+                    synchronized_events.add(event_id)
+            is_stopping = bool(pending_flag.host[pending_flag.index])
+            state.pending_stop_flag_copy = None
+            state.precomputed_is_stopping = is_stopping
+            if is_stopping:
+                state.is_stopping = True
+
         pending: list[tuple[_RequestState, torch.Tensor]] = []
         for state in states:
             if state.is_stopping or state.precomputed_is_stopping is not None:
+                state.pending_stop_flag_copy = None
                 continue
             stop_logits = state.precomputed_stop_logits
             if stop_logits is None or stop_logits.device.type != current_omni_platform.device_type:
@@ -2438,6 +2495,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
                         logits[i, 1] = 1.0
                         state.precomputed_stop_logits = None
                         state.precomputed_is_stopping = None
+                        state.pending_stop_flag_copy = None
                     else:
                         logits[i, 0] = stop_logits[0, 0]
                         logits[i, 1] = stop_logits[0, 1]
@@ -2446,6 +2504,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
                                 state.is_stopping = state.precomputed_is_stopping
                             state.precomputed_stop_logits = None
                             state.precomputed_is_stopping = None
+                            state.pending_stop_flag_copy = None
                 elif state and state.prefill_completed:
                     logits[i, 1] = 1.0
                 else:
@@ -2563,6 +2622,7 @@ class VoxCPM2TalkerForConditionalGeneration(nn.Module):
             state.decode_step_count = 0
             state.precomputed_stop_logits = None
             state.precomputed_is_stopping = None
+            state.pending_stop_flag_copy = None
             state.last_audio_patch_gpu = None
             if not hasattr(state, "pending_audio_chunks_gpu"):
                 state.pending_audio_chunks_gpu = []

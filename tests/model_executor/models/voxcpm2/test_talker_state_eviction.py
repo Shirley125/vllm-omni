@@ -154,6 +154,21 @@ class TestStateEvictionContract:
         assert states[1].precomputed_is_stopping is False
         assert states[1].is_stopping is False
 
+    def test_precompute_consumes_pending_stop_flag_copy(self) -> None:
+        from vllm_omni.model_executor.models.voxcpm2.voxcpm2_talker import _PendingStopFlagCopy
+
+        _, RState, _ = _voxcpm2_talker_mod()
+        talker = _make_bare_talker()
+        talker._vae_decode_every = 2
+        state = RState(request_id="req")
+        state.pending_stop_flag_copy = _PendingStopFlagCopy(host=torch.tensor([True]), index=0)
+
+        talker._precompute_stop_flags_for_audio_collect([state])
+
+        assert state.pending_stop_flag_copy is None
+        assert state.precomputed_is_stopping is True
+        assert state.is_stopping is True
+
     def test_on_requests_finished_defers_cleanup(self) -> None:
         talker = _make_bare_talker()
         _seed_cached_decode(talker, "req-A")
