@@ -899,6 +899,20 @@ class Orchestrator:
             req_state.finished_final_output_stage_ids.add(stage_id)
             final_output_stage_ids = req_state.final_output_stage_ids or {req_state.final_stage_id}
             request_finished = final_output_stage_ids.issubset(req_state.finished_final_output_stage_ids)
+            logger.info(
+                "[Orchestrator] req=%s stage=%s final_output finished "
+                "target_final_outputs=%s finished_final_outputs=%s "
+                "request_finished=%s streaming=%s segment_finished=%s "
+                "async_chunk=%s",
+                req_id,
+                stage_id,
+                sorted(final_output_stage_ids),
+                sorted(req_state.finished_final_output_stage_ids),
+                request_finished,
+                req_state.streaming.enabled,
+                req_state.streaming.segment_finished,
+                self.async_chunk,
+            )
         if self.stage_pools[stage_id].final_output:
             await self.output_async_queue.put(
                 OutputMessage(
@@ -963,6 +977,13 @@ class Orchestrator:
                     )
 
         if request_finished:
+            logger.info(
+                "[Orchestrator] req=%s cleanup after request_finished "
+                "stage=%s known_reqs_before=%s",
+                req_id,
+                stage_id,
+                list(self.requests.keys()),
+            )
             await self._cleanup_request_ids([req_id, *self._cfg_tracker.cleanup_parent(req_id)])
 
     def _next_stage_already_submitted(self, stage_id: int, req_state: OrchestratorRequestState) -> bool:

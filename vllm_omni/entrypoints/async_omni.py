@@ -604,6 +604,7 @@ class AsyncOmni(EngineClient, OmniBase):
         if req_state is None:
             return
 
+        logged_result_stages = set()
         while True:
             result = await req_state.queue.get()
 
@@ -626,6 +627,17 @@ class AsyncOmni(EngineClient, OmniBase):
                 continue
 
             stage_id = result.stage_id
+            if stage_id not in logged_result_stages or result.finished:
+                logged_result_stages.add(stage_id)
+                logger.info(
+                    "[AsyncOmni] req=%s got OutputMessage stage=%s "
+                    "finished=%s final_stage=%s engine_final_output_type=%s",
+                    request_id,
+                    stage_id,
+                    result.finished,
+                    getattr(result, "final_stage", None),
+                    getattr(result, "final_output_type", None),
+                )
 
             self._check_engine_output_error(result, request_id, stage_id)
 
@@ -652,6 +664,13 @@ class AsyncOmni(EngineClient, OmniBase):
 
             # The Orchestrator sets "finished" when the final stage is done
             if result.finished:
+                logger.info(
+                    "[AsyncOmni] req=%s result_gen finishing on stage=%s "
+                    "final_stage=%s",
+                    request_id,
+                    stage_id,
+                    getattr(result, "final_stage", None),
+                )
                 break
 
     # ==================== Output Handler ====================

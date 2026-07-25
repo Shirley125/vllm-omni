@@ -128,6 +128,10 @@ class RealtimeConnection(VllmRealtimeConnection):
         full_text = ""
         prompt_token_ids_len = 0
         completion_tokens_len = 0
+        output_count = 0
+        audio_delta_count = 0
+        seen_stages = set()
+        finished_stages = set()
         self._realtime_audio_ref = None
 
         # Coerce cumulative outputs to delta outputs; this ensures
@@ -144,9 +148,27 @@ class RealtimeConnection(VllmRealtimeConnection):
                 request_id=request_id,
                 sampling_params_list=sampling_params_list,
             )
+            logger.info("[Realtime] req=%s generation start", request_id)
 
             async for output in result_gen:
+                output_count += 1
                 stage_id = getattr(output, "stage_id", None)
+                output_finished = bool(getattr(output, "finished", False))
+                final_output_type = getattr(output, "final_output_type", None)
+                if stage_id not in seen_stages or output_finished:
+                    seen_stages.add(stage_id)
+                    if output_finished:
+                        finished_stages.add(stage_id)
+                    logger.info(
+                        "[Realtime] req=%s output #%s stage=%s finished=%s "
+                        "final_output_type=%s has_mm=%s",
+                        request_id,
+                        output_count,
+                        stage_id,
+                        output_finished,
+                        final_output_type,
+                        bool(getattr(output, "multi_modal_output", None)),
+                    )
                 if stage_id == 0 and output.outputs:
                     first_output = output.outputs[0]
                     new_token_ids = list(first_output.token_ids)
@@ -167,6 +189,20 @@ class RealtimeConnection(VllmRealtimeConnection):
                         await self.send(TranscriptionDelta(delta=delta_text))
 
                 audio_chunks, sample_rate = self._extract_audio_chunks(output)
+                if audio_chunks:
+                    audio_delta_count += len(audio_chunks)
+                    if audio_delta_count <= 3 or output_finished:
+                        logger.info(
+                            "[Realtime] req=%s audio_chunks=%s "
+                            "total_audio_chunks=%s stage=%s finished=%s "
+                            "sample_rate=%s",
+                            request_id,
+                            len(audio_chunks),
+                            audio_delta_count,
+                            stage_id,
+                            output_finished,
+                            sample_rate,
+                        )
 
                 for chunk in audio_chunks:
                     sent_audio = True
@@ -180,7 +216,26 @@ class RealtimeConnection(VllmRealtimeConnection):
                     )
 
                 if not self._is_connected:
+                    logger.info(
+                        "[Realtime] req=%s client disconnected during "
+                        "generation outputs=%s audio_chunks=%s",
+                        request_id,
+                        output_count,
+                        audio_delta_count,
+                    )
                     break
+
+            logger.info(
+                "[Realtime] req=%s result_gen exhausted outputs=%s "
+                "seen_stages=%s finished_stages=%s sent_audio=%s "
+                "audio_chunks=%s connected=%s",
+                request_id,
+                sorted(seen_stages, key=lambda value: -1 if value is None else value),
+                sorted(finished_stages, key=lambda value: -1 if value is None else value),
+                sent_audio,
+                audio_delta_count,
+                self._is_connected,
+            )
 
             usage = UsageInfo(
                 prompt_tokens=prompt_token_ids_len,
@@ -190,6 +245,12 @@ class RealtimeConnection(VllmRealtimeConnection):
             await self.send(TranscriptionDone(text=full_text, usage=usage))
 
             if sent_audio:
+                logger.info(
+                    "[Realtime] req=%s sending response.audio.done normal "
+                    "has_audio=True audio_chunks=%s",
+                    request_id,
+                    audio_delta_count,
+                )
                 await self.send_json({"type": "response.audio.done", "has_audio": True})
                 audio_done_sent = True
         except Exception as e:
@@ -199,6 +260,13 @@ class RealtimeConnection(VllmRealtimeConnection):
             # Always send terminal event so clients don't hang forever.
             if self._is_connected and not audio_done_sent:
                 try:
+                    logger.info(
+                        "[Realtime] req=%s sending response.audio.done "
+                        "fallback has_audio=%s audio_chunks=%s",
+                        request_id,
+                        sent_audio,
+                        audio_delta_count,
+                    )
                     await self.send_json({"type": "response.audio.done", "has_audio": sent_audio})
                 except Exception:
                     logger.exception("Failed to send response.audio.done")
